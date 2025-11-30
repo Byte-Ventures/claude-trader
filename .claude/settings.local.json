@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__borgmcp__subscription_status",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(source venv/bin/activate)",
+      "Bash(pip install:*)",
+      "WebFetch(domain:docs.cdp.coinbase.com)",
+      "Bash(pip index:*)",
+      "WebFetch(domain:gist.github.com)",
+      "Bash(pkill:*)",
+      "Bash(pgrep:*)",
+      "Bash(python:*)",
+      "mcp__zen__precommit"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
