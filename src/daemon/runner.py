@@ -235,18 +235,18 @@ class TradingDaemon:
         """Execute one trading iteration."""
         # Check kill switch first
         if self.kill_switch.is_active:
-            logger.debug("iteration_skipped", reason="kill_switch_active")
+            logger.info("iteration_skipped", reason="kill_switch_active")
             return
 
         # Check circuit breaker
         if not self.circuit_breaker.can_trade:
-            logger.debug("iteration_skipped", reason="circuit_breaker_open")
+            logger.info("iteration_skipped", reason="circuit_breaker_open")
             return
 
         # Check loss limits
         loss_status = self.loss_limiter.get_status()
         if not loss_status.can_trade:
-            logger.debug("iteration_skipped", reason="loss_limit_exceeded")
+            logger.info("iteration_skipped", reason="loss_limit_exceeded")
             return
 
         # Get market data
@@ -274,34 +274,76 @@ class TradingDaemon:
         # Update validator with current state
         self.validator.update_balances(base_balance, quote_balance, current_price)
 
+        # Calculate portfolio value for logging
+        base_value = base_balance * current_price
+        portfolio_value = quote_balance + base_value
+        position_percent = float(base_value / portfolio_value * 100) if portfolio_value > 0 else 0
+
         # Calculate signal
         signal_result = self.signal_scorer.calculate_score(candles, current_price)
 
-        logger.debug(
-            "signal_calculated",
-            score=signal_result.score,
-            action=signal_result.action,
+        logger.info(
+            "trading_check",
             price=str(current_price),
+            signal_score=signal_result.score,
+            signal_action=signal_result.action,
+            base_balance=str(base_balance),
+            quote_balance=str(quote_balance),
+            portfolio_value=str(portfolio_value),
+            position_pct=f"{position_percent:.1f}%",
         )
 
         # Execute trade if signal is strong enough
         if signal_result.action == "hold":
+            logger.info(
+                "decision",
+                action="hold",
+                reason=f"signal_score={signal_result.score} below threshold",
+            )
             return
 
         # Get safety multiplier
         safety_multiplier = self.validator.get_position_multiplier()
 
-        if signal_result.action == "buy" and quote_balance > Decimal("10"):
-            self._execute_buy(
-                candles, current_price, quote_balance, base_balance,
-                signal_result.score, safety_multiplier
-            )
+        if signal_result.action == "buy":
+            if quote_balance > Decimal("10"):
+                logger.info(
+                    "decision",
+                    action="buy",
+                    signal_score=signal_result.score,
+                    safety_multiplier=f"{safety_multiplier:.2f}",
+                )
+                self._execute_buy(
+                    candles, current_price, quote_balance, base_balance,
+                    signal_result.score, safety_multiplier
+                )
+            else:
+                logger.info(
+                    "decision",
+                    action="skip_buy",
+                    reason=f"insufficient_quote_balance ({quote_balance})",
+                    signal_score=signal_result.score,
+                )
 
-        elif signal_result.action == "sell" and base_balance > Decimal("0.0001"):
-            self._execute_sell(
-                candles, current_price, base_balance,
-                signal_result.score, safety_multiplier
-            )
+        elif signal_result.action == "sell":
+            if base_balance > Decimal("0.0001"):
+                logger.info(
+                    "decision",
+                    action="sell",
+                    signal_score=signal_result.score,
+                    safety_multiplier=f"{safety_multiplier:.2f}",
+                )
+                self._execute_sell(
+                    candles, current_price, base_balance,
+                    signal_result.score, safety_multiplier
+                )
+            else:
+                logger.info(
+                    "decision",
+                    action="skip_sell",
+                    reason=f"insufficient_base_balance ({base_balance})",
+                    signal_score=signal_result.score,
+                )
 
     def _execute_buy(
         self,
@@ -325,7 +367,7 @@ class TradingDaemon:
         )
 
         if position.size_quote < Decimal("10"):
-            logger.debug("buy_skipped", reason="position_too_small")
+            logger.info("buy_skipped", reason="position_too_small", size_quote=str(position.size_quote))
             return
 
         # Validate order
@@ -418,7 +460,7 @@ class TradingDaemon:
             size_base = position.size_base
 
         if size_base < Decimal("0.0001"):
-            logger.debug("sell_skipped", reason="position_too_small")
+            logger.info("sell_skipped", reason="position_too_small", size_base=str(size_base))
             return
 
         # Validate order
