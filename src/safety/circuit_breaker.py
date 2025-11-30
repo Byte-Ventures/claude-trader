@@ -65,6 +65,9 @@ class CircuitBreakerConfig:
     # Time window for price change detection (seconds)
     price_window: int = 3600  # 1 hour
 
+    # BLACK state recovery (None = manual only, hours value = auto-recovery)
+    black_recovery_hours: Optional[int] = None
+
 
 class CircuitBreaker:
     """
@@ -145,6 +148,23 @@ class CircuitBreaker:
                 self._reset_to_green("Cooldown expired")
             elif self._level == BreakerLevel.YELLOW:
                 self._reset_to_green("Warning cooldown expired")
+
+        # Check for BLACK state auto-recovery (if configured)
+        if self._level == BreakerLevel.BLACK and self.config.black_recovery_hours:
+            if self._triggered_at:
+                hours_since = (datetime.now() - self._triggered_at).total_seconds() / 3600
+                if hours_since >= self.config.black_recovery_hours:
+                    logger.info(
+                        "circuit_breaker_black_auto_recovery",
+                        hours_since=f"{hours_since:.1f}",
+                        recovery_hours=self.config.black_recovery_hours,
+                    )
+                    # Downgrade to RED (which will then auto-recover to GREEN after cooldown)
+                    self._level = BreakerLevel.RED
+                    self._reason = f"Auto-recovery from BLACK after {self.config.black_recovery_hours}h"
+                    self._cooldown_until = datetime.now() + timedelta(
+                        seconds=self.config.red_cooldown
+                    )
 
     def _reset_to_green(self, reason: str) -> None:
         """Reset breaker to GREEN state."""

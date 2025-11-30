@@ -23,6 +23,14 @@ class Exchange(str, Enum):
     KRAKEN = "kraken"
 
 
+class VetoAction(str, Enum):
+    """Claude AI veto actions."""
+    SKIP = "skip"      # Skip trade entirely
+    REDUCE = "reduce"  # Reduce position size
+    DELAY = "delay"    # Delay trade (user checks Telegram)
+    INFO = "info"      # Log but proceed with trade
+
+
 class Settings(BaseSettings):
     """Main application settings with validation."""
 
@@ -166,6 +174,14 @@ class Settings(BaseSettings):
         description="Maximum position size as percentage of portfolio"
     )
 
+    # Circuit Breaker
+    black_recovery_hours: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=168,
+        description="Hours before BLACK state auto-downgrades to RED (None=manual only)"
+    )
+
     # Telegram
     telegram_bot_token: Optional[SecretStr] = Field(
         default=None,
@@ -178,6 +194,52 @@ class Settings(BaseSettings):
     telegram_enabled: bool = Field(
         default=True,
         description="Enable Telegram notifications"
+    )
+
+    # AI Trade Review (via OpenRouter)
+    openrouter_api_key: Optional[SecretStr] = Field(
+        default=None,
+        description="OpenRouter API key for AI trade review"
+    )
+    ai_review_enabled: bool = Field(
+        default=False,
+        description="Enable AI trade review via OpenRouter"
+    )
+    openrouter_model: str = Field(
+        default="anthropic/claude-sonnet-4",
+        description="Model to use via OpenRouter (e.g., anthropic/claude-3-haiku, openai/gpt-4o)"
+    )
+    claude_veto_action: VetoAction = Field(
+        default=VetoAction.INFO,
+        description="Action on veto: skip, reduce, delay, info"
+    )
+    claude_veto_threshold: float = Field(
+        default=0.8,
+        ge=0.5,
+        le=1.0,
+        description="Confidence threshold to trigger veto"
+    )
+    claude_position_reduction: float = Field(
+        default=0.5,
+        ge=0.1,
+        le=0.9,
+        description="Position size multiplier for 'reduce' veto action"
+    )
+    claude_delay_minutes: int = Field(
+        default=15,
+        ge=5,
+        le=60,
+        description="Minutes to delay for 'delay' veto action"
+    )
+    claude_interesting_hold_margin: int = Field(
+        default=15,
+        ge=5,
+        le=30,
+        description="Score margin from threshold for 'interesting hold' analysis"
+    )
+    ai_review_all: bool = Field(
+        default=False,
+        description="Review ALL decisions with AI (for debugging/testing)"
     )
 
     # Database

@@ -334,6 +334,52 @@ class LossLimiter:
         """Get current loss limit status."""
         return self._check_limits()
 
+    def get_daily_loss(self) -> Decimal:
+        """Get today's realized P&L for external use."""
+        return self._get_daily_pnl()
+
+    def check_limits_with_unrealized(
+        self,
+        unrealized_pnl: Decimal,
+    ) -> tuple[bool, float]:
+        """
+        Check if combined realized + unrealized loss exceeds daily limit.
+
+        This provides an early warning when underwater positions combined
+        with realized losses approach the daily limit.
+
+        Args:
+            unrealized_pnl: Current unrealized P&L from open positions
+
+        Returns:
+            Tuple of (within_limit, combined_loss_percent)
+        """
+        if self._daily_starting_balance == Decimal("0"):
+            return (True, 0.0)
+
+        # Combine realized and unrealized
+        realized_pnl = self._get_daily_pnl()
+        combined_pnl = realized_pnl + unrealized_pnl
+
+        # Calculate combined loss percentage
+        combined_loss_percent = self._calculate_loss_percent(
+            combined_pnl, self._daily_starting_balance
+        )
+
+        # Check against daily limit
+        within_limit = combined_loss_percent < self.config.max_daily_loss_percent
+
+        if not within_limit:
+            logger.warning(
+                "loss_limiter_unrealized_warning",
+                realized_pnl=str(realized_pnl),
+                unrealized_pnl=str(unrealized_pnl),
+                combined_loss_percent=combined_loss_percent,
+                daily_limit=self.config.max_daily_loss_percent,
+            )
+
+        return (within_limit, combined_loss_percent)
+
     def check_and_raise(self) -> None:
         """Check limits and raise exception if trading not allowed."""
         status = self.get_status()

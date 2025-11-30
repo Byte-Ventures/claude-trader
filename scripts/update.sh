@@ -53,6 +53,13 @@ cp -r "$SOURCE_DIR/src" "$INSTALL_DIR/"
 cp -r "$SOURCE_DIR/config" "$INSTALL_DIR/"
 cp "$SOURCE_DIR/requirements.txt" "$INSTALL_DIR/"
 
+# Update service file if changed
+if ! cmp -s "$SOURCE_DIR/scripts/claude-trader.service" "/etc/systemd/system/$SERVICE_NAME.service"; then
+    echo "Updating service file..."
+    cp "$SOURCE_DIR/scripts/claude-trader.service" "/etc/systemd/system/$SERVICE_NAME.service"
+    systemctl daemon-reload
+fi
+
 # Clear Python bytecode cache to ensure fresh code runs
 echo "Clearing bytecode cache..."
 find "$INSTALL_DIR" -name "*.pyc" -delete 2>/dev/null || true

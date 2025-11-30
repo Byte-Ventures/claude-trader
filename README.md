@@ -57,7 +57,9 @@ The bot starts in paper trading mode by default. Monitor the logs to see how it 
 
 ## Configuration
 
-Edit `.env` to customize:
+Edit `.env` to customize. See `.env.example` for all options with documentation.
+
+### Core Settings
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -67,23 +69,96 @@ Edit `.env` to customize:
 | `POSITION_SIZE_PERCENT` | `40` | Max position as % of portfolio |
 | `SIGNAL_THRESHOLD` | `60` | Minimum score to trade (0-100) |
 | `CHECK_INTERVAL_SECONDS` | `60` | Seconds between checks |
-| `MAX_DAILY_LOSS_PERCENT` | `10` | Stop trading after this loss |
-| `PAPER_INITIAL_QUOTE` | `5000` | Starting quote currency for paper trading |
-| `PAPER_INITIAL_BASE` | `0.05` | Starting base currency for paper trading (~50/50 split) |
+
+### Risk Management
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MAX_DAILY_LOSS_PERCENT` | `10` | Stop trading after this daily loss |
+| `MAX_HOURLY_LOSS_PERCENT` | `3` | Pause for 1 hour after this loss |
+| `MAX_POSITION_PERCENT` | `80` | Maximum position size allowed |
+| `STOP_LOSS_ATR_MULTIPLIER` | `1.5` | Stop loss distance (ATR multiples) |
+| `TAKE_PROFIT_ATR_MULTIPLIER` | `2.0` | Take profit distance (ATR multiples) |
+
+### AI Trade Review (Optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AI_REVIEW_ENABLED` | `false` | Enable AI review via OpenRouter |
+| `OPENROUTER_API_KEY` | - | API key from openrouter.ai |
+| `OPENROUTER_MODEL` | `anthropic/claude-sonnet-4` | AI model to use |
+| `CLAUDE_VETO_ACTION` | `info` | `skip`, `reduce`, `delay`, or `info` |
+| `AI_REVIEW_ALL` | `false` | Review ALL decisions (debug mode) |
 
 ## Trading Strategy
 
-The bot uses a **confluence scoring system** that combines multiple indicators:
+The bot uses a **confluence scoring system** that combines multiple indicators with **graduated signals** (v1.7.0+):
 
-| Indicator | Weight | Signal |
-|-----------|--------|--------|
-| RSI (14) | 25% | Buy < 35, Sell > 65 |
-| MACD (12/26/9) | 25% | Crossover signals |
-| Bollinger Bands (20, 2σ) | 20% | Band touches |
-| EMA Crossover (9/21) | 15% | Trend direction |
-| Volume | 15% | Confirmation boost |
+| Indicator | Weight | Graduated Signal Range |
+|-----------|--------|------------------------|
+| RSI (14) | 25% | Dead zone 45-55, scaled ±0.3 to ±1.0 outside |
+| MACD (12/26/9) | 25% | Crossover + histogram momentum |
+| Bollinger Bands (20, 2σ) | 20% | %B based, dead zone 0.35-0.65 |
+| EMA Crossover (9/21) | 15% | Position + momentum, dead zone <0.3% gap |
+| Volume | 15% | Confirmation boost/penalty |
+| Trend Filter | - | Counter-trend penalty |
 
-**Trade when score ≥ 60 (or ≤ -60 for sells)**
+**Trade when score ≥ threshold (default 60) or ≤ -threshold for sells**
+
+### Signal Breakdown Example
+
+```
+Signal Score: 72/100
+  📈 RSI: +18      (RSI at 38, moderate buy zone)
+  📈 MACD: +15     (bullish crossover + histogram)
+  📈 Bollinger: +12 (%B at 0.25, lower zone)
+  📈 EMA: +10      (fast above slow, gap widening)
+  📈 Volume: +7    (1.6x average volume boost)
+  ➖ Trend Filter: 0
+```
+
+## Tuning Guide
+
+### Trade Frequency
+
+Target trades/month depends on market conditions and your risk tolerance:
+
+| Profile | Threshold | Expected Trades | Notes |
+|---------|-----------|-----------------|-------|
+| Conservative | 70 | 5-15/month | Fewer but higher conviction |
+| Moderate | 60 | 20-50/month | Balanced (default) |
+| Aggressive | 50 | 50-100/month | More signals, more noise |
+
+### Indicator Tuning
+
+**RSI (Momentum)**
+- `RSI_OVERSOLD=35` / `RSI_OVERBOUGHT=65` - Default thresholds
+- Tighter (40/60): More signals, earlier entries
+- Wider (30/70): Fewer signals, wait for extremes
+
+**EMA (Trend)**
+- `EMA_FAST=9` / `EMA_SLOW=21` - Default periods
+- Shorter (5/13): More responsive, more whipsaws
+- Longer (12/26): Smoother, slower to react
+
+**Bollinger Bands (Volatility)**
+- `BOLLINGER_STD=2.0` - Band width (95% of price action)
+- Lower (1.5): Narrower bands, more touches
+- Higher (2.5): Wider bands, only extreme moves
+
+### Hot-Reload Settings
+
+Update these without restarting:
+```bash
+nano .env  # Edit values
+kill -SIGUSR2 $(pgrep -f "python -m src.main")
+# Or with systemd:
+sudo systemctl reload claude-trader
+```
+
+**Reloadable:** signal_threshold, RSI/MACD/Bollinger/EMA parameters, position_size_percent, loss limits, AI settings
+
+**Requires restart:** exchange, trading_pair, trading_mode, database_path
 
 ## Safety Systems
 
@@ -91,21 +166,6 @@ The bot uses a **confluence scoring system** that combines multiple indicators:
 - Create `data/KILL_SWITCH` file to halt trading
 - Send `SIGUSR1` signal to process
 - Requires manual reset to resume
-
-### Config Hot-Reload
-Update strategy parameters without restarting:
-
-```bash
-# Edit .env with new values (thresholds, position sizes, limits)
-nano .env
-
-# Trigger reload
-kill -SIGUSR2 $(pgrep -f "python -m src.main")
-```
-
-**Reloadable settings:** signal_threshold, RSI/MACD/Bollinger/EMA parameters, position_size_percent, stop_loss/take_profit multipliers, max_position_percent, loss limits.
-
-**Requires restart:** exchange, trading_pair, trading_mode, database_path.
 
 ### Circuit Breaker
 - **YELLOW**: 5%+ price move → reduced position size
@@ -116,6 +176,16 @@ kill -SIGUSR2 $(pgrep -f "python -m src.main")
 - Daily: 10% max loss → trading stops for the day
 - Hourly: 3% max loss → 1 hour pause
 - Progressive throttling as limits approach
+
+## Performance Reports
+
+The bot automatically generates performance reports comparing your portfolio against buy-and-hold BTC:
+
+- **Daily**: Sent via Telegram each day with portfolio return vs BTC return
+- **Weekly**: Summary every Monday covering the past 7 days
+- **Monthly**: Summary on the 1st of each month covering the previous month
+
+Reports show **alpha** (portfolio return minus BTC return) to measure strategy effectiveness.
 
 ## Project Structure
 
@@ -143,6 +213,8 @@ coinbase-trader/
 │   │   └── validator.py
 │   ├── notifications/
 │   │   └── telegram.py
+│   ├── ai/
+│   │   └── trade_reviewer.py    # AI trade review (OpenRouter)
 │   ├── state/
 │   │   └── database.py          # SQLite persistence
 │   └── daemon/

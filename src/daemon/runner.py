@@ -9,20 +9,22 @@ Orchestrates all components:
 - State persistence
 """
 
+import asyncio
 import signal
 import time
+from datetime import date, datetime
 from decimal import Decimal
 from threading import Event
 from typing import Optional, Union
 
 import structlog
 
-from config.settings import Settings, TradingMode, request_reload, reload_pending, reload_settings
+from config.settings import Settings, TradingMode, VetoAction, request_reload, reload_pending, reload_settings
 from src.api.exchange_factory import create_exchange_client, get_exchange_name
 from src.api.exchange_protocol import ExchangeClient
 from src.api.paper_client import PaperTradingClient
 from src.notifications.telegram import TelegramNotifier
-from src.safety.circuit_breaker import CircuitBreaker, BreakerLevel
+from src.safety.circuit_breaker import CircuitBreaker, CircuitBreakerConfig, BreakerLevel
 from src.safety.kill_switch import KillSwitch
 from src.safety.loss_limiter import LossLimiter
 from src.safety.validator import OrderValidator, OrderRequest, ValidatorConfig
@@ -54,6 +56,12 @@ class TradingDaemon:
         self.settings = settings
         self.shutdown_event = Event()
         self._running = False
+        self._last_daily_report: Optional[date] = None
+        self._last_weekly_report: Optional[date] = None
+        self._last_monthly_report: Optional[date] = None
+
+        # Create persistent event loop for async operations (avoids repeated asyncio.run())
+        self._loop = asyncio.new_event_loop()
 
         # Initialize database
         self.db = Database(settings.database_path)
@@ -110,6 +118,25 @@ class TradingDaemon:
             enabled=settings.telegram_enabled,
         )
 
+        # Initialize AI trade reviewer (optional, via OpenRouter)
+        self.trade_reviewer = None
+        if settings.ai_review_enabled and settings.openrouter_api_key:
+            from src.ai.trade_reviewer import TradeReviewer
+            self.trade_reviewer = TradeReviewer(
+                api_key=settings.openrouter_api_key.get_secret_value(),
+                db=self.db,
+                veto_action=settings.claude_veto_action,
+                veto_threshold=settings.claude_veto_threshold,
+                position_reduction=settings.claude_position_reduction,
+                delay_minutes=settings.claude_delay_minutes,
+                interesting_hold_margin=settings.claude_interesting_hold_margin,
+                model=settings.openrouter_model,
+                review_all=settings.ai_review_all,
+            )
+            logger.info("ai_trade_reviewer_initialized", model=settings.openrouter_model, review_all=settings.ai_review_all)
+        else:
+            logger.info("ai_trade_reviewer_disabled")
+
         # Initialize safety systems
         self.kill_switch = KillSwitch(
             on_activate=lambda reason: self.notifier.notify_kill_switch(reason)
@@ -117,6 +144,9 @@ class TradingDaemon:
         self.kill_switch.register_signal_handler()
 
         self.circuit_breaker = CircuitBreaker(
+            config=CircuitBreakerConfig(
+                black_recovery_hours=settings.black_recovery_hours,
+            ),
             on_trip=lambda level, reason: self.notifier.notify_circuit_breaker(
                 level.name.lower(), reason
             )
@@ -286,6 +316,15 @@ class TradingDaemon:
                 max_hourly_loss_percent=new_settings.max_hourly_loss_percent,
             )
 
+            # Update TradeReviewer (if enabled)
+            if self.trade_reviewer:
+                self.trade_reviewer.review_all = new_settings.ai_review_all
+                self.trade_reviewer.veto_action = new_settings.claude_veto_action
+                self.trade_reviewer.veto_threshold = new_settings.claude_veto_threshold
+                self.trade_reviewer.position_reduction = new_settings.claude_position_reduction
+                self.trade_reviewer.delay_minutes = new_settings.claude_delay_minutes
+                self.trade_reviewer.interesting_hold_margin = new_settings.claude_interesting_hold_margin
+
             logger.info(
                 "config_reload_complete",
                 changed_fields=list(changes.keys()),
@@ -305,13 +344,15 @@ class TradingDaemon:
         self._running = True
 
         try:
-            # Get initial portfolio value
+            # Get initial portfolio value and price
             portfolio_value = self._get_portfolio_value()
+            starting_price = self.client.get_current_price(self.settings.trading_pair)
             self.loss_limiter.set_starting_balance(portfolio_value)
 
-            # Record starting balance for daily stats
+            # Record starting balance and price for daily stats
             self.db.update_daily_stats(
                 starting_balance=portfolio_value,
+                starting_price=starting_price,
                 is_paper=self.settings.is_paper_trading,
             )
 
@@ -332,6 +373,11 @@ class TradingDaemon:
                 # Check for config reload request
                 if reload_pending():
                     self._reload_config()
+
+                # Check for performance reports
+                self._check_daily_report()
+                self._check_weekly_report()
+                self._check_monthly_report()
 
                 try:
                     self._trading_iteration()
@@ -388,11 +434,53 @@ class TradingDaemon:
 
         self.circuit_breaker.record_api_success()
 
+        # Check unrealized loss (early warning for underwater positions)
+        try:
+            position = self.db.get_current_position(
+                self.settings.trading_pair,
+                is_paper=self.settings.is_paper_trading
+            )
+            if position and position.get_quantity() > 0:
+                avg_cost = position.get_average_cost()
+                qty = position.get_quantity()
+                unrealized_pnl = (current_price - avg_cost) * qty
+                within_limit, combined_loss_pct = self.loss_limiter.check_limits_with_unrealized(
+                    unrealized_pnl
+                )
+                if not within_limit:
+                    logger.warning(
+                        "iteration_skipped_unrealized_loss",
+                        unrealized_pnl=str(unrealized_pnl),
+                        combined_loss_pct=f"{combined_loss_pct:.1f}%",
+                    )
+                    self.notifier.notify_error(
+                        f"Combined loss {combined_loss_pct:.1f}% exceeds daily limit",
+                        "Unrealized loss warning"
+                    )
+                    return
+        except Exception as e:
+            # Don't block trading on unrealized check failure
+            logger.debug("unrealized_loss_check_failed", error=str(e))
+
         # Update circuit breaker with price data
         self.circuit_breaker.check_price_movement(float(current_price))
 
         # Update validator with current state
         self.validator.update_balances(base_balance, quote_balance, current_price)
+
+        # Check trailing stop before normal signal processing
+        trailing_action = self._check_trailing_stop(current_price)
+        if trailing_action == "sell" and base_balance > Decimal("0"):
+            logger.info("trailing_stop_sell_triggered", base_balance=str(base_balance))
+            # Execute sell for trailing stop (use full position, high priority)
+            self._execute_sell(
+                candles=candles,
+                current_price=current_price,
+                base_balance=base_balance,
+                signal_score=80,  # Treat as strong sell signal
+                safety_multiplier=1.0,  # No safety reduction for stops
+            )
+            return  # Exit iteration after trailing stop execution
 
         # Calculate portfolio value for logging
         base_value = base_balance * current_price
@@ -402,28 +490,96 @@ class TradingDaemon:
         # Calculate signal
         signal_result = self.signal_scorer.calculate_score(candles, current_price)
 
+        # Log indicator values for debugging
+        ind = signal_result.indicators
+        logger.info(
+            "indicators",
+            rsi=f"{ind.rsi:.1f}" if ind.rsi else "N/A",
+            macd_hist=f"{ind.macd_histogram:.2f}" if ind.macd_histogram else "N/A",
+            bb_pct_b=f"{((float(current_price) - ind.bb_lower) / (ind.bb_upper - ind.bb_lower)):.2f}" if ind.bb_upper and ind.bb_lower else "N/A",
+            ema_gap=f"{((ind.ema_fast - ind.ema_slow) / ind.ema_slow * 100):.3f}%" if ind.ema_fast and ind.ema_slow else "N/A",
+            volatility=ind.volatility,
+        )
+
         logger.info(
             "trading_check",
             price=str(current_price),
             signal_score=signal_result.score,
             signal_action=signal_result.action,
+            breakdown=signal_result.breakdown,
             base_balance=str(base_balance),
             quote_balance=str(quote_balance),
             portfolio_value=str(portfolio_value),
             position_pct=f"{position_percent:.1f}%",
         )
 
+        # Claude AI trade review (if enabled)
+        claude_veto_multiplier = 1.0  # Default: no reduction
+        if self.trade_reviewer:
+            should_review, review_type = self.trade_reviewer.should_review(
+                signal_result, self.settings.signal_threshold
+            )
+
+            if should_review:
+                try:
+                    # Run async review using persistent event loop (more efficient than asyncio.run())
+                    review = self._loop.run_until_complete(self.trade_reviewer.review_trade(
+                        signal_result=signal_result,
+                        current_price=current_price,
+                        trading_pair=self.settings.trading_pair,
+                        review_type=review_type,
+                    ))
+
+                    # Always notify Telegram
+                    self.notifier.notify_trade_review(review, review_type)
+
+                    logger.info(
+                        "claude_trade_review",
+                        review_type=review_type,
+                        approved=review.approved,
+                        confidence=f"{review.confidence:.2f}",
+                        sentiment=review.sentiment,
+                        veto_action=review.veto_action,
+                    )
+
+                    # Handle veto (only for actual trades, not interesting holds)
+                    if review_type == "trade" and not review.approved:
+                        if review.veto_action == VetoAction.SKIP.value:
+                            logger.info("trade_vetoed", reason=review.reasoning)
+                            return  # Skip this iteration
+                        elif review.veto_action == VetoAction.REDUCE.value:
+                            claude_veto_multiplier = self.settings.claude_position_reduction
+                            logger.info(
+                                "trade_reduced_by_claude",
+                                multiplier=f"{claude_veto_multiplier:.2f}",
+                            )
+                        elif review.veto_action == VetoAction.DELAY.value:
+                            logger.info(
+                                "trade_delayed_by_claude",
+                                delay_minutes=self.settings.claude_delay_minutes,
+                            )
+                            return  # Skip this iteration (user can check Telegram)
+                        # VetoAction.INFO: log but proceed with trade
+
+                    # For interesting holds, just return (already notified Telegram)
+                    if review_type == "interesting_hold":
+                        return
+
+                except Exception as e:
+                    logger.error("claude_review_failed", error=str(e))
+                    # Continue with trade on review failure (fail open)
+
         # Execute trade if signal is strong enough
         if signal_result.action == "hold":
             logger.info(
                 "decision",
                 action="hold",
-                reason=f"signal_score={signal_result.score} below threshold",
+                reason=f"|score|={abs(signal_result.score)} < threshold={self.settings.signal_threshold}",
             )
             return
 
-        # Get safety multiplier
-        safety_multiplier = self.validator.get_position_multiplier()
+        # Get safety multiplier (including Claude veto reduction if applicable)
+        safety_multiplier = self.validator.get_position_multiplier() * claude_veto_multiplier
 
         if signal_result.action == "buy":
             if quote_balance > Decimal("10"):
@@ -531,9 +687,12 @@ class TradingDaemon:
             # Update position tracking for cost basis
             self._update_position_after_buy(result.size, filled_price, result.fee, is_paper)
 
-            # Update loss limiter (no P&L on buy)
+            # Create trailing stop for the new position
+            self._create_trailing_stop(filled_price, candles, is_paper)
+
+            # Update loss limiter (fee is a realized loss on buy)
             self.loss_limiter.record_trade(
-                realized_pnl=Decimal("0"),
+                realized_pnl=-result.fee,  # Fees count as realized loss
                 side="buy",
                 size=result.size,
                 price=filled_price,
@@ -611,6 +770,12 @@ class TradingDaemon:
         if result.success:
             is_paper = self.settings.is_paper_trading
             filled_price = result.filled_price or current_price
+
+            # Deactivate any trailing stop since position is being sold
+            self.db.deactivate_trailing_stop(
+                symbol=self.settings.trading_pair,
+                is_paper=is_paper,
+            )
 
             # Calculate realized P&L based on average cost basis
             realized_pnl = self._calculate_realized_pnl(result.size, filled_price, result.fee, is_paper)
@@ -764,6 +929,354 @@ class TradingDaemon:
         base_value = base_balance * current_price
         return quote_balance + base_value
 
+    def _check_daily_report(self) -> None:
+        """Check if we should generate daily performance report."""
+        today = date.today()
+
+        # Only report once per day
+        if self._last_daily_report == today:
+            return
+
+        # Get yesterday's stats (if exists)
+        from datetime import timedelta
+        yesterday = today - timedelta(days=1)
+        stats = self.db.get_daily_stats(yesterday, is_paper=self.settings.is_paper_trading)
+
+        if stats and stats.starting_balance and stats.ending_balance:
+            try:
+                starting_balance = Decimal(stats.starting_balance)
+                ending_balance = Decimal(stats.ending_balance)
+                starting_price = Decimal(stats.starting_price) if stats.starting_price else None
+                ending_price = Decimal(stats.ending_price) if stats.ending_price else None
+
+                # Calculate portfolio return
+                if starting_balance > 0:
+                    portfolio_return = float((ending_balance - starting_balance) / starting_balance * 100)
+                else:
+                    portfolio_return = 0.0
+
+                # Calculate BTC return (buy-and-hold benchmark)
+                btc_return = 0.0
+                if starting_price and ending_price and starting_price > 0:
+                    btc_return = float((ending_price - starting_price) / starting_price * 100)
+
+                # Calculate alpha (outperformance vs buy-and-hold)
+                alpha = portfolio_return - btc_return
+
+                logger.info(
+                    "daily_performance",
+                    date=str(yesterday),
+                    portfolio_return=f"{portfolio_return:+.2f}%",
+                    btc_return=f"{btc_return:+.2f}%",
+                    alpha=f"{alpha:+.2f}%",
+                    starting_balance=str(starting_balance),
+                    ending_balance=str(ending_balance),
+                    trades=stats.total_trades or 0,
+                )
+
+                # Send Telegram notification
+                self._send_daily_report(
+                    yesterday,
+                    portfolio_return,
+                    btc_return,
+                    alpha,
+                    starting_balance,
+                    ending_balance,
+                    stats.total_trades or 0,
+                )
+
+            except Exception as e:
+                logger.error("daily_report_failed", error=str(e))
+
+        self._last_daily_report = today
+
+    def _send_daily_report(
+        self,
+        report_date: date,
+        portfolio_return: float,
+        btc_return: float,
+        alpha: float,
+        starting_balance: Decimal,
+        ending_balance: Decimal,
+        trades: int,
+    ) -> None:
+        """Send daily performance report via Telegram."""
+        # Determine performance emoji
+        if alpha > 1:
+            perf_emoji = "🚀"  # Beating BTC significantly
+        elif alpha > 0:
+            perf_emoji = "✅"  # Beating BTC
+        elif alpha > -1:
+            perf_emoji = "➖"  # Roughly matching
+        else:
+            perf_emoji = "📉"  # Underperforming
+
+        mode = "PAPER" if self.settings.is_paper_trading else "LIVE"
+        pnl = ending_balance - starting_balance
+
+        message = (
+            f"📊 <b>Daily Report</b> ({mode})\n"
+            f"Date: {report_date}\n\n"
+            f"<b>Portfolio</b>: {portfolio_return:+.2f}%\n"
+            f"<b>BTC (HODL)</b>: {btc_return:+.2f}%\n"
+            f"{perf_emoji} <b>Alpha</b>: {alpha:+.2f}%\n\n"
+            f"P&L: €{pnl:+,.2f}\n"
+            f"Balance: €{ending_balance:,.2f}\n"
+            f"Trades: {trades}"
+        )
+
+        self.notifier.send_message_sync(message)
+
+    def _check_weekly_report(self) -> None:
+        """Check if we should generate weekly performance report (on Mondays)."""
+        from datetime import timedelta
+
+        today = date.today()
+
+        # Only on Mondays
+        if today.weekday() != 0:
+            return
+
+        # Only report once per week
+        if self._last_weekly_report and (today - self._last_weekly_report).days < 7:
+            return
+
+        # Get last week's date range (Monday to Sunday)
+        last_monday = today - timedelta(days=7)
+        last_sunday = today - timedelta(days=1)
+
+        self._generate_period_report("Weekly", last_monday, last_sunday)
+        self._last_weekly_report = today
+
+    def _check_monthly_report(self) -> None:
+        """Check if we should generate monthly performance report (on 1st of month)."""
+        from datetime import timedelta
+
+        today = date.today()
+
+        # Only on 1st of month
+        if today.day != 1:
+            return
+
+        # Only report once per month
+        if self._last_monthly_report and self._last_monthly_report.month == today.month:
+            return
+
+        # Get last month's date range
+        last_day_prev_month = today - timedelta(days=1)
+        first_day_prev_month = last_day_prev_month.replace(day=1)
+
+        self._generate_period_report("Monthly", first_day_prev_month, last_day_prev_month)
+        self._last_monthly_report = today
+
+    def _generate_period_report(self, period: str, start_date: date, end_date: date) -> None:
+        """Generate and send a performance report for a date range."""
+        stats_list = self.db.get_daily_stats_range(
+            start_date, end_date, is_paper=self.settings.is_paper_trading
+        )
+
+        if not stats_list:
+            logger.debug(f"no_stats_for_{period.lower()}_report", start=str(start_date), end=str(end_date))
+            return
+
+        try:
+            # Get first and last stats with valid data
+            first_stats = None
+            last_stats = None
+            total_trades = 0
+
+            for s in stats_list:
+                if s.starting_balance and s.starting_price:
+                    if first_stats is None:
+                        first_stats = s
+                if s.ending_balance and s.ending_price:
+                    last_stats = s
+                total_trades += s.total_trades or 0
+
+            if not first_stats or not last_stats:
+                logger.debug(f"incomplete_stats_for_{period.lower()}_report")
+                return
+
+            starting_balance = Decimal(first_stats.starting_balance)
+            ending_balance = Decimal(last_stats.ending_balance)
+            starting_price = Decimal(first_stats.starting_price)
+            ending_price = Decimal(last_stats.ending_price)
+
+            # Calculate returns
+            portfolio_return = 0.0
+            if starting_balance > 0:
+                portfolio_return = float((ending_balance - starting_balance) / starting_balance * 100)
+
+            btc_return = 0.0
+            if starting_price > 0:
+                btc_return = float((ending_price - starting_price) / starting_price * 100)
+
+            alpha = portfolio_return - btc_return
+
+            logger.info(
+                f"{period.lower()}_performance",
+                period=f"{start_date} to {end_date}",
+                portfolio_return=f"{portfolio_return:+.2f}%",
+                btc_return=f"{btc_return:+.2f}%",
+                alpha=f"{alpha:+.2f}%",
+                trades=total_trades,
+            )
+
+            # Send Telegram notification
+            self._send_period_report(
+                period,
+                start_date,
+                end_date,
+                portfolio_return,
+                btc_return,
+                alpha,
+                starting_balance,
+                ending_balance,
+                total_trades,
+            )
+
+        except Exception as e:
+            logger.error(f"{period.lower()}_report_failed", error=str(e))
+
+    def _send_period_report(
+        self,
+        period: str,
+        start_date: date,
+        end_date: date,
+        portfolio_return: float,
+        btc_return: float,
+        alpha: float,
+        starting_balance: Decimal,
+        ending_balance: Decimal,
+        trades: int,
+    ) -> None:
+        """Send weekly/monthly performance report via Telegram."""
+        # Determine performance emoji
+        if alpha > 2:
+            perf_emoji = "🚀"
+        elif alpha > 0:
+            perf_emoji = "✅"
+        elif alpha > -2:
+            perf_emoji = "➖"
+        else:
+            perf_emoji = "📉"
+
+        mode = "PAPER" if self.settings.is_paper_trading else "LIVE"
+        pnl = ending_balance - starting_balance
+
+        # Period-specific emoji
+        period_emoji = "📅" if period == "Weekly" else "📆"
+
+        message = (
+            f"{period_emoji} <b>{period} Report</b> ({mode})\n"
+            f"{start_date} → {end_date}\n\n"
+            f"<b>Portfolio</b>: {portfolio_return:+.2f}%\n"
+            f"<b>BTC (HODL)</b>: {btc_return:+.2f}%\n"
+            f"{perf_emoji} <b>Alpha</b>: {alpha:+.2f}%\n\n"
+            f"P&L: €{pnl:+,.2f}\n"
+            f"Balance: €{ending_balance:,.2f}\n"
+            f"Trades: {trades}"
+        )
+
+        self.notifier.send_message_sync(message)
+
+    def _create_trailing_stop(
+        self, entry_price: Decimal, candles, is_paper: bool = False
+    ) -> None:
+        """Create a trailing stop for a new buy position."""
+        from src.strategy.indicators.atr import calculate_atr
+
+        try:
+            # Calculate ATR for trailing stop distance
+            atr_result = calculate_atr(candles, period=self.settings.atr_period)
+            atr = atr_result.current
+
+            # Trailing activates at 1 ATR profit
+            activation = entry_price + atr
+            # Trailing distance is based on config multiplier
+            distance = atr * Decimal(str(self.settings.trailing_stop_atr_multiplier))
+
+            self.db.create_trailing_stop(
+                symbol=self.settings.trading_pair,
+                side="buy",
+                entry_price=entry_price,
+                trailing_activation=activation,
+                trailing_distance=distance,
+                is_paper=is_paper,
+            )
+
+            logger.info(
+                "trailing_stop_set",
+                entry_price=str(entry_price),
+                activation=str(activation),
+                distance=str(distance),
+            )
+        except Exception as e:
+            logger.error("trailing_stop_creation_failed", error=str(e))
+
+    def _check_trailing_stop(self, current_price: Decimal) -> Optional[str]:
+        """
+        Check and update trailing stop, return action if stop triggered.
+
+        Returns:
+            "sell" if trailing stop triggered, None otherwise
+        """
+        is_paper = self.settings.is_paper_trading
+        ts = self.db.get_active_trailing_stop(
+            symbol=self.settings.trading_pair,
+            is_paper=is_paper,
+        )
+
+        if not ts:
+            return None
+
+        entry_price = ts.get_entry_price()
+        activation = ts.get_trailing_activation()
+        distance = ts.get_trailing_distance()
+        current_stop = ts.get_trailing_stop()
+
+        # For buy positions: check if price activated trailing, then if stop hit
+        if ts.side == "buy":
+            # Check if trailing stop is now activated
+            if current_stop is None and activation and current_price >= activation:
+                # Activate: set initial stop at entry + distance - distance = entry (breakeven roughly)
+                # Actually: current_price - distance
+                new_stop = current_price - distance
+                self.db.update_trailing_stop(ts.id, new_stop_level=new_stop)
+                logger.info(
+                    "trailing_stop_activated",
+                    current_price=str(current_price),
+                    stop_level=str(new_stop),
+                )
+                return None
+
+            # If activated, update stop if price moved up
+            if current_stop is not None and distance:
+                potential_new_stop = current_price - distance
+                if potential_new_stop > current_stop:
+                    self.db.update_trailing_stop(ts.id, new_stop_level=potential_new_stop)
+                    logger.debug(
+                        "trailing_stop_moved",
+                        old_stop=str(current_stop),
+                        new_stop=str(potential_new_stop),
+                    )
+                    current_stop = potential_new_stop
+
+            # Check if stop is hit
+            if current_stop is not None and current_price <= current_stop:
+                logger.info(
+                    "trailing_stop_triggered",
+                    current_price=str(current_price),
+                    stop_level=str(current_stop),
+                )
+                self.db.deactivate_trailing_stop(
+                    symbol=self.settings.trading_pair,
+                    is_paper=is_paper,
+                )
+                return "sell"
+
+        return None
+
     def _shutdown(self) -> None:
         """Graceful shutdown."""
         self._running = False
@@ -771,12 +1284,20 @@ class TradingDaemon:
         # Save final state
         try:
             portfolio_value = self._get_portfolio_value()
+            ending_price = self.client.get_current_price(self.settings.trading_pair)
             self.db.update_daily_stats(
                 ending_balance=portfolio_value,
+                ending_price=ending_price,
                 is_paper=self.settings.is_paper_trading,
             )
         except Exception as e:
             logger.error("shutdown_state_save_failed", error=str(e))
+
+        # Close the async event loop
+        try:
+            self._loop.close()
+        except Exception as e:
+            logger.debug("event_loop_close_failed", error=str(e))
 
         # Send shutdown notification
         self.notifier.notify_shutdown("Graceful shutdown")

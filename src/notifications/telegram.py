@@ -355,3 +355,85 @@ class TelegramNotifier:
 
         if self.send_message_sync(message):
             self._record_sent("error", dedup_key)
+
+    def notify_trade_review(self, review, review_type: str) -> None:
+        """
+        Send AI trade analysis to Telegram.
+
+        Args:
+            review: ReviewResult from TradeReviewer
+            review_type: "trade", "interesting_hold", or "hold"
+        """
+        sentiment_emoji = {"bullish": "🟢", "bearish": "🔴", "neutral": "🟡"}
+        ctx = review.trade_context
+
+        # Format signal breakdown
+        breakdown = ctx.get('breakdown', {})
+        breakdown_text = self._format_signal_breakdown(breakdown)
+
+        if review_type in ("interesting_hold", "hold"):
+            # Hold notification (interesting or regular debug hold)
+            title = "🔍 <b>Interesting Hold</b>" if review_type == "interesting_hold" else "📋 <b>Hold Analysis</b>"
+            message = (
+                f"{title}\n\n"
+                f"Signal Score: {ctx.get('score', 0)}/100 (threshold: 60)\n"
+                f"Price: ${ctx.get('price', 0):,.2f}\n\n"
+                f"<b>Signal Breakdown</b>:\n{breakdown_text}\n\n"
+                f"{sentiment_emoji.get(review.sentiment, '⚪')} <b>Sentiment</b>: {review.sentiment.title()}\n"
+                f"📊 <b>Fear & Greed</b>: {ctx.get('fear_greed', 'N/A')} ({ctx.get('fear_greed_class', '')})\n\n"
+                f"💬 <b>Why holding</b>:\n{review.reasoning}\n\n"
+                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+        else:
+            # Trade review notification
+            emoji = "✅" if review.approved else "⛔"
+            action = ctx.get('action', 'unknown').upper()
+
+            veto_text = ""
+            if not review.approved and review.veto_action:
+                veto_text = f"\n🚫 <b>VETOED</b> - Action: {review.veto_action}"
+
+            message = (
+                f"{emoji} <b>Trade Review</b>\n\n"
+                f"Signal: {action} @ ${ctx.get('price', 0):,.2f}\n"
+                f"Technical Score: {ctx.get('score', 0)}/100\n\n"
+                f"<b>Signal Breakdown</b>:\n{breakdown_text}\n\n"
+                f"{sentiment_emoji.get(review.sentiment, '⚪')} <b>Sentiment</b>: {review.sentiment.title()}\n"
+                f"📊 <b>Fear & Greed</b>: {ctx.get('fear_greed', 'N/A')} ({ctx.get('fear_greed_class', '')})\n\n"
+                f"💬 <b>Claude's Analysis</b>:\n{review.reasoning}"
+                f"{veto_text}\n\n"
+                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+
+        self.send_message_sync(message)
+
+    def _format_signal_breakdown(self, breakdown: dict) -> str:
+        """Format signal breakdown for Telegram display."""
+        if not breakdown:
+            return "  No breakdown available"
+
+        # Order indicators for consistent display
+        indicator_order = ['rsi', 'macd', 'bollinger', 'ema', 'volume', 'trend_filter']
+        indicator_names = {
+            'rsi': 'RSI',
+            'macd': 'MACD',
+            'bollinger': 'Bollinger',
+            'ema': 'EMA',
+            'volume': 'Volume',
+            'trend_filter': 'Trend Filter',
+        }
+
+        lines = []
+        for key in indicator_order:
+            if key in breakdown:
+                value = breakdown[key]
+                name = indicator_names.get(key, key.upper())
+                # Show sign and value with visual indicator
+                if value > 0:
+                    lines.append(f"  📈 {name}: +{value}")
+                elif value < 0:
+                    lines.append(f"  📉 {name}: {value}")
+                else:
+                    lines.append(f"  ➖ {name}: 0")
+
+        return "\n".join(lines) if lines else "  No breakdown available"

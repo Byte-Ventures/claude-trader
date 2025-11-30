@@ -14,10 +14,10 @@ from typing import Optional
 import pandas as pd
 import structlog
 
-from src.indicators.rsi import calculate_rsi, get_rsi_signal
+from src.indicators.rsi import calculate_rsi, get_rsi_signal_graduated
 from src.indicators.macd import calculate_macd, get_macd_signal, get_macd_histogram_signal
-from src.indicators.bollinger import calculate_bollinger_bands, get_bollinger_signal
-from src.indicators.ema import calculate_ema_crossover, get_ema_signal, get_ema_trend
+from src.indicators.bollinger import calculate_bollinger_bands, get_bollinger_signal_graduated
+from src.indicators.ema import calculate_ema_crossover, get_ema_signal_graduated, get_ema_trend
 from src.indicators.atr import calculate_atr, get_volatility_level
 
 logger = structlog.get_logger(__name__)
@@ -222,33 +222,33 @@ class SignalScorer:
         breakdown = {}
         total_score = 0
 
-        # RSI component
-        rsi_signal = get_rsi_signal(indicators.rsi, self.rsi_oversold, self.rsi_overbought)
-        rsi_score = rsi_signal * self.weights.rsi
+        # RSI component (graduated: returns -1.0 to +1.0)
+        rsi_signal = get_rsi_signal_graduated(indicators.rsi, self.rsi_oversold, self.rsi_overbought)
+        rsi_score = int(rsi_signal * self.weights.rsi)
         breakdown["rsi"] = rsi_score
         total_score += rsi_score
 
         # MACD component (crossover + histogram)
         macd_cross = get_macd_signal(macd_result)
         macd_hist = get_macd_histogram_signal(macd_result)
-        # Weight crossover more heavily
-        macd_score = int((macd_cross * 0.7 + macd_hist * 0.3) * self.weights.macd)
+        # Equal weight for crossover and histogram (50/50)
+        macd_score = int((macd_cross * 0.5 + macd_hist * 0.5) * self.weights.macd)
         breakdown["macd"] = macd_score
         total_score += macd_score
 
-        # Bollinger Bands component
-        bb_signal = get_bollinger_signal(price, bollinger)
-        bb_score = bb_signal * self.weights.bollinger
+        # Bollinger Bands component (graduated: returns -1.0 to +1.0)
+        bb_signal = get_bollinger_signal_graduated(price, bollinger)
+        bb_score = int(bb_signal * self.weights.bollinger)
         breakdown["bollinger"] = bb_score
         total_score += bb_score
 
-        # EMA component
-        ema_signal = get_ema_signal(ema_result)
-        ema_score = ema_signal * self.weights.ema
+        # EMA component (graduated: returns -1.0 to +1.0)
+        ema_signal = get_ema_signal_graduated(ema_result)
+        ema_score = int(ema_signal * self.weights.ema)
         breakdown["ema"] = ema_score
         total_score += ema_score
 
-        # Volume confirmation (boost signal on high volume)
+        # Volume confirmation (boost on high volume, penalty on low volume)
         if volume is not None and len(volume) >= 20:
             volume_sma = volume.rolling(window=20).mean().iloc[-1]
             current_volume = volume.iloc[-1]
@@ -267,12 +267,38 @@ class SignalScorer:
                         total_score -= volume_boost
                     else:
                         breakdown["volume"] = 0
+                elif volume_ratio < 0.7:
+                    # Low volume: fixed 10-point penalty (consistent behavior)
+                    if total_score > 0:
+                        breakdown["volume"] = -10
+                        total_score -= 10
+                    elif total_score < 0:
+                        breakdown["volume"] = 10
+                        total_score += 10
+                    else:
+                        breakdown["volume"] = 0
                 else:
                     breakdown["volume"] = 0
             else:
                 breakdown["volume"] = 0
         else:
             breakdown["volume"] = 0
+
+        # Trend filter: penalize counter-trend trades (scaled by signal strength)
+        # Buying in a downtrend or selling in an uptrend is riskier
+        trend = get_ema_trend(ema_result)
+        trend_adjustment = 0
+        if total_score > 0 and trend == "bearish":
+            # Scale penalty: stronger signals get less penalty (10-20 points)
+            signal_confidence = abs(total_score) / 100
+            trend_adjustment = -int(20 * (1 - signal_confidence * 0.5))
+            total_score += trend_adjustment
+        elif total_score < 0 and trend == "bullish":
+            # Scale penalty: stronger signals get less penalty
+            signal_confidence = abs(total_score) / 100
+            trend_adjustment = int(20 * (1 - signal_confidence * 0.5))
+            total_score += trend_adjustment
+        breakdown["trend_filter"] = trend_adjustment
 
         # Clamp score to -100 to +100
         total_score = max(-100, min(100, total_score))
@@ -285,9 +311,17 @@ class SignalScorer:
         else:
             action = "hold"
 
-        # Calculate confidence (0-1 based on how far above threshold)
+        # Calculate confidence with confluence factor
+        # Combines magnitude with how many indicators agree
         if action != "hold":
-            confidence = min(1.0, abs(total_score) / 100)
+            # Count agreeing indicators (non-zero contributions)
+            confluence_count = sum(1 for score in breakdown.values() if score != 0)
+            confluence_factor = confluence_count / 6  # 6 components including trend_filter
+
+            # Combine magnitude and confluence (equally weighted)
+            magnitude_confidence = abs(total_score) / 100
+            confidence = (magnitude_confidence + confluence_factor) / 2
+            confidence = min(1.0, confidence)
         else:
             confidence = 0.0
 

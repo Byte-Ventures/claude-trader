@@ -9,6 +9,7 @@ User=trader
 Group=trader
 WorkingDirectory=/opt/claude-trader
 ExecStart=/opt/claude-trader/venv/bin/python -m src.main
+ExecReload=/bin/kill -USR2 $MAINPID
 Restart=always
 RestartSec=10
 

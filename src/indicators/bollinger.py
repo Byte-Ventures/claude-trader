@@ -75,7 +75,7 @@ def get_bollinger_signal(
     bollinger: BollingerResult,
 ) -> int:
     """
-    Get trading signal from Bollinger Bands.
+    Get trading signal from Bollinger Bands (binary version).
 
     Args:
         price: Current price
@@ -102,6 +102,57 @@ def get_bollinger_signal(
         return -1
 
     return 0
+
+
+def get_bollinger_signal_graduated(
+    price: float,
+    bollinger: BollingerResult,
+) -> float:
+    """
+    Get graduated trading signal based on %B position within bands.
+
+    Returns continuous signal based on where price sits within the bands.
+
+    Zones:
+    - %B <= 0 (below lower band): +1.0 (strong buy)
+    - %B 0-0.35: +0.3 to +0.8 (moderate buy)
+    - %B 0.35-0.65: 0.0 (dead zone)
+    - %B 0.65-1.0: -0.3 to -0.8 (moderate sell)
+    - %B >= 1 (above upper band): -1.0 (strong sell)
+
+    Args:
+        price: Current price
+        bollinger: Bollinger Bands result
+
+    Returns:
+        Float from -1.0 to +1.0
+    """
+    if len(bollinger.percent_b) == 0:
+        return 0.0
+
+    pct_b = bollinger.percent_b.iloc[-1]
+    if pd.isna(pct_b):
+        return 0.0
+
+    # Outside bands: strong signals
+    if pct_b <= 0:
+        return 1.0  # Below lower band: strong buy
+    if pct_b >= 1:
+        return -1.0  # Above upper band: strong sell
+
+    # Dead zone: 35-65% of band width
+    if 0.35 <= pct_b <= 0.65:
+        return 0.0
+
+    # Lower zone (0-35%): bullish
+    if pct_b < 0.35:
+        return 0.3 + 0.5 * (0.35 - pct_b) / 0.35  # 0.3 to 0.8
+
+    # Upper zone (65-100%): bearish
+    if pct_b > 0.65:
+        return -0.3 - 0.5 * (pct_b - 0.65) / 0.35  # -0.3 to -0.8
+
+    return 0.0
 
 
 def is_bollinger_squeeze(

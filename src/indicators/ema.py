@@ -81,7 +81,7 @@ def calculate_ema_crossover(
 
 def get_ema_signal(ema_result: EMAResult) -> int:
     """
-    Get trading signal from EMA crossover.
+    Get trading signal from EMA crossover (binary version).
 
     Args:
         ema_result: EMA calculation result
@@ -100,6 +100,69 @@ def get_ema_signal(ema_result: EMAResult) -> int:
         return -1
 
     return 0
+
+
+def get_ema_signal_graduated(ema_result: EMAResult) -> float:
+    """
+    Get graduated trading signal from EMA position and momentum.
+
+    Returns continuous signal based on:
+    1. Fresh crossover: +/- 1.0 (strongest)
+    2. Position + momentum: scaled by gap size and whether gap is widening
+
+    Zones:
+    - Fresh crossover: +/- 1.0
+    - Gap > 0.3% and widening: +/- 0.4 to 0.8
+    - Gap > 0.3% but narrowing: +/- 0.2 to 0.4
+    - Gap < 0.3%: 0.0 (dead zone)
+
+    Args:
+        ema_result: EMA calculation result
+
+    Returns:
+        Float from -1.0 to +1.0
+    """
+    if len(ema_result.ema_fast) < 2:
+        return 0.0
+
+    fast = ema_result.ema_fast.iloc[-1]
+    slow = ema_result.ema_slow.iloc[-1]
+
+    if pd.isna(fast) or pd.isna(slow):
+        return 0.0
+
+    # Fresh crossover: strong signal
+    if ema_result.crossover_up.iloc[-1]:
+        return 1.0
+    if ema_result.crossover_down.iloc[-1]:
+        return -1.0
+
+    # Calculate gap and momentum
+    fast_prev = ema_result.ema_fast.iloc[-2]
+    slow_prev = ema_result.ema_slow.iloc[-2]
+
+    if pd.isna(fast_prev) or pd.isna(slow_prev) or slow == 0 or slow_prev == 0:
+        return 0.0
+
+    current_gap = (fast - slow) / slow * 100  # percentage gap
+    prev_gap = (fast_prev - slow_prev) / slow_prev * 100
+    gap_widening = abs(current_gap) > abs(prev_gap)
+
+    # Dead zone: gap < 0.3%
+    if abs(current_gap) < 0.3:
+        return 0.0
+
+    # Bullish: fast > slow
+    if current_gap > 0:
+        base = min(0.8, current_gap / 2)  # scale by gap size, max 0.8
+        return base if gap_widening else base * 0.5  # reduce if momentum fading
+
+    # Bearish: fast < slow
+    if current_gap < 0:
+        base = max(-0.8, current_gap / 2)
+        return base if gap_widening else base * 0.5
+
+    return 0.0
 
 
 def get_ema_trend(ema_result: EMAResult) -> str:

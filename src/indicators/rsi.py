@@ -55,7 +55,7 @@ def get_rsi_signal(
     overbought: float = 65.0,
 ) -> int:
     """
-    Get trading signal from RSI value.
+    Get trading signal from RSI value (binary version).
 
     Args:
         rsi_value: Current RSI value
@@ -74,6 +74,55 @@ def get_rsi_signal(
         return -1  # Sell signal
 
     return 0  # Neutral
+
+
+def get_rsi_signal_graduated(
+    rsi_value: float,
+    oversold: float = 35.0,
+    overbought: float = 65.0,
+) -> float:
+    """
+    Get graduated trading signal from RSI value.
+
+    Returns a continuous signal from -1.0 to +1.0 with dead zone around neutral.
+
+    Zones:
+    - RSI <= oversold (35): +1.0 (strong buy)
+    - RSI 35-45: +0.3 to +0.7 (moderate buy)
+    - RSI 45-55: 0.0 (dead zone)
+    - RSI 55-65: -0.3 to -0.7 (moderate sell)
+    - RSI >= overbought (65): -1.0 (strong sell)
+
+    Args:
+        rsi_value: Current RSI value
+        oversold: Oversold threshold (default: 35)
+        overbought: Overbought threshold (default: 65)
+
+    Returns:
+        Float from -1.0 to +1.0
+    """
+    if pd.isna(rsi_value):
+        return 0.0
+
+    # Dead zone: 45-55 returns 0
+    if 45 <= rsi_value <= 55:
+        return 0.0
+
+    # Bullish zones (below 45)
+    if rsi_value < 45:
+        if rsi_value <= oversold:  # <= 35: strong buy
+            return 1.0
+        else:  # 35-45: scaled buy (0.3 to 0.7)
+            return 0.3 + 0.4 * (45 - rsi_value) / (45 - oversold)
+
+    # Bearish zones (above 55)
+    if rsi_value > 55:
+        if rsi_value >= overbought:  # >= 65: strong sell
+            return -1.0
+        else:  # 55-65: scaled sell (-0.3 to -0.7)
+            return -0.3 - 0.4 * (rsi_value - 55) / (overbought - 55)
+
+    return 0.0
 
 
 def is_rsi_divergence(

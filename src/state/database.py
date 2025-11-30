@@ -116,6 +116,8 @@ class DailyStats(Base):
     is_paper = Column(Boolean, default=False, nullable=False)
     starting_balance = Column(String(50), nullable=False)  # In quote currency
     ending_balance = Column(String(50), nullable=True)  # In quote currency
+    starting_price = Column(String(50), nullable=True)  # BTC price at start of day
+    ending_price = Column(String(50), nullable=True)  # BTC price at end of day
     realized_pnl = Column(String(50), default="0")
     unrealized_pnl = Column(String(50), default="0")
     total_trades = Column(Integer, default=0)
@@ -131,6 +133,36 @@ class SystemState(Base):
     key = Column(String(100), primary_key=True)
     value = Column(Text, nullable=False)  # JSON-encoded
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TrailingStop(Base):
+    """Trailing stop tracking for open positions."""
+
+    __tablename__ = "trailing_stops"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False, default="BTC-USD")
+    side = Column(String(10), nullable=False)  # "buy" or "sell"
+    entry_price = Column(String(50), nullable=False)
+    trailing_stop = Column(String(50), nullable=True)  # Current stop level
+    trailing_activation = Column(String(50), nullable=True)  # Price where trailing activates
+    trailing_distance = Column(String(50), nullable=True)  # ATR-based distance
+    is_active = Column(Boolean, default=False)
+    is_paper = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def get_entry_price(self) -> Decimal:
+        return Decimal(self.entry_price)
+
+    def get_trailing_stop(self) -> Optional[Decimal]:
+        return Decimal(self.trailing_stop) if self.trailing_stop else None
+
+    def get_trailing_activation(self) -> Optional[Decimal]:
+        return Decimal(self.trailing_activation) if self.trailing_activation else None
+
+    def get_trailing_distance(self) -> Optional[Decimal]:
+        return Decimal(self.trailing_distance) if self.trailing_distance else None
 
 
 class Database:
@@ -307,6 +339,23 @@ class Database:
                     logger.info("migrated_daily_stats_added_is_paper")
             except Exception as e:
                 logger.debug("daily_stats_is_paper_migration_skipped", reason=str(e))
+
+            # Add starting_price and ending_price columns to daily_stats
+            try:
+                result = conn.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type='table' AND name='daily_stats'")
+                )
+                stats_schema = result.scalar()
+                if stats_schema:
+                    if "starting_price" not in stats_schema:
+                        conn.execute(text("ALTER TABLE daily_stats ADD COLUMN starting_price VARCHAR(50)"))
+                        logger.info("migrated_daily_stats_added_starting_price")
+                    if "ending_price" not in stats_schema:
+                        conn.execute(text("ALTER TABLE daily_stats ADD COLUMN ending_price VARCHAR(50)"))
+                        logger.info("migrated_daily_stats_added_ending_price")
+                    conn.commit()
+            except Exception as e:
+                logger.debug("daily_stats_price_migration_skipped", reason=str(e))
 
     @contextmanager
     def session(self) -> Generator[Session, None, None]:
@@ -530,6 +579,8 @@ class Database:
         self,
         starting_balance: Optional[Decimal] = None,
         ending_balance: Optional[Decimal] = None,
+        starting_price: Optional[Decimal] = None,
+        ending_price: Optional[Decimal] = None,
         realized_pnl: Optional[Decimal] = None,
         total_trades: Optional[int] = None,
         volume: Optional[Decimal] = None,
@@ -554,8 +605,12 @@ class Database:
                 )
                 session.add(stats)
 
+            if starting_price is not None:
+                stats.starting_price = str(starting_price)
             if ending_balance is not None:
                 stats.ending_balance = str(ending_balance)
+            if ending_price is not None:
+                stats.ending_price = str(ending_price)
             if realized_pnl is not None:
                 stats.realized_pnl = str(realized_pnl)
             if total_trades is not None:
@@ -579,6 +634,22 @@ class Database:
                 session.query(DailyStats)
                 .filter(DailyStats.date == target_date, DailyStats.is_paper == is_paper)
                 .first()
+            )
+
+    def get_daily_stats_range(
+        self, start_date: date, end_date: date, is_paper: bool = False
+    ) -> list[DailyStats]:
+        """Get statistics for a date range (inclusive)."""
+        with self.session() as session:
+            return (
+                session.query(DailyStats)
+                .filter(
+                    DailyStats.date >= start_date,
+                    DailyStats.date <= end_date,
+                    DailyStats.is_paper == is_paper,
+                )
+                .order_by(DailyStats.date.asc())
+                .all()
             )
 
     # System state methods
@@ -606,4 +677,92 @@ class Database:
         """Delete a system state value."""
         with self.session() as session:
             result = session.query(SystemState).filter(SystemState.key == key).delete()
+            return result > 0
+
+    # Trailing stop methods
+    def create_trailing_stop(
+        self,
+        symbol: str,
+        side: str,
+        entry_price: Decimal,
+        trailing_activation: Decimal,
+        trailing_distance: Decimal,
+        is_paper: bool = False,
+    ) -> TrailingStop:
+        """Create a new trailing stop record."""
+        with self.session() as session:
+            # Deactivate any existing active trailing stops for this symbol/mode
+            session.query(TrailingStop).filter(
+                TrailingStop.symbol == symbol,
+                TrailingStop.is_paper == is_paper,
+                TrailingStop.is_active == True,
+            ).update({"is_active": False})
+
+            trailing_stop = TrailingStop(
+                symbol=symbol,
+                side=side,
+                entry_price=str(entry_price),
+                trailing_activation=str(trailing_activation),
+                trailing_distance=str(trailing_distance),
+                is_active=True,
+                is_paper=is_paper,
+            )
+            session.add(trailing_stop)
+            session.flush()
+
+            logger.info(
+                "trailing_stop_created",
+                id=trailing_stop.id,
+                side=side,
+                entry_price=str(entry_price),
+                activation=str(trailing_activation),
+                distance=str(trailing_distance),
+            )
+            return trailing_stop
+
+    def get_active_trailing_stop(
+        self, symbol: str = "BTC-USD", is_paper: bool = False
+    ) -> Optional[TrailingStop]:
+        """Get the active trailing stop for a symbol."""
+        with self.session() as session:
+            return (
+                session.query(TrailingStop)
+                .filter(
+                    TrailingStop.symbol == symbol,
+                    TrailingStop.is_paper == is_paper,
+                    TrailingStop.is_active == True,
+                )
+                .first()
+            )
+
+    def update_trailing_stop(
+        self,
+        trailing_stop_id: int,
+        new_stop_level: Optional[Decimal] = None,
+        is_active: Optional[bool] = None,
+    ) -> Optional[TrailingStop]:
+        """Update a trailing stop record."""
+        with self.session() as session:
+            ts = session.query(TrailingStop).filter(TrailingStop.id == trailing_stop_id).first()
+            if not ts:
+                return None
+
+            if new_stop_level is not None:
+                ts.trailing_stop = str(new_stop_level)
+            if is_active is not None:
+                ts.is_active = is_active
+
+            session.flush()
+            return ts
+
+    def deactivate_trailing_stop(
+        self, symbol: str = "BTC-USD", is_paper: bool = False
+    ) -> bool:
+        """Deactivate all trailing stops for a symbol."""
+        with self.session() as session:
+            result = session.query(TrailingStop).filter(
+                TrailingStop.symbol == symbol,
+                TrailingStop.is_paper == is_paper,
+                TrailingStop.is_active == True,
+            ).update({"is_active": False})
             return result > 0
