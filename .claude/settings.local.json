@@ -12,7 +12,10 @@
       "Bash(pkill:*)",
       "Bash(pgrep:*)",
       "Bash(python:*)",
-      "mcp__zen__precommit"
+      "mcp__zen__precommit",
+      "mcp__zen__secaudit",
+      "mcp__zen__analyze",
+      "mcp__zen__chat"
     ],
     "deny": [],
     "ask": []

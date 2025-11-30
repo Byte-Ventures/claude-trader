@@ -7,8 +7,8 @@ Wants=network-online.target
 Type=simple
 User=trader
 Group=trader
-WorkingDirectory=/opt/coinbase-trader
-ExecStart=/opt/coinbase-trader/venv/bin/python -m src.main
+WorkingDirectory=/opt/claude-trader
+ExecStart=/opt/claude-trader/venv/bin/python -m src.main
 Restart=always
 RestartSec=10
 
@@ -20,7 +20,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/opt/coinbase-trader/data /opt/coinbase-trader/logs
+ReadWritePaths=/opt/claude-trader/data /opt/claude-trader/logs
 
 # Resource limits
 MemoryMax=512M
@@ -29,7 +29,7 @@ CPUQuota=50%
 # Logging
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=coinbase-trader
+SyslogIdentifier=claude-trader
 
 [Install]
 WantedBy=multi-user.target

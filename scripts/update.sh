@@ -1,9 +1,9 @@
 #!/bin/bash
-# Update coinbase-trader on the server
+# Update claude-trader on the server
 set -e
 
-INSTALL_DIR="/opt/coinbase-trader"
-SERVICE_NAME="coinbase-trader"
+INSTALL_DIR="/opt/claude-trader"
+SERVICE_NAME="claude-trader"
 
 echo "=== Updating Crypto Trading Bot ==="
 

@@ -1,10 +1,10 @@
 #!/bin/bash
-# Install coinbase-trader as a systemd service on Ubuntu
+# Install claude-trader as a systemd service on Ubuntu
 set -e
 
-INSTALL_DIR="/opt/coinbase-trader"
+INSTALL_DIR="/opt/claude-trader"
 SERVICE_USER="trader"
-SERVICE_FILE="/etc/systemd/system/coinbase-trader.service"
+SERVICE_FILE="/etc/systemd/system/claude-trader.service"
 
 echo "=== Crypto Trading Bot - Service Installation ==="
 
@@ -63,16 +63,16 @@ chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
 # Install systemd service
 echo "Installing systemd service"
-cp "$SCRIPT_DIR/coinbase-trader.service" "$SERVICE_FILE"
+cp "$SCRIPT_DIR/claude-trader.service" "$SERVICE_FILE"
 systemctl daemon-reload
-systemctl enable coinbase-trader
+systemctl enable claude-trader
 
 echo ""
 echo "=== Installation Complete ==="
 echo ""
 echo "Next steps:"
 echo "  1. Edit configuration: sudo nano $INSTALL_DIR/.env"
-echo "  2. Start the service:  sudo systemctl start coinbase-trader"
-echo "  3. Check status:       sudo systemctl status coinbase-trader"
-echo "  4. View logs:          sudo journalctl -u coinbase-trader -f"
+echo "  2. Start the service:  sudo systemctl start claude-trader"
+echo "  3. Check status:       sudo systemctl status claude-trader"
+echo "  4. View logs:          sudo journalctl -u claude-trader -f"
 echo ""
