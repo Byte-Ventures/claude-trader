@@ -11,7 +11,7 @@ Tables:
 
 import json
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Generator, Optional
@@ -475,7 +475,3 @@ class Database:
         with self.session() as session:
             result = session.query(SystemState).filter(SystemState.key == key).delete()
             return result > 0
-
-
-# Import timedelta at the top where other imports are
-from datetime import timedelta

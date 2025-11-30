@@ -8,9 +8,15 @@ Sends alerts for:
 - Kill switch activation
 - Daily summaries
 - System health issues
+
+Features:
+- Rate limiting to prevent spam
+- Message deduplication (no repeated messages within cooldown)
+- Async message sending with sync wrapper
 """
 
 import asyncio
+import hashlib
 from datetime import datetime
 from decimal import Decimal
 from time import time
@@ -23,6 +29,21 @@ from telegram.error import TelegramError
 logger = structlog.get_logger(__name__)
 
 
+# Default cooldown periods for different message types (seconds)
+# These prevent spam - same message won't repeat within cooldown period
+DEFAULT_COOLDOWNS = {
+    "circuit_breaker": 3600,  # 1 hour - don't repeat same breaker status
+    "loss_limit": 3600,       # 1 hour
+    "error": 1800,            # 30 minutes - same error won't repeat
+    "order_failed": 1800,     # 30 minutes
+    "trade": 0,               # Always send trade notifications
+    "daily_summary": 0,       # Always send summaries
+    "startup": 0,             # Always send
+    "shutdown": 0,            # Always send
+    "kill_switch": 0,         # Always send (critical)
+}
+
+
 class TelegramNotifier:
     """
     Telegram notification system for trading alerts.
@@ -33,6 +54,11 @@ class TelegramNotifier:
     3. Copy the bot token
     4. Message @userinfobot to get your chat_id
     5. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env
+
+    Features:
+    - Rate limiting between messages
+    - Deduplication of repeated messages
+    - Configurable cooldown per message type
     """
 
     def __init__(
@@ -56,11 +82,57 @@ class TelegramNotifier:
         self._last_message_time: float = 0.0
         self._min_interval: float = 1.0  # Minimum seconds between messages
 
+        # Deduplication: track last message time by type
+        self._last_message_by_type: dict[str, float] = {}
+        # Track last message content hash to detect duplicates
+        self._last_message_hash: dict[str, str] = {}
+
         if enabled and bot_token and chat_id:
             self._bot = Bot(token=bot_token)
             logger.info("telegram_notifier_initialized")
         else:
             logger.warning("telegram_notifier_disabled")
+
+    def _should_send(self, msg_type: str, message: str) -> bool:
+        """
+        Check if we should send this message based on deduplication rules.
+
+        Args:
+            msg_type: Type of message (circuit_breaker, error, trade, etc.)
+            message: The message content
+
+        Returns:
+            True if message should be sent
+        """
+        now = time()
+        cooldown = DEFAULT_COOLDOWNS.get(msg_type, 60)
+
+        # Always send if no cooldown
+        if cooldown == 0:
+            return True
+
+        # Check if we're within cooldown for this message type
+        last_time = self._last_message_by_type.get(msg_type, 0)
+        if now - last_time < cooldown:
+            # Within cooldown - check if message is different
+            msg_hash = hashlib.md5(message.encode()).hexdigest()[:8]
+            last_hash = self._last_message_hash.get(msg_type, "")
+
+            if msg_hash == last_hash:
+                # Same message within cooldown - skip
+                logger.debug(
+                    "telegram_message_deduplicated",
+                    msg_type=msg_type,
+                    cooldown_remaining=int(cooldown - (now - last_time)),
+                )
+                return False
+
+        return True
+
+    def _record_sent(self, msg_type: str, message: str) -> None:
+        """Record that a message was sent for deduplication."""
+        self._last_message_by_type[msg_type] = time()
+        self._last_message_hash[msg_type] = hashlib.md5(message.encode()).hexdigest()[:8]
 
     async def send_message(self, message: str, parse_mode: str = "HTML") -> bool:
         """
@@ -159,7 +231,12 @@ class TelegramNotifier:
             f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
-        self.send_message_sync(message)
+        # Deduplicate order failed messages (same error)
+        if not self._should_send("order_failed", error):
+            return
+
+        if self.send_message_sync(message):
+            self._record_sent("order_failed", error)
 
     def notify_circuit_breaker(
         self,
@@ -180,7 +257,12 @@ class TelegramNotifier:
             f"Trading has been {'paused' if level != 'black' else 'HALTED (manual reset required)'}."
         )
 
-        self.send_message_sync(message)
+        # Deduplicate circuit breaker messages
+        if not self._should_send("circuit_breaker", f"{level}:{reason}"):
+            return
+
+        if self.send_message_sync(message):
+            self._record_sent("circuit_breaker", f"{level}:{reason}")
 
     def notify_kill_switch(self, reason: str) -> None:
         """Send notification for kill switch activation."""
@@ -203,7 +285,13 @@ class TelegramNotifier:
             f"Trading paused until limit resets."
         )
 
-        self.send_message_sync(message)
+        # Deduplicate loss limit messages
+        dedup_key = f"{limit_type}:{int(loss_percent)}"
+        if not self._should_send("loss_limit", dedup_key):
+            return
+
+        if self.send_message_sync(message):
+            self._record_sent("loss_limit", dedup_key)
 
     def notify_daily_summary(
         self,
@@ -260,4 +348,10 @@ class TelegramNotifier:
             f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
-        self.send_message_sync(message)
+        # Deduplicate error messages
+        dedup_key = f"{error}:{context}"
+        if not self._should_send("error", dedup_key):
+            return
+
+        if self.send_message_sync(message):
+            self._record_sent("error", dedup_key)

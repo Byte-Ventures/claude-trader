@@ -101,7 +101,7 @@ class TradingDaemon:
 
         self.circuit_breaker = CircuitBreaker(
             on_trip=lambda level, reason: self.notifier.notify_circuit_breaker(
-                level.value, reason
+                level.name.lower(), reason
             )
         )
 

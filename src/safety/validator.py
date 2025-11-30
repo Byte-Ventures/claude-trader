@@ -11,7 +11,7 @@ from typing import Optional
 
 import structlog
 
-from src.safety.circuit_breaker import CircuitBreaker
+from src.safety.circuit_breaker import CircuitBreaker, BreakerLevel
 from src.safety.kill_switch import KillSwitch
 from src.safety.loss_limiter import LossLimiter
 
@@ -190,11 +190,11 @@ class OrderValidator:
         if not status.can_trade:
             return ValidationResult(
                 valid=False,
-                reason=f"Circuit breaker at {status.level.value}: {status.reason}",
+                reason=f"Circuit breaker at {status.level.name}: {status.reason}",
             )
 
         warnings = []
-        if status.level.value == "yellow":
+        if status.level == BreakerLevel.YELLOW:
             warnings.append(
                 f"Circuit breaker warning: {status.reason}. Position reduced to {self.circuit_breaker.position_multiplier * 100:.0f}%"
             )

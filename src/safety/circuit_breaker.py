@@ -12,7 +12,7 @@ Multi-level status: GREEN, YELLOW, RED, BLACK
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from enum import Enum
+from enum import IntEnum
 from typing import Callable, Optional
 
 import structlog
@@ -20,13 +20,13 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
-class BreakerLevel(Enum):
-    """Circuit breaker status levels."""
+class BreakerLevel(IntEnum):
+    """Circuit breaker status levels (ordered by severity)."""
 
-    GREEN = "green"  # Normal operation
-    YELLOW = "yellow"  # Warning - reduced trading
-    RED = "red"  # Trading halted - auto-reset after cooldown
-    BLACK = "black"  # Trading halted - requires manual reset
+    GREEN = 1   # Normal operation
+    YELLOW = 2  # Warning - reduced trading
+    RED = 3     # Trading halted - auto-reset after cooldown
+    BLACK = 4   # Trading halted - requires manual reset
 
 
 @dataclass
@@ -50,9 +50,9 @@ class CircuitBreakerConfig:
     price_spike_yellow: float = 8.0  # 8% spike triggers YELLOW
     price_spike_red: float = 15.0  # 15% spike triggers RED
 
-    # API failure thresholds
-    api_failures_yellow: int = 3  # 3 consecutive failures
-    api_failures_red: int = 5  # 5 consecutive failures
+    # API failure thresholds (generous to handle transient issues)
+    api_failures_yellow: int = 5  # 5 consecutive failures
+    api_failures_red: int = 10  # 10 consecutive failures
 
     # Order failure thresholds
     order_failures_yellow: int = 2
@@ -158,7 +158,7 @@ class CircuitBreaker:
 
         logger.info(
             "circuit_breaker_reset",
-            from_level=old_level.value,
+            from_level=old_level.name,
             reason=reason,
         )
 
@@ -170,12 +170,12 @@ class CircuitBreaker:
             level: Breaker level to set
             reason: Reason for tripping
         """
-        # Don't downgrade severity
-        if self._level.value >= level.value and self._level != BreakerLevel.GREEN:
+        # Don't downgrade severity (IntEnum comparison works correctly)
+        if self._level >= level and self._level != BreakerLevel.GREEN:
             logger.debug(
                 "circuit_breaker_skip",
-                current=self._level.value,
-                requested=level.value,
+                current=self._level.name,
+                requested=level.name,
             )
             return
 
@@ -197,7 +197,7 @@ class CircuitBreaker:
 
         logger.warning(
             "circuit_breaker_tripped",
-            level=level.value,
+            level=level.name,
             reason=reason,
             cooldown_until=self._cooldown_until.isoformat() if self._cooldown_until else None,
         )
@@ -327,4 +327,4 @@ class CircuitBreakerOpenError(Exception):
     def __init__(self, level: BreakerLevel, reason: str):
         self.level = level
         self.reason = reason
-        super().__init__(f"Circuit breaker at {level.value}: {reason}")
+        super().__init__(f"Circuit breaker at {level.name}: {reason}")

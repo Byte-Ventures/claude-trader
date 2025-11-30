@@ -3,6 +3,13 @@ Kraken API client implementation.
 
 Implements the ExchangeClient protocol for Kraken exchange.
 Uses HMAC-SHA512 authentication for private endpoints.
+
+Rate Limiting:
+- Kraken uses a counter-based system for private endpoints
+- Counter starts at 0, max is 15-20 depending on account tier
+- Each API call adds 1-2 points to counter
+- Counter decays by 1 every 3 seconds
+- We implement conservative rate limiting to avoid hitting limits
 """
 
 import time
@@ -36,6 +43,11 @@ logger = structlog.get_logger(__name__)
 BASE_URL = "https://api.kraken.com"
 
 
+class KrakenRateLimitError(Exception):
+    """Raised when Kraken rate limit is hit."""
+    pass
+
+
 class KrakenClient:
     """
     Kraken API client implementing the ExchangeClient protocol.
@@ -44,14 +56,21 @@ class KrakenClient:
     - HMAC-SHA512 authentication for private endpoints
     - Automatic symbol translation (BTC-USD -> XBT/USD)
     - Automatic retry with exponential backoff
-    - Rate limiting awareness (15 calls/minute for private endpoints)
+    - Counter-based rate limiting for private endpoints
+    - Automatic backoff on rate limit errors
     """
 
     RETRY_EXCEPTIONS = (
         ConnectionError,
         TimeoutError,
         requests.exceptions.RequestException,
+        KrakenRateLimitError,
     )
+
+    # Kraken rate limit constants
+    MAX_COUNTER = 15  # Conservative limit (actual is 15-20)
+    COUNTER_DECAY_RATE = 0.33  # Points per second (1 every 3 seconds)
+    PRIVATE_CALL_COST = 1  # Cost per private API call
 
     def __init__(
         self,
@@ -70,17 +89,58 @@ class KrakenClient:
         self.api_key = api_key
         self.api_secret = api_secret
         self.session = requests.Session()
-        self._last_request_time = 0
-        self._min_request_interval = 1.0  # 1 second between requests for rate limiting
+
+        # Public endpoint rate limiting (simple interval)
+        self._last_public_request = 0.0
+        self._public_interval = 0.5  # 500ms between public requests
+
+        # Private endpoint rate limiting (counter-based)
+        self._counter = 0.0
+        self._last_counter_update = time.time()
+        self._rate_limit_backoff_until = 0.0
 
         logger.info("kraken_client_initialized")
 
-    def _rate_limit(self) -> None:
-        """Ensure we don't exceed rate limits."""
-        elapsed = time.time() - self._last_request_time
-        if elapsed < self._min_request_interval:
-            time.sleep(self._min_request_interval - elapsed)
-        self._last_request_time = time.time()
+    def _update_counter(self) -> None:
+        """Update the rate limit counter based on decay."""
+        now = time.time()
+        elapsed = now - self._last_counter_update
+        decay = elapsed * self.COUNTER_DECAY_RATE
+        self._counter = max(0, self._counter - decay)
+        self._last_counter_update = now
+
+    def _wait_for_counter_capacity(self, cost: int = 1) -> None:
+        """Wait until there's capacity in the rate limit counter."""
+        self._update_counter()
+
+        # Check if we're in backoff period from a rate limit error
+        now = time.time()
+        if now < self._rate_limit_backoff_until:
+            wait_time = self._rate_limit_backoff_until - now
+            logger.debug("kraken_rate_limit_backoff", wait_seconds=f"{wait_time:.1f}")
+            time.sleep(wait_time)
+            self._counter = 0  # Reset counter after backoff
+
+        # Wait if counter would exceed limit
+        if self._counter + cost > self.MAX_COUNTER:
+            wait_needed = (self._counter + cost - self.MAX_COUNTER) / self.COUNTER_DECAY_RATE
+            logger.debug("kraken_counter_wait", counter=f"{self._counter:.1f}", wait_seconds=f"{wait_needed:.1f}")
+            time.sleep(wait_needed)
+            self._update_counter()
+
+        self._counter += cost
+
+    def _rate_limit_public(self) -> None:
+        """Rate limit for public endpoints (simple interval)."""
+        elapsed = time.time() - self._last_public_request
+        if elapsed < self._public_interval:
+            time.sleep(self._public_interval - elapsed)
+        self._last_public_request = time.time()
+
+    def _handle_rate_limit_error(self) -> None:
+        """Handle a rate limit error by setting backoff."""
+        self._rate_limit_backoff_until = time.time() + 30  # 30 second backoff
+        logger.warning("kraken_rate_limit_hit", backoff_seconds=30)
 
     def _public_request(
         self,
@@ -97,17 +157,21 @@ class KrakenClient:
         Returns:
             Response data
         """
-        self._rate_limit()
+        self._rate_limit_public()
 
         url = f"{BASE_URL}/0/public/{endpoint}"
 
-        response = self.session.get(url, params=params)
+        response = self.session.get(url, params=params, timeout=30)
         response.raise_for_status()
 
         data = response.json()
 
         if data.get("error"):
             error_msg = ", ".join(data["error"])
+            # Check for rate limit error
+            if "EAPI:Rate limit exceeded" in error_msg or "EGeneral:Too many requests" in error_msg:
+                self._handle_rate_limit_error()
+                raise KrakenRateLimitError(error_msg)
             logger.error("kraken_api_error", endpoint=endpoint, error=error_msg)
             raise Exception(f"Kraken API error: {error_msg}")
 
@@ -117,6 +181,7 @@ class KrakenClient:
         self,
         endpoint: str,
         data: Optional[dict] = None,
+        cost: int = 1,
     ) -> dict:
         """
         Make a private (authenticated) request.
@@ -124,11 +189,13 @@ class KrakenClient:
         Args:
             endpoint: API endpoint (e.g., Balance, AddOrder)
             data: POST data
+            cost: Rate limit counter cost (default 1, some endpoints cost 2)
 
         Returns:
             Response data
         """
-        self._rate_limit()
+        # Wait for rate limit capacity before making request
+        self._wait_for_counter_capacity(cost)
 
         url_path = f"/0/private/{endpoint}"
         url = f"{BASE_URL}{url_path}"
@@ -148,13 +215,17 @@ class KrakenClient:
         )
         headers["Content-Type"] = "application/x-www-form-urlencoded"
 
-        response = self.session.post(url, data=data, headers=headers)
+        response = self.session.post(url, data=data, headers=headers, timeout=30)
         response.raise_for_status()
 
         result = response.json()
 
         if result.get("error"):
             error_msg = ", ".join(result["error"])
+            # Check for rate limit error
+            if "EAPI:Rate limit exceeded" in error_msg or "EGeneral:Too many requests" in error_msg:
+                self._handle_rate_limit_error()
+                raise KrakenRateLimitError(error_msg)
             logger.error("kraken_api_error", endpoint=endpoint, error=error_msg)
             raise Exception(f"Kraken API error: {error_msg}")
 

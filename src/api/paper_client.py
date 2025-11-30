@@ -334,11 +334,12 @@ class PaperTradingClient:
 
     # Paper trading specific methods
 
-    def get_portfolio_value(self, product_id: str = "BTC-USD") -> Decimal:
-        """Get total portfolio value in USD."""
-        btc_price = self.get_current_price(product_id)
-        btc_value = self._btc_balance * btc_price
-        return self._usd_balance + btc_value
+    def get_portfolio_value(self, product_id: Optional[str] = None) -> Decimal:
+        """Get total portfolio value in quote currency."""
+        target_pair = product_id or self.trading_pair
+        price = self.get_current_price(target_pair)
+        base_value = self._base_balance * price
+        return self._quote_balance + base_value
 
     def get_statistics(self) -> dict:
         """Get paper trading statistics."""
@@ -346,26 +347,26 @@ class PaperTradingClient:
             "total_trades": len(self._trades),
             "total_fees": str(self._total_fees),
             "total_volume": str(self._total_volume),
-            "current_btc": str(self._btc_balance),
-            "current_usd": str(self._usd_balance),
+            "current_base": str(self._base_balance),
+            "current_quote": str(self._quote_balance),
         }
 
     def get_trade_history(self) -> list[PaperTrade]:
         """Get all paper trades."""
         return self._trades.copy()
 
-    def reset(self, initial_usd: float = 10000.0, initial_btc: float = 0.0) -> None:
+    def reset(self, initial_quote: float = 10000.0, initial_base: float = 0.0) -> None:
         """Reset paper trading account."""
-        self._usd_balance = Decimal(str(initial_usd))
-        self._btc_balance = Decimal(str(initial_btc))
-        self._usd_hold = Decimal("0")
-        self._btc_hold = Decimal("0")
+        self._quote_balance = Decimal(str(initial_quote))
+        self._base_balance = Decimal(str(initial_base))
+        self._quote_hold = Decimal("0")
+        self._base_hold = Decimal("0")
         self._trades = []
         self._total_fees = Decimal("0")
         self._total_volume = Decimal("0")
 
         logger.info(
             "paper_client_reset",
-            initial_usd=str(self._usd_balance),
-            initial_btc=str(self._btc_balance),
+            initial_quote=str(self._quote_balance),
+            initial_base=str(self._base_balance),
         )
