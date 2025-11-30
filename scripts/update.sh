@@ -53,6 +53,11 @@ cp -r "$SOURCE_DIR/src" "$INSTALL_DIR/"
 cp -r "$SOURCE_DIR/config" "$INSTALL_DIR/"
 cp "$SOURCE_DIR/requirements.txt" "$INSTALL_DIR/"
 
+# Clear Python bytecode cache to ensure fresh code runs
+echo "Clearing bytecode cache..."
+find "$INSTALL_DIR" -name "*.pyc" -delete 2>/dev/null || true
+find "$INSTALL_DIR" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+
 # Restore .env
 if [ -f "$INSTALL_DIR/.env.backup" ]; then
     mv "$INSTALL_DIR/.env.backup" "$INSTALL_DIR/.env"
