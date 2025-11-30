@@ -43,6 +43,16 @@ logger = structlog.get_logger(__name__)
 BASE_URL = "https://api.kraken.com"
 
 
+def log_retry(retry_state) -> None:
+    """Log retry attempts for debugging."""
+    logger.warning(
+        "kraken_api_retry",
+        attempt=retry_state.attempt_number,
+        wait=f"{retry_state.next_action.sleep:.1f}s",
+        error=str(retry_state.outcome.exception()) if retry_state.outcome else "unknown",
+    )
+
+
 class KrakenRateLimitError(Exception):
     """Raised when Kraken rate limit is hit."""
     pass
@@ -235,6 +245,7 @@ class KrakenClient:
         stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1, min=2, max=60),
         retry=retry_if_exception_type(RETRY_EXCEPTIONS),
+        before_sleep=log_retry,
     )
     def get_balance(self, currency: str = "BTC") -> Balance:
         """
@@ -275,6 +286,7 @@ class KrakenClient:
         stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1, min=2, max=60),
         retry=retry_if_exception_type(RETRY_EXCEPTIONS),
+        before_sleep=log_retry,
     )
     def get_current_price(self, product_id: str = "BTC-USD") -> Decimal:
         """
@@ -303,6 +315,7 @@ class KrakenClient:
         stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1, min=2, max=60),
         retry=retry_if_exception_type(RETRY_EXCEPTIONS),
+        before_sleep=log_retry,
     )
     def get_market_data(self, product_id: str = "BTC-USD") -> MarketData:
         """
@@ -335,6 +348,7 @@ class KrakenClient:
         stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1, min=2, max=60),
         retry=retry_if_exception_type(RETRY_EXCEPTIONS),
+        before_sleep=log_retry,
     )
     def get_candles(
         self,
@@ -398,6 +412,7 @@ class KrakenClient:
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),
         retry=retry_if_exception_type(RETRY_EXCEPTIONS),
+        before_sleep=log_retry,
     )
     def market_buy(
         self,
@@ -484,6 +499,7 @@ class KrakenClient:
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),
         retry=retry_if_exception_type(RETRY_EXCEPTIONS),
+        before_sleep=log_retry,
     )
     def market_sell(
         self,

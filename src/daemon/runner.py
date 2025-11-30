@@ -249,7 +249,7 @@ class TradingDaemon:
             logger.info("iteration_skipped", reason="loss_limit_exceeded")
             return
 
-        # Get market data
+        # Get market data and balances
         try:
             current_price = self.client.get_current_price(self.settings.trading_pair)
             candles = self.client.get_candles(
@@ -257,8 +257,10 @@ class TradingDaemon:
                 granularity="ONE_HOUR",
                 limit=100,
             )
+            base_balance = self.client.get_balance(self._base_currency).available
+            quote_balance = self.client.get_balance(self._quote_currency).available
         except Exception as e:
-            logger.error("market_data_fetch_failed", error=str(e))
+            logger.error("api_request_failed", error=str(e), error_type=type(e).__name__)
             self.circuit_breaker.record_api_failure()
             return
 
@@ -266,10 +268,6 @@ class TradingDaemon:
 
         # Update circuit breaker with price data
         self.circuit_breaker.check_price_movement(float(current_price))
-
-        # Get current balances
-        base_balance = self.client.get_balance(self._base_currency).available
-        quote_balance = self.client.get_balance(self._quote_currency).available
 
         # Update validator with current state
         self.validator.update_balances(base_balance, quote_balance, current_price)
