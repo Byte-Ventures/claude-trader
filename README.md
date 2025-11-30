@@ -132,6 +132,9 @@ coinbase-trader/
 │   │   └── database.py          # SQLite persistence
 │   └── daemon/
 │       └── runner.py            # Main loop
+├── scripts/
+│   ├── coinbase-trader.service  # systemd service file
+│   └── install-service.sh       # Ubuntu install script
 ├── data/                        # SQLite database
 ├── logs/                        # Log files
 └── .env                         # Configuration
@@ -139,33 +142,41 @@ coinbase-trader/
 
 ## Running as a Service
 
-### systemd (Linux)
+### Ubuntu (Recommended)
 
-Create `/etc/systemd/system/btc-bot.service`:
-
-```ini
-[Unit]
-Description=Bitcoin Trading Bot
-After=network.target
-
-[Service]
-Type=simple
-User=your-username
-WorkingDirectory=/path/to/coinbase-trader
-ExecStart=/usr/bin/python3 -m src.main
-Restart=always
-RestartSec=10
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=multi-user.target
-```
+Use the included install script:
 
 ```bash
-sudo systemctl enable btc-bot
-sudo systemctl start btc-bot
-sudo journalctl -u btc-bot -f
+# Clone and install
+git clone https://github.com/Byte-Ventures/claude-trader.git
+cd claude-trader
+sudo ./scripts/install-service.sh
+
+# Configure
+sudo nano /opt/coinbase-trader/.env
+
+# Start
+sudo systemctl start coinbase-trader
+sudo journalctl -u coinbase-trader -f
 ```
+
+The service will:
+- Start automatically on boot
+- Restart within 10 seconds if it crashes
+- Run as a dedicated `trader` user
+- Log to systemd journal
+
+**Service commands:**
+```bash
+sudo systemctl status coinbase-trader   # Check status
+sudo systemctl stop coinbase-trader     # Stop
+sudo systemctl restart coinbase-trader  # Restart
+sudo journalctl -u coinbase-trader -f   # Follow logs
+```
+
+### Manual systemd Setup
+
+If you prefer manual installation, copy `scripts/coinbase-trader.service` to `/etc/systemd/system/` and adjust paths.
 
 ### launchd (macOS)
 
