@@ -92,6 +92,21 @@ The bot uses a **confluence scoring system** that combines multiple indicators:
 - Send `SIGUSR1` signal to process
 - Requires manual reset to resume
 
+### Config Hot-Reload
+Update strategy parameters without restarting:
+
+```bash
+# Edit .env with new values (thresholds, position sizes, limits)
+nano .env
+
+# Trigger reload
+kill -SIGUSR2 $(pgrep -f "python -m src.main")
+```
+
+**Reloadable settings:** signal_threshold, RSI/MACD/Bollinger/EMA parameters, position_size_percent, stop_loss/take_profit multipliers, max_position_percent, loss limits.
+
+**Requires restart:** exchange, trading_pair, trading_mode, database_path.
+
 ### Circuit Breaker
 - **YELLOW**: 5%+ price move → reduced position size
 - **RED**: 10%+ price move → trading halted (4h cooldown)

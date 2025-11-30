@@ -117,6 +117,24 @@ class LossLimiter:
             daily_starting_balance=str(self._daily_starting_balance),
         )
 
+    def update_settings(
+        self,
+        max_daily_loss_percent: Optional[float] = None,
+        max_hourly_loss_percent: Optional[float] = None,
+    ) -> None:
+        """
+        Update loss limiter settings at runtime.
+
+        Only updates parameters that are explicitly provided (not None).
+        Note: This does NOT reset current loss tracking.
+        """
+        if max_daily_loss_percent is not None:
+            self.config.max_daily_loss_percent = max_daily_loss_percent
+        if max_hourly_loss_percent is not None:
+            self.config.max_hourly_loss_percent = max_hourly_loss_percent
+
+        logger.info("loss_limiter_settings_updated")
+
     def record_trade(
         self,
         realized_pnl: Decimal,

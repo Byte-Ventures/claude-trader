@@ -17,7 +17,7 @@ from typing import Optional, Union
 
 import structlog
 
-from config.settings import Settings, TradingMode
+from config.settings import Settings, TradingMode, request_reload, reload_pending, reload_settings
 from src.api.exchange_factory import create_exchange_client, get_exchange_name
 from src.api.exchange_protocol import ExchangeClient
 from src.api.paper_client import PaperTradingClient
@@ -151,6 +151,10 @@ class TradingDaemon:
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         signal.signal(signal.SIGINT, self._handle_shutdown)
 
+        # Register SIGUSR2 for config hot-reload
+        signal.signal(signal.SIGUSR2, self._handle_reload_signal)
+        logger.info("config_reload_signal_registered", signal="SIGUSR2")
+
     def _validate_trading_pair(self, trading_pair: str) -> None:
         """
         Validate trading pair format and against exchange.
@@ -188,6 +192,97 @@ class TradingDaemon:
         logger.info("shutdown_signal_received", signal=signum)
         self.shutdown_event.set()
 
+    def _handle_reload_signal(self, signum: int, frame) -> None:
+        """Handle SIGUSR2 signal for config reload."""
+        logger.info("config_reload_signal_received")
+        request_reload()
+
+    def _reload_config(self) -> None:
+        """
+        Reload configuration from .env and update all components.
+
+        Called from main loop when reload is requested.
+        """
+        try:
+            new_settings, changes = reload_settings()
+
+            if not changes:
+                logger.info("config_reload_no_changes")
+                return
+
+            # Log what changed
+            for field, (old, new) in changes.items():
+                logger.info(
+                    "config_value_changed",
+                    field=field,
+                    old_value=str(old),
+                    new_value=str(new),
+                )
+
+            # Warn about structural changes that require restart
+            restart_required = {"trading_mode", "exchange", "trading_pair", "database_path"}
+            ignored_changes = restart_required & set(changes.keys())
+            if ignored_changes:
+                logger.warning(
+                    "config_change_requires_restart",
+                    fields=list(ignored_changes),
+                )
+                self.notifier.send_message(
+                    f"Warning: {', '.join(ignored_changes)} changes require restart"
+                )
+
+            # Update settings reference
+            self.settings = new_settings
+
+            # Update SignalScorer
+            self.signal_scorer.update_settings(
+                threshold=new_settings.signal_threshold,
+                rsi_period=new_settings.rsi_period,
+                rsi_oversold=new_settings.rsi_oversold,
+                rsi_overbought=new_settings.rsi_overbought,
+                macd_fast=new_settings.macd_fast,
+                macd_slow=new_settings.macd_slow,
+                macd_signal=new_settings.macd_signal,
+                bollinger_period=new_settings.bollinger_period,
+                bollinger_std=new_settings.bollinger_std,
+                ema_fast=new_settings.ema_fast,
+                ema_slow=new_settings.ema_slow,
+                atr_period=new_settings.atr_period,
+            )
+
+            # Update PositionSizer
+            self.position_sizer.update_settings(
+                max_position_percent=new_settings.position_size_percent,
+                stop_loss_atr_multiplier=new_settings.stop_loss_atr_multiplier,
+                take_profit_atr_multiplier=new_settings.take_profit_atr_multiplier,
+                atr_period=new_settings.atr_period,
+            )
+
+            # Update OrderValidator
+            self.validator.update_settings(
+                max_position_percent=new_settings.max_position_percent,
+            )
+
+            # Update LossLimiter
+            self.loss_limiter.update_settings(
+                max_daily_loss_percent=new_settings.max_daily_loss_percent,
+                max_hourly_loss_percent=new_settings.max_hourly_loss_percent,
+            )
+
+            logger.info(
+                "config_reload_complete",
+                changed_fields=list(changes.keys()),
+            )
+
+            # Notify via Telegram
+            self.notifier.send_message(
+                f"Config reloaded: {', '.join(changes.keys())} updated"
+            )
+
+        except Exception as e:
+            logger.error("config_reload_failed", error=str(e))
+            self.notifier.notify_error(str(e), "Config reload failed")
+
     def run(self) -> None:
         """Run the main trading loop."""
         self._running = True
@@ -211,6 +306,10 @@ class TradingDaemon:
 
             # Main loop
             while not self.shutdown_event.is_set():
+                # Check for config reload request
+                if reload_pending():
+                    self._reload_config()
+
                 try:
                     self._trading_iteration()
                 except Exception as e:

@@ -90,6 +90,20 @@ class OrderValidator:
         self._quote_balance = Decimal("0")
         self._current_price = Decimal("0")
 
+    def update_settings(
+        self,
+        max_position_percent: Optional[float] = None,
+    ) -> None:
+        """
+        Update validator settings at runtime.
+
+        Only updates parameters that are explicitly provided (not None).
+        """
+        if max_position_percent is not None:
+            self.config.max_position_percent = max_position_percent
+
+        logger.info("order_validator_settings_updated")
+
     def update_balances(
         self,
         base_balance: Decimal,

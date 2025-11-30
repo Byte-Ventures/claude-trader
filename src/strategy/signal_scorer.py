@@ -117,6 +117,53 @@ class SignalScorer:
         self.ema_slow_period = ema_slow
         self.atr_period = atr_period
 
+    def update_settings(
+        self,
+        threshold: Optional[int] = None,
+        rsi_period: Optional[int] = None,
+        rsi_oversold: Optional[float] = None,
+        rsi_overbought: Optional[float] = None,
+        macd_fast: Optional[int] = None,
+        macd_slow: Optional[int] = None,
+        macd_signal: Optional[int] = None,
+        bollinger_period: Optional[int] = None,
+        bollinger_std: Optional[float] = None,
+        ema_fast: Optional[int] = None,
+        ema_slow: Optional[int] = None,
+        atr_period: Optional[int] = None,
+    ) -> None:
+        """
+        Update scorer settings at runtime.
+
+        Only updates parameters that are explicitly provided (not None).
+        """
+        if threshold is not None:
+            self.threshold = threshold
+        if rsi_period is not None:
+            self.rsi_period = rsi_period
+        if rsi_oversold is not None:
+            self.rsi_oversold = rsi_oversold
+        if rsi_overbought is not None:
+            self.rsi_overbought = rsi_overbought
+        if macd_fast is not None:
+            self.macd_fast = macd_fast
+        if macd_slow is not None:
+            self.macd_slow = macd_slow
+        if macd_signal is not None:
+            self.macd_signal_period = macd_signal
+        if bollinger_period is not None:
+            self.bollinger_period = bollinger_period
+        if bollinger_std is not None:
+            self.bollinger_std = bollinger_std
+        if ema_fast is not None:
+            self.ema_fast = ema_fast
+        if ema_slow is not None:
+            self.ema_slow_period = ema_slow
+        if atr_period is not None:
+            self.atr_period = atr_period
+
+        logger.info("signal_scorer_settings_updated")
+
     def calculate_score(
         self,
         df: pd.DataFrame,

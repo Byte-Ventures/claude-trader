@@ -252,6 +252,7 @@ class Settings(BaseSettings):
 
 # Global settings instance (lazy loaded)
 _settings: Optional[Settings] = None
+_reload_requested: bool = False
 
 
 def get_settings() -> Settings:
@@ -260,3 +261,46 @@ def get_settings() -> Settings:
     if _settings is None:
         _settings = Settings()
     return _settings
+
+
+def request_reload() -> None:
+    """Request a settings reload (called from signal handler)."""
+    global _reload_requested
+    _reload_requested = True
+
+
+def reload_pending() -> bool:
+    """Check if a reload has been requested."""
+    return _reload_requested
+
+
+def reload_settings() -> tuple[Settings, dict[str, tuple]]:
+    """
+    Reload settings from .env file.
+
+    Returns:
+        Tuple of (new_settings, changes_dict)
+        changes_dict maps field_name -> (old_value, new_value)
+    """
+    global _settings, _reload_requested
+    _reload_requested = False
+
+    old_settings = _settings
+
+    # Force re-read from .env by creating new instance
+    new_settings = Settings()
+
+    # Calculate what changed (exclude secrets for logging)
+    changes: dict[str, tuple] = {}
+    if old_settings:
+        for field_name in Settings.model_fields:
+            old_val = getattr(old_settings, field_name)
+            new_val = getattr(new_settings, field_name)
+            # Skip SecretStr fields for security
+            if hasattr(old_val, "get_secret_value"):
+                continue
+            if old_val != new_val:
+                changes[field_name] = (old_val, new_val)
+
+    _settings = new_settings
+    return new_settings, changes

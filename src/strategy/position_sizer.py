@@ -73,6 +73,29 @@ class PositionSizer:
         self.atr_period = atr_period
         self.take_profit_multiplier = take_profit_atr_multiplier
 
+    def update_settings(
+        self,
+        max_position_percent: Optional[float] = None,
+        stop_loss_atr_multiplier: Optional[float] = None,
+        take_profit_atr_multiplier: Optional[float] = None,
+        atr_period: Optional[int] = None,
+    ) -> None:
+        """
+        Update position sizer settings at runtime.
+
+        Only updates parameters that are explicitly provided (not None).
+        """
+        if max_position_percent is not None:
+            self.config.max_position_percent = max_position_percent
+        if stop_loss_atr_multiplier is not None:
+            self.config.stop_loss_atr_multiplier = stop_loss_atr_multiplier
+        if take_profit_atr_multiplier is not None:
+            self.take_profit_multiplier = take_profit_atr_multiplier
+        if atr_period is not None:
+            self.atr_period = atr_period
+
+        logger.info("position_sizer_settings_updated")
+
     def calculate_size(
         self,
         df: pd.DataFrame,
