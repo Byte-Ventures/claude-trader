@@ -44,7 +44,7 @@ class Settings(BaseSettings):
         default=None,
         description="Path to CDP API key JSON file"
     )
-    coinbase_api_key: Optional[str] = Field(
+    coinbase_api_key: Optional[SecretStr] = Field(
         default=None,
         description="Coinbase API key (alternative to key_file)"
     )
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     )
 
     # Kraken API
-    kraken_api_key: Optional[str] = Field(
+    kraken_api_key: Optional[SecretStr] = Field(
         default=None,
         description="Kraken API key"
     )
@@ -70,15 +70,15 @@ class Settings(BaseSettings):
     )
 
     # Paper Trading Initial Balances
-    paper_initial_usd: float = Field(
+    paper_initial_quote: float = Field(
         default=10000.0,
         ge=0.0,
-        description="Initial USD balance for paper trading"
+        description="Initial quote currency balance for paper trading (e.g., USD, EUR)"
     )
-    paper_initial_btc: float = Field(
+    paper_initial_base: float = Field(
         default=0.0,
         ge=0.0,
-        description="Initial BTC balance for paper trading"
+        description="Initial base currency balance for paper trading (e.g., BTC)"
     )
 
     # Trading Parameters
@@ -87,7 +87,7 @@ class Settings(BaseSettings):
         description="Trading pair symbol"
     )
     position_size_percent: float = Field(
-        default=75.0,
+        default=40.0,
         ge=1.0,
         le=100.0,
         description="Percentage of portfolio to use for positions"
@@ -167,7 +167,7 @@ class Settings(BaseSettings):
     )
 
     # Telegram
-    telegram_bot_token: Optional[str] = Field(
+    telegram_bot_token: Optional[SecretStr] = Field(
         default=None,
         description="Telegram bot token from @BotFather"
     )

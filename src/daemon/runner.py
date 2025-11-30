@@ -63,14 +63,23 @@ class TradingDaemon:
         self.real_client: ExchangeClient = create_exchange_client(settings)
         logger.info("exchange_client_initialized", exchange=self.exchange_name)
 
+        # Validate trading pair against exchange
+        self._validate_trading_pair(settings.trading_pair)
+
+        # Parse base/quote currencies from trading pair
+        pair_parts = settings.trading_pair.split("-")
+        self._base_currency = pair_parts[0]
+        self._quote_currency = pair_parts[1]
+
         # Initialize trading client (paper or live)
         self.client: Union[ExchangeClient, PaperTradingClient]
         if settings.is_paper_trading:
             # Use configured initial balances for paper trading
             self.client = PaperTradingClient(
                 real_client=self.real_client,
-                initial_usd=settings.paper_initial_usd,
-                initial_btc=settings.paper_initial_btc,
+                initial_quote=settings.paper_initial_quote,
+                initial_base=settings.paper_initial_base,
+                trading_pair=settings.trading_pair,
             )
             logger.info("using_paper_trading_client")
         else:
@@ -79,7 +88,7 @@ class TradingDaemon:
 
         # Initialize Telegram notifier
         self.notifier = TelegramNotifier(
-            bot_token=settings.telegram_bot_token or "",
+            bot_token=settings.telegram_bot_token.get_secret_value() if settings.telegram_bot_token else "",
             chat_id=settings.telegram_chat_id or "",
             enabled=settings.telegram_enabled,
         )
@@ -105,7 +114,7 @@ class TradingDaemon:
         # Initialize order validator
         self.validator = OrderValidator(
             config=ValidatorConfig(
-                min_trade_usd=10.0,
+                min_trade_quote=10.0,
                 max_position_percent=settings.max_position_percent,
             ),
             kill_switch=self.kill_switch,
@@ -141,6 +150,38 @@ class TradingDaemon:
         # Register shutdown handlers
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         signal.signal(signal.SIGINT, self._handle_shutdown)
+
+    def _validate_trading_pair(self, trading_pair: str) -> None:
+        """
+        Validate trading pair format and against exchange.
+
+        Args:
+            trading_pair: Trading pair symbol (e.g., "BTC-USD", "BTC-EUR")
+
+        Raises:
+            ValueError: If trading pair format is invalid or not supported by exchange
+        """
+        # Validate format
+        parts = trading_pair.split("-")
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            raise ValueError(
+                f"Invalid trading pair format: '{trading_pair}'. "
+                f"Expected format: BASE-QUOTE (e.g., BTC-USD, ETH-EUR)"
+            )
+
+        # Validate against exchange by attempting to fetch price
+        try:
+            price = self.real_client.get_current_price(trading_pair)
+            logger.info(
+                "trading_pair_validated",
+                pair=trading_pair,
+                exchange=self.exchange_name,
+                current_price=str(price),
+            )
+        except Exception as e:
+            raise ValueError(
+                f"Trading pair '{trading_pair}' is not valid on {self.exchange_name}: {e}"
+            ) from e
 
     def _handle_shutdown(self, signum: int, frame) -> None:
         """Handle shutdown signals."""
@@ -227,11 +268,11 @@ class TradingDaemon:
         self.circuit_breaker.check_price_movement(float(current_price))
 
         # Get current balances
-        btc_balance = self.client.get_balance("BTC").available
-        usd_balance = self.client.get_balance("USD").available
+        base_balance = self.client.get_balance(self._base_currency).available
+        quote_balance = self.client.get_balance(self._quote_currency).available
 
         # Update validator with current state
-        self.validator.update_balances(btc_balance, usd_balance, current_price)
+        self.validator.update_balances(base_balance, quote_balance, current_price)
 
         # Calculate signal
         signal_result = self.signal_scorer.calculate_score(candles, current_price)
@@ -250,15 +291,15 @@ class TradingDaemon:
         # Get safety multiplier
         safety_multiplier = self.validator.get_position_multiplier()
 
-        if signal_result.action == "buy" and usd_balance > Decimal("10"):
+        if signal_result.action == "buy" and quote_balance > Decimal("10"):
             self._execute_buy(
-                candles, current_price, usd_balance, btc_balance,
+                candles, current_price, quote_balance, base_balance,
                 signal_result.score, safety_multiplier
             )
 
-        elif signal_result.action == "sell" and btc_balance > Decimal("0.0001"):
+        elif signal_result.action == "sell" and base_balance > Decimal("0.0001"):
             self._execute_sell(
-                candles, current_price, btc_balance,
+                candles, current_price, base_balance,
                 signal_result.score, safety_multiplier
             )
 
@@ -266,8 +307,8 @@ class TradingDaemon:
         self,
         candles,
         current_price: Decimal,
-        usd_balance: Decimal,
-        btc_balance: Decimal,
+        quote_balance: Decimal,
+        base_balance: Decimal,
         signal_score: int,
         safety_multiplier: float,
     ) -> None:
@@ -276,21 +317,21 @@ class TradingDaemon:
         position = self.position_sizer.calculate_size(
             df=candles,
             current_price=current_price,
-            usd_balance=usd_balance,
-            btc_balance=btc_balance,
+            quote_balance=quote_balance,
+            base_balance=base_balance,
             signal_strength=signal_score,
             side="buy",
             safety_multiplier=safety_multiplier,
         )
 
-        if position.size_usd < Decimal("10"):
+        if position.size_quote < Decimal("10"):
             logger.debug("buy_skipped", reason="position_too_small")
             return
 
         # Validate order
         order_request = OrderRequest(
             side="buy",
-            size=position.size_btc,
+            size=position.size_base,
             order_type="market",
         )
 
@@ -302,33 +343,38 @@ class TradingDaemon:
         # Execute order
         result = self.client.market_buy(
             self.settings.trading_pair,
-            position.size_usd,
+            position.size_quote,
         )
 
         if result.success:
             # Record trade
             is_paper = self.settings.is_paper_trading
+            filled_price = result.filled_price or current_price
+
             self.db.record_trade(
                 side="buy",
                 size=result.size,
-                price=result.filled_price or current_price,
+                price=filled_price,
                 fee=result.fee,
                 is_paper=is_paper,
             )
 
-            # Update loss limiter
+            # Update position tracking for cost basis
+            self._update_position_after_buy(result.size, filled_price, result.fee)
+
+            # Update loss limiter (no P&L on buy)
             self.loss_limiter.record_trade(
-                realized_pnl=Decimal("0"),  # No P&L on buy
+                realized_pnl=Decimal("0"),
                 side="buy",
                 size=result.size,
-                price=result.filled_price or current_price,
+                price=filled_price,
             )
 
             # Send notification
             self.notifier.notify_trade(
                 side="buy",
                 size=result.size,
-                price=result.filled_price or current_price,
+                price=filled_price,
                 fee=result.fee,
                 is_paper=is_paper,
             )
@@ -344,41 +390,41 @@ class TradingDaemon:
         else:
             logger.error("buy_failed", error=result.error)
             self.circuit_breaker.record_order_failure()
-            self.notifier.notify_order_failed("buy", position.size_btc, result.error or "Unknown error")
+            self.notifier.notify_order_failed("buy", position.size_base, result.error or "Unknown error")
 
     def _execute_sell(
         self,
         candles,
         current_price: Decimal,
-        btc_balance: Decimal,
+        base_balance: Decimal,
         signal_score: int,
         safety_multiplier: float,
     ) -> None:
         """Execute a sell order."""
         # For aggressive selling, sell entire position on strong signal
         if abs(signal_score) >= 80:
-            size_btc = btc_balance
+            size_base = base_balance
         else:
             # Calculate position size
             position = self.position_sizer.calculate_size(
                 df=candles,
                 current_price=current_price,
-                usd_balance=Decimal("0"),
-                btc_balance=btc_balance,
+                quote_balance=Decimal("0"),
+                base_balance=base_balance,
                 signal_strength=signal_score,
                 side="sell",
                 safety_multiplier=safety_multiplier,
             )
-            size_btc = position.size_btc
+            size_base = position.size_base
 
-        if size_btc < Decimal("0.0001"):
+        if size_base < Decimal("0.0001"):
             logger.debug("sell_skipped", reason="position_too_small")
             return
 
         # Validate order
         order_request = OrderRequest(
             side="sell",
-            size=size_btc,
+            size=size_base,
             order_type="market",
         )
 
@@ -390,37 +436,39 @@ class TradingDaemon:
         # Execute order
         result = self.client.market_sell(
             self.settings.trading_pair,
-            size_btc,
+            size_base,
         )
 
         if result.success:
-            # Calculate realized P&L (simplified - should track cost basis)
-            realized_pnl = Decimal("0")  # TODO: Implement proper P&L tracking
+            is_paper = self.settings.is_paper_trading
+            filled_price = result.filled_price or current_price
+
+            # Calculate realized P&L based on average cost basis
+            realized_pnl = self._calculate_realized_pnl(result.size, filled_price, result.fee)
 
             # Record trade
-            is_paper = self.settings.is_paper_trading
             self.db.record_trade(
                 side="sell",
                 size=result.size,
-                price=result.filled_price or current_price,
+                price=filled_price,
                 fee=result.fee,
                 realized_pnl=realized_pnl,
                 is_paper=is_paper,
             )
 
-            # Update loss limiter
+            # Update loss limiter with actual PnL
             self.loss_limiter.record_trade(
                 realized_pnl=realized_pnl,
                 side="sell",
                 size=result.size,
-                price=result.filled_price or current_price,
+                price=filled_price,
             )
 
             # Send notification
             self.notifier.notify_trade(
                 side="sell",
                 size=result.size,
-                price=result.filled_price or current_price,
+                price=filled_price,
                 fee=result.fee,
                 is_paper=is_paper,
             )
@@ -430,22 +478,107 @@ class TradingDaemon:
                 size=str(result.size),
                 price=str(result.filled_price),
                 fee=str(result.fee),
+                realized_pnl=str(realized_pnl),
             )
 
             self.circuit_breaker.record_order_success()
         else:
             logger.error("sell_failed", error=result.error)
             self.circuit_breaker.record_order_failure()
-            self.notifier.notify_order_failed("sell", size_btc, result.error or "Unknown error")
+            self.notifier.notify_order_failed("sell", size_base, result.error or "Unknown error")
+
+    def _update_position_after_buy(self, size: Decimal, price: Decimal, fee: Decimal) -> None:
+        """
+        Update position with new buy, recalculating weighted average cost.
+
+        Cost basis includes fees to accurately reflect break-even price.
+
+        Args:
+            size: Base currency amount bought (e.g., BTC)
+            price: Price paid per unit
+            fee: Trading fee paid (in quote currency)
+        """
+        current = self.db.get_current_position(self.settings.trading_pair)
+
+        if current:
+            old_qty = current.get_quantity()
+            old_cost = current.get_average_cost()
+            old_value = old_qty * old_cost
+        else:
+            old_qty = Decimal("0")
+            old_value = Decimal("0")
+
+        new_qty = old_qty + size
+        # Include fee in cost basis for accurate break-even calculation
+        new_value = old_value + (size * price) + fee
+        new_avg_cost = new_value / new_qty if new_qty > 0 else Decimal("0")
+
+        self.db.update_position(
+            symbol=self.settings.trading_pair,
+            quantity=new_qty,
+            average_cost=new_avg_cost,
+        )
+
+        logger.debug(
+            "position_updated_after_buy",
+            old_qty=str(old_qty),
+            new_qty=str(new_qty),
+            new_avg_cost=str(new_avg_cost),
+        )
+
+    def _calculate_realized_pnl(self, size: Decimal, sell_price: Decimal, fee: Decimal) -> Decimal:
+        """
+        Calculate realized PnL for a sell based on average cost.
+
+        Net PnL = (sell_price - avg_cost) * size - sell_fee
+
+        Args:
+            size: Base currency amount sold (e.g., BTC)
+            sell_price: Price received per unit
+            fee: Trading fee paid on sell (in quote currency)
+
+        Returns:
+            Realized profit/loss (positive = profit, negative = loss)
+        """
+        current = self.db.get_current_position(self.settings.trading_pair)
+
+        if not current or current.get_quantity() <= 0:
+            return Decimal("0") - fee  # Still deduct fee even without position
+
+        avg_cost = current.get_average_cost()
+        # Deduct sell fee for accurate net P&L
+        pnl = ((sell_price - avg_cost) * size) - fee
+
+        # Update position (reduce quantity, keep avg cost)
+        new_qty = current.get_quantity() - size
+        if new_qty < Decimal("0"):
+            new_qty = Decimal("0")
+
+        self.db.update_position(
+            symbol=self.settings.trading_pair,
+            quantity=new_qty,
+            average_cost=avg_cost,
+        )
+
+        logger.info(
+            "realized_pnl_calculated",
+            size=str(size),
+            sell_price=str(sell_price),
+            avg_cost=str(avg_cost),
+            pnl=str(pnl),
+            remaining_qty=str(new_qty),
+        )
+
+        return pnl
 
     def _get_portfolio_value(self) -> Decimal:
-        """Get total portfolio value in USD."""
-        btc_balance = self.client.get_balance("BTC").available
-        usd_balance = self.client.get_balance("USD").available
+        """Get total portfolio value in quote currency."""
+        base_balance = self.client.get_balance(self._base_currency).available
+        quote_balance = self.client.get_balance(self._quote_currency).available
         current_price = self.client.get_current_price(self.settings.trading_pair)
 
-        btc_value = btc_balance * current_price
-        return usd_balance + btc_value
+        base_value = base_balance * current_price
+        return quote_balance + base_value
 
     def _shutdown(self) -> None:
         """Graceful shutdown."""

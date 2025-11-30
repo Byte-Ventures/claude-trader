@@ -49,7 +49,7 @@ def _create_coinbase_client(settings: Settings) -> CoinbaseClient:
     if settings.coinbase_api_key and settings.coinbase_api_secret:
         logger.info("creating_coinbase_client", source="api_key")
         return CoinbaseClient(
-            api_key=settings.coinbase_api_key,
+            api_key=settings.coinbase_api_key.get_secret_value(),
             api_secret=settings.coinbase_api_secret.get_secret_value(),
         )
 
@@ -69,7 +69,7 @@ def _create_kraken_client(settings: Settings) -> KrakenClient:
 
     logger.info("creating_kraken_client")
     return KrakenClient(
-        api_key=settings.kraken_api_key,
+        api_key=settings.kraken_api_key.get_secret_value(),
         api_secret=settings.kraken_api_secret.get_secret_value(),
     )
 

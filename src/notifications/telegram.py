@@ -13,6 +13,7 @@ Sends alerts for:
 import asyncio
 from datetime import datetime
 from decimal import Decimal
+from time import time
 from typing import Optional
 
 import structlog
@@ -52,6 +53,8 @@ class TelegramNotifier:
         self.chat_id = chat_id
         self.enabled = enabled
         self._bot: Optional[Bot] = None
+        self._last_message_time: float = 0.0
+        self._min_interval: float = 1.0  # Minimum seconds between messages
 
         if enabled and bot_token and chat_id:
             self._bot = Bot(token=bot_token)
@@ -73,6 +76,14 @@ class TelegramNotifier:
         if not self.enabled or not self._bot:
             logger.debug("telegram_message_skipped", reason="disabled")
             return False
+
+        # Rate limiting - skip message if too soon (non-blocking)
+        now = time()
+        elapsed = now - self._last_message_time
+        if elapsed < self._min_interval:
+            logger.debug("telegram_rate_limited", skipped=True, wait_time=self._min_interval - elapsed)
+            return False
+        self._last_message_time = now
 
         try:
             await self._bot.send_message(

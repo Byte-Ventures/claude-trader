@@ -37,11 +37,11 @@ class PaperTradingClient:
     Paper trading client that simulates trades with real market data.
 
     Features:
-    - Uses real Coinbase market data
+    - Uses real exchange market data
     - Simulates order fills with configurable slippage
-    - Tracks virtual BTC and USD balances
+    - Tracks virtual base and quote currency balances
     - Records all trades for analysis
-    - Identical interface to CoinbaseClient for easy switching
+    - Identical interface to exchange clients for easy switching
     """
 
     # Simulated trading fees (Coinbase Advanced is typically 0.5%)
@@ -54,24 +54,32 @@ class PaperTradingClient:
     def __init__(
         self,
         real_client: ExchangeClient,
-        initial_usd: float = 10000.0,
-        initial_btc: float = 0.0,
+        initial_quote: float = 10000.0,
+        initial_base: float = 0.0,
+        trading_pair: str = "BTC-USD",
     ):
         """
         Initialize paper trading client.
 
         Args:
             real_client: Real exchange client for market data (Coinbase, Kraken, etc.)
-            initial_usd: Starting USD balance
-            initial_btc: Starting BTC balance
+            initial_quote: Starting quote currency balance (e.g., USD, EUR)
+            initial_base: Starting base currency balance (e.g., BTC)
+            trading_pair: Trading pair symbol (e.g., BTC-USD, BTC-EUR)
         """
         self.real_client = real_client
+        self.trading_pair = trading_pair
+
+        # Parse base and quote currencies from trading pair
+        parts = trading_pair.split("-")
+        self._base_currency = parts[0] if len(parts) >= 1 else "BTC"
+        self._quote_currency = parts[1] if len(parts) >= 2 else "USD"
 
         # Virtual balances
-        self._usd_balance = Decimal(str(initial_usd))
-        self._btc_balance = Decimal(str(initial_btc))
-        self._usd_hold = Decimal("0")
-        self._btc_hold = Decimal("0")
+        self._quote_balance = Decimal(str(initial_quote))
+        self._base_balance = Decimal(str(initial_base))
+        self._quote_hold = Decimal("0")
+        self._base_hold = Decimal("0")
 
         # Trade history
         self._trades: list[PaperTrade] = []
@@ -82,23 +90,23 @@ class PaperTradingClient:
 
         logger.info(
             "paper_client_initialized",
-            initial_usd=str(self._usd_balance),
-            initial_btc=str(self._btc_balance),
+            initial_quote=str(self._quote_balance),
+            initial_base=str(self._base_balance),
         )
 
     def get_balance(self, currency: str = "BTC") -> Balance:
         """Get virtual account balance."""
-        if currency == "BTC":
+        if currency == self._base_currency:
             return Balance(
-                currency="BTC",
-                available=self._btc_balance,
-                hold=self._btc_hold,
+                currency=self._base_currency,
+                available=self._base_balance,
+                hold=self._base_hold,
             )
-        elif currency == "USD":
+        elif currency == self._quote_currency:
             return Balance(
-                currency="USD",
-                available=self._usd_balance,
-                hold=self._usd_hold,
+                currency=self._quote_currency,
+                available=self._quote_balance,
+                hold=self._quote_hold,
             )
         else:
             return Balance(currency=currency, available=Decimal("0"), hold=Decimal("0"))
@@ -130,7 +138,7 @@ class PaperTradingClient:
 
         Args:
             product_id: Trading pair (e.g., BTC-USD)
-            quote_size: Amount to spend in USD
+            quote_size: Amount to spend in quote currency
 
         Returns:
             OrderResult with simulated execution
@@ -151,7 +159,7 @@ class PaperTradingClient:
             )
 
         # Check balance
-        if quote_size > self._usd_balance:
+        if quote_size > self._quote_balance:
             return OrderResult(
                 order_id="",
                 side="buy",
@@ -160,7 +168,7 @@ class PaperTradingClient:
                 status="failed",
                 fee=Decimal("0"),
                 success=False,
-                error=f"Insufficient USD balance. Need ${quote_size}, have ${self._usd_balance}",
+                error=f"Insufficient {self._quote_currency} balance. Need {quote_size}, have {self._quote_balance}",
             )
 
         # Apply slippage (price goes up for buys)
@@ -169,13 +177,13 @@ class PaperTradingClient:
         # Calculate fee
         fee = quote_size * self.TAKER_FEE
 
-        # Calculate BTC received
-        effective_usd = quote_size - fee
-        btc_received = effective_usd / fill_price
+        # Calculate base currency received
+        effective_quote = quote_size - fee
+        base_received = effective_quote / fill_price
 
         # Update balances
-        self._usd_balance -= quote_size
-        self._btc_balance += btc_received
+        self._quote_balance -= quote_size
+        self._base_balance += base_received
 
         # Update statistics
         self._total_fees += fee
@@ -186,7 +194,7 @@ class PaperTradingClient:
             trade_id=str(uuid.uuid4()),
             timestamp=datetime.now(),
             side="buy",
-            size=btc_received,
+            size=base_received,
             price=fill_price,
             fee=fee,
             slippage=fill_price - market_price,
@@ -195,18 +203,18 @@ class PaperTradingClient:
 
         logger.info(
             "paper_buy_executed",
-            size=str(btc_received),
+            size=str(base_received),
             price=str(fill_price),
             fee=str(fee),
-            usd_spent=str(quote_size),
-            new_btc_balance=str(self._btc_balance),
-            new_usd_balance=str(self._usd_balance),
+            quote_spent=str(quote_size),
+            new_base_balance=str(self._base_balance),
+            new_quote_balance=str(self._quote_balance),
         )
 
         return OrderResult(
             order_id=trade.trade_id,
             side="buy",
-            size=btc_received,
+            size=base_received,
             filled_price=fill_price,
             status="FILLED",
             fee=fee,
@@ -223,7 +231,7 @@ class PaperTradingClient:
 
         Args:
             product_id: Trading pair (e.g., BTC-USD)
-            base_size: Amount of BTC to sell
+            base_size: Amount of base currency to sell
 
         Returns:
             OrderResult with simulated execution
@@ -244,7 +252,7 @@ class PaperTradingClient:
             )
 
         # Check balance
-        if base_size > self._btc_balance:
+        if base_size > self._base_balance:
             return OrderResult(
                 order_id="",
                 side="sell",
@@ -253,26 +261,26 @@ class PaperTradingClient:
                 status="failed",
                 fee=Decimal("0"),
                 success=False,
-                error=f"Insufficient BTC balance. Need {base_size}, have {self._btc_balance}",
+                error=f"Insufficient {self._base_currency} balance. Need {base_size}, have {self._base_balance}",
             )
 
         # Apply slippage (price goes down for sells)
         fill_price = market_price * (Decimal("1") - self.SLIPPAGE)
 
-        # Calculate USD received
-        gross_usd = base_size * fill_price
+        # Calculate quote currency received
+        gross_quote = base_size * fill_price
 
         # Calculate fee
-        fee = gross_usd * self.TAKER_FEE
-        net_usd = gross_usd - fee
+        fee = gross_quote * self.TAKER_FEE
+        net_quote = gross_quote - fee
 
         # Update balances
-        self._btc_balance -= base_size
-        self._usd_balance += net_usd
+        self._base_balance -= base_size
+        self._quote_balance += net_quote
 
         # Update statistics
         self._total_fees += fee
-        self._total_volume += gross_usd
+        self._total_volume += gross_quote
 
         # Record trade
         trade = PaperTrade(
@@ -291,9 +299,9 @@ class PaperTradingClient:
             size=str(base_size),
             price=str(fill_price),
             fee=str(fee),
-            usd_received=str(net_usd),
-            new_btc_balance=str(self._btc_balance),
-            new_usd_balance=str(self._usd_balance),
+            quote_received=str(net_quote),
+            new_base_balance=str(self._base_balance),
+            new_quote_balance=str(self._quote_balance),
         )
 
         return OrderResult(

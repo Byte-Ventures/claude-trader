@@ -26,6 +26,7 @@ from sqlalchemy import (
     Text,
     create_engine,
     func,
+    text,
 )
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
@@ -66,7 +67,7 @@ class Order(Base):
     __tablename__ = "orders"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    coinbase_order_id = Column(String(100), unique=True, nullable=True)
+    exchange_order_id = Column(String(100), unique=True, nullable=True)
     symbol = Column(String(20), nullable=False, default="BTC-USD")
     side = Column(String(10), nullable=False)  # "buy" or "sell"
     order_type = Column(String(20), nullable=False, default="market")
@@ -89,7 +90,7 @@ class Trade(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     order_id = Column(Integer, nullable=True)  # FK to orders
-    coinbase_trade_id = Column(String(100), nullable=True)
+    exchange_trade_id = Column(String(100), nullable=True)
     symbol = Column(String(20), nullable=False, default="BTC-USD")
     side = Column(String(10), nullable=False)
     size = Column(String(50), nullable=False)
@@ -106,12 +107,12 @@ class DailyStats(Base):
     __tablename__ = "daily_stats"
 
     date = Column(Date, primary_key=True)
-    starting_balance_usd = Column(String(50), nullable=False)
-    ending_balance_usd = Column(String(50), nullable=True)
+    starting_balance = Column(String(50), nullable=False)  # In quote currency
+    ending_balance = Column(String(50), nullable=True)  # In quote currency
     realized_pnl = Column(String(50), default="0")
     unrealized_pnl = Column(String(50), default="0")
     total_trades = Column(Integer, default=0)
-    total_volume_usd = Column(String(50), default="0")
+    total_volume = Column(String(50), default="0")  # In quote currency
     max_drawdown_percent = Column(String(50), default="0")
 
 
@@ -143,7 +144,19 @@ class Database:
 
         Args:
             db_path: Path to SQLite database file
+
+        Raises:
+            ValueError: If db_path is outside the allowed data directory
         """
+        # Resolve to absolute path and validate
+        db_path = db_path.resolve()
+        allowed_root = (Path.cwd() / "data").resolve()
+
+        try:
+            db_path.relative_to(allowed_root)
+        except ValueError:
+            raise ValueError(f"Database path must be within {allowed_root}")
+
         self.db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -156,7 +169,65 @@ class Database:
 
         # Create tables
         Base.metadata.create_all(self.engine)
+
+        # Run migrations for existing databases
+        self._run_migrations()
+
         logger.info("database_initialized", path=str(db_path))
+
+    def _run_migrations(self) -> None:
+        """Run database migrations for schema changes."""
+        with self.engine.connect() as conn:
+            # Check if old column names exist and rename them
+            try:
+                # Check orders table for old column name
+                result = conn.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type='table' AND name='orders'")
+                )
+                orders_schema = result.scalar()
+                if orders_schema and "coinbase_order_id" in orders_schema:
+                    conn.execute(
+                        text("ALTER TABLE orders RENAME COLUMN coinbase_order_id TO exchange_order_id")
+                    )
+                    logger.info("migrated_orders_column", old="coinbase_order_id", new="exchange_order_id")
+                    conn.commit()
+            except Exception as e:
+                logger.debug("orders_migration_skipped", reason=str(e))
+
+            try:
+                # Check trades table for old column name
+                result = conn.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type='table' AND name='trades'")
+                )
+                trades_schema = result.scalar()
+                if trades_schema and "coinbase_trade_id" in trades_schema:
+                    conn.execute(
+                        text("ALTER TABLE trades RENAME COLUMN coinbase_trade_id TO exchange_trade_id")
+                    )
+                    logger.info("migrated_trades_column", old="coinbase_trade_id", new="exchange_trade_id")
+                    conn.commit()
+            except Exception as e:
+                logger.debug("trades_migration_skipped", reason=str(e))
+
+            # Migrate daily_stats columns from USD-specific to generic names
+            try:
+                result = conn.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type='table' AND name='daily_stats'")
+                )
+                stats_schema = result.scalar()
+                if stats_schema:
+                    if "starting_balance_usd" in stats_schema:
+                        conn.execute(text("ALTER TABLE daily_stats RENAME COLUMN starting_balance_usd TO starting_balance"))
+                        logger.info("migrated_daily_stats_column", old="starting_balance_usd", new="starting_balance")
+                    if "ending_balance_usd" in stats_schema:
+                        conn.execute(text("ALTER TABLE daily_stats RENAME COLUMN ending_balance_usd TO ending_balance"))
+                        logger.info("migrated_daily_stats_column", old="ending_balance_usd", new="ending_balance")
+                    if "total_volume_usd" in stats_schema:
+                        conn.execute(text("ALTER TABLE daily_stats RENAME COLUMN total_volume_usd TO total_volume"))
+                        logger.info("migrated_daily_stats_column", old="total_volume_usd", new="total_volume")
+                    conn.commit()
+            except Exception as e:
+                logger.debug("daily_stats_migration_skipped", reason=str(e))
 
     @contextmanager
     def session(self) -> Generator[Session, None, None]:
@@ -235,7 +306,7 @@ class Database:
     def update_order(
         self,
         order_id: int,
-        coinbase_order_id: Optional[str] = None,
+        exchange_order_id: Optional[str] = None,
         status: Optional[str] = None,
         filled_size: Optional[Decimal] = None,
         filled_price: Optional[Decimal] = None,
@@ -248,8 +319,8 @@ class Database:
             if not order:
                 return None
 
-            if coinbase_order_id:
-                order.coinbase_order_id = coinbase_order_id
+            if exchange_order_id:
+                order.exchange_order_id = exchange_order_id
             if status:
                 order.status = status
             if filled_size is not None:
@@ -286,7 +357,7 @@ class Database:
         fee: Decimal = Decimal("0"),
         realized_pnl: Decimal = Decimal("0"),
         order_id: Optional[int] = None,
-        coinbase_trade_id: Optional[str] = None,
+        exchange_trade_id: Optional[str] = None,
         symbol: str = "BTC-USD",
         is_paper: bool = False,
     ) -> Trade:
@@ -294,7 +365,7 @@ class Database:
         with self.session() as session:
             trade = Trade(
                 order_id=order_id,
-                coinbase_trade_id=coinbase_trade_id,
+                exchange_trade_id=exchange_trade_id,
                 symbol=symbol,
                 side=side,
                 size=str(size),
@@ -349,18 +420,18 @@ class Database:
             if not stats:
                 stats = DailyStats(
                     date=today,
-                    starting_balance_usd=str(starting_balance or Decimal("0")),
+                    starting_balance=str(starting_balance or Decimal("0")),
                 )
                 session.add(stats)
 
             if ending_balance is not None:
-                stats.ending_balance_usd = str(ending_balance)
+                stats.ending_balance = str(ending_balance)
             if realized_pnl is not None:
                 stats.realized_pnl = str(realized_pnl)
             if total_trades is not None:
                 stats.total_trades = total_trades
             if volume is not None:
-                stats.total_volume_usd = str(volume)
+                stats.total_volume = str(volume)
             if max_drawdown is not None:
                 stats.max_drawdown_percent = str(max_drawdown)
 

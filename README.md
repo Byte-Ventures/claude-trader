@@ -1,9 +1,12 @@
-# Bitcoin Trading Bot
+# Crypto Trading Bot
 
-An automated Bitcoin trading bot for Coinbase with multi-indicator confluence strategy, comprehensive safety systems, and paper trading mode.
+An automated cryptocurrency trading bot supporting **Coinbase** and **Kraken** exchanges with multi-indicator confluence strategy, comprehensive safety systems, and paper trading mode.
+
+Works with any trading pair (BTC-USD, BTC-EUR, ETH-USD, etc.).
 
 ## Features
 
+- **Multi-Exchange**: Supports Coinbase and Kraken with unified interface
 - **Multi-Indicator Strategy**: Combines RSI, MACD, Bollinger Bands, EMA crossover, and ATR
 - **Safety Systems**: Kill switch, circuit breaker, loss limits, order validation
 - **Paper Trading**: Test strategies with virtual money using real market data
@@ -25,12 +28,17 @@ cp .env.example .env
 # Edit .env with your credentials
 ```
 
-### 3. Get Coinbase API Keys
+### 3. Get Exchange API Keys
 
+#### Coinbase
 1. Go to https://portal.cdp.coinbase.com/
 2. Create an API key with **View** and **Trade** permissions
-3. Download the JSON key file
-4. Copy the key and secret to your `.env` file
+3. Download the JSON key file or copy the key and secret to your `.env` file
+
+#### Kraken
+1. Go to https://www.kraken.com/u/security/api
+2. Create an API key with **Query Funds** and **Create & Modify Orders** permissions
+3. Copy the key and secret (base64-encoded) to your `.env` file
 
 ### 4. Set Up Telegram (Optional)
 
@@ -53,11 +61,15 @@ Edit `.env` to customize:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `EXCHANGE` | `coinbase` | `coinbase` or `kraken` |
+| `TRADING_PAIR` | `BTC-USD` | Trading pair (e.g., BTC-EUR, ETH-USD) |
 | `TRADING_MODE` | `paper` | `paper` or `live` |
-| `POSITION_SIZE_PERCENT` | `75` | Max position as % of portfolio |
+| `POSITION_SIZE_PERCENT` | `40` | Max position as % of portfolio |
 | `SIGNAL_THRESHOLD` | `60` | Minimum score to trade (0-100) |
 | `CHECK_INTERVAL_SECONDS` | `60` | Seconds between checks |
 | `MAX_DAILY_LOSS_PERCENT` | `10` | Stop trading after this loss |
+| `PAPER_INITIAL_QUOTE` | `10000` | Starting quote currency for paper trading |
+| `PAPER_INITIAL_BASE` | `0` | Starting base currency for paper trading |
 
 ## Trading Strategy
 
@@ -99,7 +111,10 @@ coinbase-trader/
 │   └── logging_config.py    # Structured logging
 ├── src/
 │   ├── api/
+│   │   ├── exchange_protocol.py # Unified exchange interface
+│   │   ├── exchange_factory.py  # Exchange client factory
 │   │   ├── coinbase_client.py   # Coinbase API
+│   │   ├── kraken_client.py     # Kraken API
 │   │   └── paper_client.py      # Paper trading
 │   ├── indicators/
 │   │   ├── rsi.py, macd.py, bollinger.py, ema.py, atr.py
@@ -113,6 +128,8 @@ coinbase-trader/
 │   │   └── validator.py
 │   ├── notifications/
 │   │   └── telegram.py
+│   ├── state/
+│   │   └── database.py          # SQLite persistence
 │   └── daemon/
 │       └── runner.py            # Main loop
 ├── data/                        # SQLite database
@@ -185,18 +202,20 @@ launchctl load ~/Library/LaunchAgents/com.btc-bot.plist
 
 - [ ] Run paper trading for 1+ week
 - [ ] Verify Telegram notifications work
-- [ ] Test kill switch (touch data/KILL_SWITCH)
+- [ ] Test kill switch (`touch data/KILL_SWITCH`)
 - [ ] Test circuit breaker behavior
-- [ ] Start with 10% position size
+- [ ] Verify trading pair is valid on your exchange
+- [ ] Start with small position size (default 40% is conservative)
 - [ ] Monitor closely for first 48 hours
 
 ## Risk Warning
 
 ⚠️ **Trading cryptocurrency is risky.** This bot:
-- Can lose money
+- Can and will lose money
 - Makes no profit guarantees
-- Requires monitoring
+- Requires active monitoring
 - Should start with small amounts
+- Includes fees in P&L calculations but slippage can vary
 
 Only trade what you can afford to lose.
 

@@ -45,7 +45,7 @@ class ValidationResult:
 class ValidatorConfig:
     """Configuration for order validator."""
 
-    min_trade_usd: float = 10.0  # Minimum trade size in USD
+    min_trade_quote: float = 10.0  # Minimum trade size in quote currency
     max_position_percent: float = 80.0  # Maximum position as % of portfolio
     price_sanity_percent: float = 5.0  # Max deviation from market price
 
@@ -86,26 +86,26 @@ class OrderValidator:
         self.loss_limiter = loss_limiter
 
         # Current state (updated externally)
-        self._btc_balance = Decimal("0")
-        self._usd_balance = Decimal("0")
+        self._base_balance = Decimal("0")
+        self._quote_balance = Decimal("0")
         self._current_price = Decimal("0")
 
     def update_balances(
         self,
-        btc_balance: Decimal,
-        usd_balance: Decimal,
+        base_balance: Decimal,
+        quote_balance: Decimal,
         current_price: Decimal,
     ) -> None:
         """
         Update current balances for validation.
 
         Args:
-            btc_balance: Current BTC balance
-            usd_balance: Current USD balance
-            current_price: Current BTC price
+            base_balance: Current base currency balance (e.g., BTC)
+            quote_balance: Current quote currency balance (e.g., USD/EUR)
+            current_price: Current price in quote currency
         """
-        self._btc_balance = btc_balance
-        self._usd_balance = usd_balance
+        self._base_balance = base_balance
+        self._quote_balance = quote_balance
         self._current_price = current_price
 
     def validate(self, order: OrderRequest) -> ValidationResult:
@@ -225,19 +225,19 @@ class OrderValidator:
     def _check_balance(self, order: OrderRequest) -> ValidationResult:
         """Check if sufficient balance for order."""
         if order.side == "buy":
-            # For buy orders, check USD balance
+            # For buy orders, check quote currency balance
             order_value = order.size * (order.price or self._current_price)
-            if order_value > self._usd_balance:
+            if order_value > self._quote_balance:
                 return ValidationResult(
                     valid=False,
-                    reason=f"Insufficient USD balance. Need ${order_value:.2f}, have ${self._usd_balance:.2f}",
+                    reason=f"Insufficient quote balance. Need {order_value:.2f}, have {self._quote_balance:.2f}",
                 )
         else:  # sell
-            # For sell orders, check BTC balance
-            if order.size > self._btc_balance:
+            # For sell orders, check base currency balance
+            if order.size > self._base_balance:
                 return ValidationResult(
                     valid=False,
-                    reason=f"Insufficient BTC balance. Need {order.size:.8f}, have {self._btc_balance:.8f}",
+                    reason=f"Insufficient base balance. Need {order.size:.8f}, have {self._base_balance:.8f}",
                 )
 
         return ValidationResult(valid=True)
@@ -245,8 +245,8 @@ class OrderValidator:
     def _check_position_limits(self, order: OrderRequest) -> ValidationResult:
         """Check if order would exceed position limits."""
         # Calculate total portfolio value
-        btc_value = self._btc_balance * self._current_price
-        total_value = btc_value + self._usd_balance
+        base_value = self._base_balance * self._current_price
+        total_value = base_value + self._quote_balance
 
         if total_value == Decimal("0"):
             return ValidationResult(valid=True)
@@ -254,8 +254,8 @@ class OrderValidator:
         if order.side == "buy":
             # Calculate new position after buy
             order_value = order.size * (order.price or self._current_price)
-            new_btc_value = btc_value + order_value
-            new_position_percent = float(new_btc_value / total_value * 100)
+            new_base_value = base_value + order_value
+            new_position_percent = float(new_base_value / total_value * 100)
 
             if new_position_percent > self.config.max_position_percent:
                 return ValidationResult(
@@ -294,12 +294,12 @@ class OrderValidator:
 
     def _check_minimum_size(self, order: OrderRequest) -> ValidationResult:
         """Check if order meets minimum size requirements."""
-        order_value_usd = float(order.size * (order.price or self._current_price))
+        order_value_quote = float(order.size * (order.price or self._current_price))
 
-        if order_value_usd < self.config.min_trade_usd:
+        if order_value_quote < self.config.min_trade_quote:
             return ValidationResult(
                 valid=False,
-                reason=f"Order value ${order_value_usd:.2f} below minimum ${self.config.min_trade_usd:.2f}",
+                reason=f"Order value {order_value_quote:.2f} below minimum {self.config.min_trade_quote:.2f}",
             )
 
         return ValidationResult(valid=True)
