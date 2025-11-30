@@ -26,6 +26,7 @@ import structlog
 from config.logging_config import setup_logging, get_logger
 from config.settings import get_settings, TradingMode
 from src.daemon.runner import TradingDaemon
+from src.version import __version__
 
 
 def main() -> int:
@@ -51,13 +52,14 @@ def main() -> int:
         mode = "PAPER" if settings.is_paper_trading else "LIVE"
         logger.info(
             "starting_trading_bot",
+            version=__version__,
             mode=mode,
             trading_pair=settings.trading_pair,
             check_interval=settings.check_interval_seconds,
         )
 
         print("\n" + "=" * 50)
-        print("  Bitcoin Trading Bot")
+        print(f"  Claude Trader v{__version__}")
         print("=" * 50)
         print(f"  Mode: {mode}")
         print(f"  Pair: {settings.trading_pair}")
