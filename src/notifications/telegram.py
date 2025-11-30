@@ -136,9 +136,9 @@ class TelegramNotifier:
         message = (
             f"{emoji} <b>{mode}Trade Executed</b>\n\n"
             f"Side: {side.upper()}\n"
-            f"Size: {size:.8f} BTC\n"
-            f"Price: ${price:,.2f}\n"
-            f"Fee: ${fee:.2f}\n"
+            f"Size: {size:.8f}\n"
+            f"Price: ¤{price:,.2f}\n"
+            f"Fee: ¤{fee:.2f}\n"
             f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
@@ -154,7 +154,7 @@ class TelegramNotifier:
         message = (
             f"⚠️ <b>Order Failed</b>\n\n"
             f"Side: {side.upper()}\n"
-            f"Size: {size:.8f} BTC\n"
+            f"Size: {size:.8f}\n"
             f"Error: {error}\n"
             f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
@@ -220,9 +220,9 @@ class TelegramNotifier:
 
         message = (
             f"📊 <b>{mode}Daily Summary</b>\n\n"
-            f"Starting Balance: ${starting_balance:,.2f}\n"
-            f"Ending Balance: ${ending_balance:,.2f}\n"
-            f"{pnl_emoji} P&L: ${realized_pnl:+,.2f} ({pnl_percent:+.1f}%)\n"
+            f"Starting Balance: ¤{starting_balance:,.2f}\n"
+            f"Ending Balance: ¤{ending_balance:,.2f}\n"
+            f"{pnl_emoji} P&L: ¤{realized_pnl:+,.2f} ({pnl_percent:+.1f}%)\n"
             f"Total Trades: {total_trades}\n"
             f"Date: {datetime.now().strftime('%Y-%m-%d')}"
         )
@@ -235,7 +235,7 @@ class TelegramNotifier:
             f"🤖 <b>Trading Bot Started</b>\n\n"
             f"Exchange: {exchange}\n"
             f"Mode: {mode.upper()}\n"
-            f"Balance: ${balance:,.2f}\n"
+            f"Balance: ¤{balance:,.2f}\n"
             f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 

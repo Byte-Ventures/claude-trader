@@ -287,7 +287,7 @@ class OrderValidator:
         if deviation_percent > self.config.price_sanity_percent:
             return ValidationResult(
                 valid=False,
-                reason=f"Limit price ${order.price:.2f} deviates {deviation_percent:.1f}% from market price ${self._current_price:.2f}",
+                reason=f"Limit price {order.price:.2f} deviates {deviation_percent:.1f}% from market price {self._current_price:.2f}",
             )
 
         return ValidationResult(valid=True)
