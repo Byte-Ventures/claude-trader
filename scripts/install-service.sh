@@ -14,6 +14,11 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# Install system dependencies
+echo "Installing system dependencies..."
+apt-get update
+apt-get install -y python3 python3-venv python3-pip
+
 # Create service user if doesn't exist
 if ! id "$SERVICE_USER" &>/dev/null; then
     echo "Creating user: $SERVICE_USER"
@@ -35,13 +40,17 @@ cp -r "$REPO_DIR/src" "$INSTALL_DIR/"
 cp -r "$REPO_DIR/config" "$INSTALL_DIR/"
 cp "$REPO_DIR/requirements.txt" "$INSTALL_DIR/"
 
-# Copy .env if exists, otherwise create template
+# Copy .env if exists, otherwise copy .env.example as template
 if [ -f "$REPO_DIR/.env" ]; then
     cp "$REPO_DIR/.env" "$INSTALL_DIR/.env"
-    chmod 600 "$INSTALL_DIR/.env"
+elif [ -f "$REPO_DIR/.env.example" ]; then
+    cp "$REPO_DIR/.env.example" "$INSTALL_DIR/.env"
+    echo "Created .env from template - YOU MUST EDIT IT before starting!"
 else
-    echo "WARNING: No .env file found. Create $INSTALL_DIR/.env before starting."
+    echo "ERROR: No .env or .env.example found!"
+    exit 1
 fi
+chmod 600 "$INSTALL_DIR/.env"
 
 # Create virtual environment and install dependencies
 echo "Setting up Python virtual environment"
