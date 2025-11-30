@@ -69,14 +69,14 @@ class Settings(BaseSettings):
         description="Trading mode: paper (simulated) or live (real money)"
     )
 
-    # Paper Trading Initial Balances
+    # Paper Trading Initial Balances (default: ~50/50 split)
     paper_initial_quote: float = Field(
-        default=10000.0,
+        default=5000.0,
         ge=0.0,
         description="Initial quote currency balance for paper trading (e.g., USD, EUR)"
     )
     paper_initial_base: float = Field(
-        default=0.0,
+        default=0.05,
         ge=0.0,
         description="Initial base currency balance for paper trading (e.g., BTC)"
     )

@@ -68,8 +68,8 @@ Edit `.env` to customize:
 | `SIGNAL_THRESHOLD` | `60` | Minimum score to trade (0-100) |
 | `CHECK_INTERVAL_SECONDS` | `60` | Seconds between checks |
 | `MAX_DAILY_LOSS_PERCENT` | `10` | Stop trading after this loss |
-| `PAPER_INITIAL_QUOTE` | `10000` | Starting quote currency for paper trading |
-| `PAPER_INITIAL_BASE` | `0` | Starting base currency for paper trading |
+| `PAPER_INITIAL_QUOTE` | `5000` | Starting quote currency for paper trading |
+| `PAPER_INITIAL_BASE` | `0.05` | Starting base currency for paper trading (~50/50 split) |
 
 ## Trading Strategy
 
