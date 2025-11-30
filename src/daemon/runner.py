@@ -74,11 +74,28 @@ class TradingDaemon:
         # Initialize trading client (paper or live)
         self.client: Union[ExchangeClient, PaperTradingClient]
         if settings.is_paper_trading:
-            # Use configured initial balances for paper trading
+            # Try to restore paper balance from database
+            saved_balance = self.db.get_last_paper_balance(settings.trading_pair)
+            if saved_balance:
+                initial_quote, initial_base, _ = saved_balance
+                logger.info(
+                    "paper_balance_restored_from_db",
+                    quote=str(initial_quote),
+                    base=str(initial_base),
+                )
+            else:
+                initial_quote = settings.paper_initial_quote
+                initial_base = settings.paper_initial_base
+                logger.info(
+                    "paper_balance_using_config",
+                    quote=str(initial_quote),
+                    base=str(initial_base),
+                )
+
             self.client = PaperTradingClient(
                 real_client=self.real_client,
-                initial_quote=settings.paper_initial_quote,
-                initial_base=settings.paper_initial_base,
+                initial_quote=float(initial_quote),
+                initial_base=float(initial_base),
                 trading_pair=settings.trading_pair,
             )
             logger.info("using_paper_trading_client")
@@ -292,6 +309,12 @@ class TradingDaemon:
             portfolio_value = self._get_portfolio_value()
             self.loss_limiter.set_starting_balance(portfolio_value)
 
+            # Record starting balance for daily stats
+            self.db.update_daily_stats(
+                starting_balance=portfolio_value,
+                is_paper=self.settings.is_paper_trading,
+            )
+
             # Send startup notification
             mode = "PAPER" if self.settings.is_paper_trading else "LIVE"
             self.notifier.notify_startup(mode, portfolio_value, exchange=self.exchange_name)
@@ -490,16 +513,23 @@ class TradingDaemon:
             is_paper = self.settings.is_paper_trading
             filled_price = result.filled_price or current_price
 
+            # Get balance after trade for snapshot
+            new_base_balance = self.client.get_balance(self._base_currency).available
+            new_quote_balance = self.client.get_balance(self._quote_currency).available
+
             self.db.record_trade(
                 side="buy",
                 size=result.size,
                 price=filled_price,
                 fee=result.fee,
                 is_paper=is_paper,
+                quote_balance_after=new_quote_balance,
+                base_balance_after=new_base_balance,
+                spot_rate=current_price,
             )
 
             # Update position tracking for cost basis
-            self._update_position_after_buy(result.size, filled_price, result.fee)
+            self._update_position_after_buy(result.size, filled_price, result.fee, is_paper)
 
             # Update loss limiter (no P&L on buy)
             self.loss_limiter.record_trade(
@@ -583,7 +613,11 @@ class TradingDaemon:
             filled_price = result.filled_price or current_price
 
             # Calculate realized P&L based on average cost basis
-            realized_pnl = self._calculate_realized_pnl(result.size, filled_price, result.fee)
+            realized_pnl = self._calculate_realized_pnl(result.size, filled_price, result.fee, is_paper)
+
+            # Get balance after trade for snapshot
+            new_base_balance = self.client.get_balance(self._base_currency).available
+            new_quote_balance = self.client.get_balance(self._quote_currency).available
 
             # Record trade
             self.db.record_trade(
@@ -593,6 +627,9 @@ class TradingDaemon:
                 fee=result.fee,
                 realized_pnl=realized_pnl,
                 is_paper=is_paper,
+                quote_balance_after=new_quote_balance,
+                base_balance_after=new_base_balance,
+                spot_rate=current_price,
             )
 
             # Update loss limiter with actual PnL
@@ -626,7 +663,9 @@ class TradingDaemon:
             self.circuit_breaker.record_order_failure()
             self.notifier.notify_order_failed("sell", size_base, result.error or "Unknown error")
 
-    def _update_position_after_buy(self, size: Decimal, price: Decimal, fee: Decimal) -> None:
+    def _update_position_after_buy(
+        self, size: Decimal, price: Decimal, fee: Decimal, is_paper: bool = False
+    ) -> None:
         """
         Update position with new buy, recalculating weighted average cost.
 
@@ -636,8 +675,9 @@ class TradingDaemon:
             size: Base currency amount bought (e.g., BTC)
             price: Price paid per unit
             fee: Trading fee paid (in quote currency)
+            is_paper: Whether this is a paper trade
         """
-        current = self.db.get_current_position(self.settings.trading_pair)
+        current = self.db.get_current_position(self.settings.trading_pair, is_paper=is_paper)
 
         if current:
             old_qty = current.get_quantity()
@@ -656,6 +696,7 @@ class TradingDaemon:
             symbol=self.settings.trading_pair,
             quantity=new_qty,
             average_cost=new_avg_cost,
+            is_paper=is_paper,
         )
 
         logger.debug(
@@ -665,7 +706,9 @@ class TradingDaemon:
             new_avg_cost=str(new_avg_cost),
         )
 
-    def _calculate_realized_pnl(self, size: Decimal, sell_price: Decimal, fee: Decimal) -> Decimal:
+    def _calculate_realized_pnl(
+        self, size: Decimal, sell_price: Decimal, fee: Decimal, is_paper: bool = False
+    ) -> Decimal:
         """
         Calculate realized PnL for a sell based on average cost.
 
@@ -675,11 +718,12 @@ class TradingDaemon:
             size: Base currency amount sold (e.g., BTC)
             sell_price: Price received per unit
             fee: Trading fee paid on sell (in quote currency)
+            is_paper: Whether this is a paper trade
 
         Returns:
             Realized profit/loss (positive = profit, negative = loss)
         """
-        current = self.db.get_current_position(self.settings.trading_pair)
+        current = self.db.get_current_position(self.settings.trading_pair, is_paper=is_paper)
 
         if not current or current.get_quantity() <= 0:
             return Decimal("0") - fee  # Still deduct fee even without position
@@ -697,6 +741,7 @@ class TradingDaemon:
             symbol=self.settings.trading_pair,
             quantity=new_qty,
             average_cost=avg_cost,
+            is_paper=is_paper,
         )
 
         logger.info(
@@ -726,7 +771,10 @@ class TradingDaemon:
         # Save final state
         try:
             portfolio_value = self._get_portfolio_value()
-            self.db.update_daily_stats(ending_balance=portfolio_value)
+            self.db.update_daily_stats(
+                ending_balance=portfolio_value,
+                is_paper=self.settings.is_paper_trading,
+            )
         except Exception as e:
             logger.error("shutdown_state_save_failed", error=str(e))
 

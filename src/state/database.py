@@ -50,6 +50,7 @@ class Position(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_current = Column(Boolean, default=True)
+    is_paper = Column(Boolean, default=False)
 
     def get_quantity(self) -> Decimal:
         return Decimal(self.quantity)
@@ -99,6 +100,10 @@ class Trade(Base):
     realized_pnl = Column(String(50), default="0")
     executed_at = Column(DateTime, default=datetime.utcnow)
     is_paper = Column(Boolean, default=False)
+    # Balance snapshot after trade
+    quote_balance_after = Column(String(50), nullable=True)
+    base_balance_after = Column(String(50), nullable=True)
+    spot_rate = Column(String(50), nullable=True)  # BTC rate at time of trade
 
 
 class DailyStats(Base):
@@ -106,7 +111,9 @@ class DailyStats(Base):
 
     __tablename__ = "daily_stats"
 
-    date = Column(Date, primary_key=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(Date, nullable=False)
+    is_paper = Column(Boolean, default=False, nullable=False)
     starting_balance = Column(String(50), nullable=False)  # In quote currency
     ending_balance = Column(String(50), nullable=True)  # In quote currency
     realized_pnl = Column(String(50), default="0")
@@ -229,6 +236,78 @@ class Database:
             except Exception as e:
                 logger.debug("daily_stats_migration_skipped", reason=str(e))
 
+            # Add is_paper column to positions table
+            try:
+                result = conn.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type='table' AND name='positions'")
+                )
+                positions_schema = result.scalar()
+                if positions_schema and "is_paper" not in positions_schema:
+                    conn.execute(text("ALTER TABLE positions ADD COLUMN is_paper BOOLEAN DEFAULT 0"))
+                    logger.info("migrated_positions_added_is_paper")
+                    conn.commit()
+            except Exception as e:
+                logger.debug("positions_is_paper_migration_skipped", reason=str(e))
+
+            # Add balance snapshot columns to trades table
+            try:
+                result = conn.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type='table' AND name='trades'")
+                )
+                trades_schema = result.scalar()
+                if trades_schema:
+                    if "quote_balance_after" not in trades_schema:
+                        conn.execute(text("ALTER TABLE trades ADD COLUMN quote_balance_after VARCHAR(50)"))
+                        logger.info("migrated_trades_added_quote_balance_after")
+                    if "base_balance_after" not in trades_schema:
+                        conn.execute(text("ALTER TABLE trades ADD COLUMN base_balance_after VARCHAR(50)"))
+                        logger.info("migrated_trades_added_base_balance_after")
+                    if "spot_rate" not in trades_schema:
+                        conn.execute(text("ALTER TABLE trades ADD COLUMN spot_rate VARCHAR(50)"))
+                        logger.info("migrated_trades_added_spot_rate")
+                    conn.commit()
+            except Exception as e:
+                logger.debug("trades_balance_migration_skipped", reason=str(e))
+
+            # Migrate daily_stats to new schema with is_paper
+            try:
+                result = conn.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type='table' AND name='daily_stats'")
+                )
+                stats_schema = result.scalar()
+                if stats_schema and "is_paper" not in stats_schema:
+                    # Rename old table, create new one, copy data
+                    conn.execute(text("ALTER TABLE daily_stats RENAME TO daily_stats_old"))
+                    conn.commit()
+                    # Create new table with proper schema
+                    conn.execute(text("""
+                        CREATE TABLE daily_stats (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            date DATE NOT NULL,
+                            is_paper BOOLEAN NOT NULL DEFAULT 0,
+                            starting_balance VARCHAR(50) NOT NULL,
+                            ending_balance VARCHAR(50),
+                            realized_pnl VARCHAR(50) DEFAULT '0',
+                            unrealized_pnl VARCHAR(50) DEFAULT '0',
+                            total_trades INTEGER DEFAULT 0,
+                            total_volume VARCHAR(50) DEFAULT '0',
+                            max_drawdown_percent VARCHAR(50) DEFAULT '0'
+                        )
+                    """))
+                    # Copy old data (assume existing data is live trading)
+                    conn.execute(text("""
+                        INSERT INTO daily_stats (date, is_paper, starting_balance, ending_balance,
+                            realized_pnl, unrealized_pnl, total_trades, total_volume, max_drawdown_percent)
+                        SELECT date, 0, starting_balance, ending_balance,
+                            realized_pnl, unrealized_pnl, total_trades, total_volume, max_drawdown_percent
+                        FROM daily_stats_old
+                    """))
+                    conn.execute(text("DROP TABLE daily_stats_old"))
+                    conn.commit()
+                    logger.info("migrated_daily_stats_added_is_paper")
+            except Exception as e:
+                logger.debug("daily_stats_is_paper_migration_skipped", reason=str(e))
+
     @contextmanager
     def session(self) -> Generator[Session, None, None]:
         """Get a database session with automatic commit/rollback."""
@@ -243,12 +322,18 @@ class Database:
             session.close()
 
     # Position methods
-    def get_current_position(self, symbol: str = "BTC-USD") -> Optional[Position]:
+    def get_current_position(
+        self, symbol: str = "BTC-USD", is_paper: bool = False
+    ) -> Optional[Position]:
         """Get current position for a symbol."""
         with self.session() as session:
             return (
                 session.query(Position)
-                .filter(Position.symbol == symbol, Position.is_current == True)
+                .filter(
+                    Position.symbol == symbol,
+                    Position.is_current == True,
+                    Position.is_paper == is_paper,
+                )
                 .first()
             )
 
@@ -258,12 +343,15 @@ class Database:
         quantity: Decimal,
         average_cost: Decimal,
         unrealized_pnl: Decimal = Decimal("0"),
+        is_paper: bool = False,
     ) -> Position:
         """Update or create current position."""
         with self.session() as session:
-            # Mark old position as not current
+            # Mark old position as not current (only for same is_paper mode)
             session.query(Position).filter(
-                Position.symbol == symbol, Position.is_current == True
+                Position.symbol == symbol,
+                Position.is_current == True,
+                Position.is_paper == is_paper,
             ).update({"is_current": False})
 
             # Create new position
@@ -273,6 +361,7 @@ class Database:
                 average_cost=str(average_cost),
                 unrealized_pnl=str(unrealized_pnl),
                 is_current=True,
+                is_paper=is_paper,
             )
             session.add(position)
             session.flush()
@@ -360,8 +449,11 @@ class Database:
         exchange_trade_id: Optional[str] = None,
         symbol: str = "BTC-USD",
         is_paper: bool = False,
+        quote_balance_after: Optional[Decimal] = None,
+        base_balance_after: Optional[Decimal] = None,
+        spot_rate: Optional[Decimal] = None,
     ) -> Trade:
-        """Record an executed trade."""
+        """Record an executed trade with balance snapshot."""
         with self.session() as session:
             trade = Trade(
                 order_id=order_id,
@@ -373,6 +465,9 @@ class Database:
                 fee=str(fee),
                 realized_pnl=str(realized_pnl),
                 is_paper=is_paper,
+                quote_balance_after=str(quote_balance_after) if quote_balance_after is not None else None,
+                base_balance_after=str(base_balance_after) if base_balance_after is not None else None,
+                spot_rate=str(spot_rate) if spot_rate is not None else None,
             )
             session.add(trade)
             session.flush()
@@ -401,6 +496,35 @@ class Database:
                 .all()
             )
 
+    def get_last_paper_balance(
+        self, symbol: str = "BTC-USD"
+    ) -> Optional[tuple[Decimal, Decimal, Decimal]]:
+        """
+        Get the last recorded paper trading balance.
+
+        Returns:
+            Tuple of (quote_balance, base_balance, spot_rate) or None if no trades
+        """
+        with self.session() as session:
+            trade = (
+                session.query(Trade)
+                .filter(
+                    Trade.symbol == symbol,
+                    Trade.is_paper == True,
+                    Trade.quote_balance_after.isnot(None),
+                )
+                .order_by(Trade.executed_at.desc())
+                .first()
+            )
+
+            if trade and trade.quote_balance_after and trade.base_balance_after:
+                return (
+                    Decimal(trade.quote_balance_after),
+                    Decimal(trade.base_balance_after),
+                    Decimal(trade.spot_rate) if trade.spot_rate else None,
+                )
+            return None
+
     # Daily stats methods
     def update_daily_stats(
         self,
@@ -410,17 +534,23 @@ class Database:
         total_trades: Optional[int] = None,
         volume: Optional[Decimal] = None,
         max_drawdown: Optional[Decimal] = None,
+        is_paper: bool = False,
     ) -> DailyStats:
         """Update today's statistics."""
         today = date.today()
 
         with self.session() as session:
-            stats = session.query(DailyStats).filter(DailyStats.date == today).first()
+            stats = (
+                session.query(DailyStats)
+                .filter(DailyStats.date == today, DailyStats.is_paper == is_paper)
+                .first()
+            )
 
             if not stats:
                 stats = DailyStats(
                     date=today,
                     starting_balance=str(starting_balance or Decimal("0")),
+                    is_paper=is_paper,
                 )
                 session.add(stats)
 
@@ -438,14 +568,16 @@ class Database:
             session.flush()
             return stats
 
-    def get_daily_stats(self, target_date: Optional[date] = None) -> Optional[DailyStats]:
+    def get_daily_stats(
+        self, target_date: Optional[date] = None, is_paper: bool = False
+    ) -> Optional[DailyStats]:
         """Get statistics for a specific date."""
         target_date = target_date or date.today()
 
         with self.session() as session:
             return (
                 session.query(DailyStats)
-                .filter(DailyStats.date == target_date)
+                .filter(DailyStats.date == target_date, DailyStats.is_paper == is_paper)
                 .first()
             )
 
