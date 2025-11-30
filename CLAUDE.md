@@ -1,11 +1,48 @@
-# Claude Code Instructions
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Commands
+
+```bash
+# Run the bot
+python -m src.main
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Deploy to server (from repo root)
+sudo ./scripts/update.sh
+```
+
+## Architecture
+
+**Trading Bot** supporting Coinbase and Kraken exchanges with multi-indicator confluence strategy.
+
+### Core Flow
+`src/main.py` → `src/daemon/runner.py` (main loop) → Exchange client + Strategy + Safety systems
+
+### Exchange Abstraction
+All exchange clients implement `ExchangeClient` protocol (`src/api/exchange_protocol.py`):
+- `coinbase_client.py`, `kraken_client.py`, `paper_client.py`
+- Factory pattern in `exchange_factory.py` selects client based on config
+- Trading pairs normalized to `BASE-QUOTE` format (e.g., `BTC-USD`)
+
+### Safety Systems (all in `src/safety/`)
+- **KillSwitch**: File-based or signal-based halt, requires manual reset
+- **CircuitBreaker**: Multi-level (GREEN→YELLOW→RED→BLACK) with auto-cooldown
+- **LossLimiter**: Daily/hourly loss limits with progressive throttling
+- **Validator**: Aggregates all safety checks, provides position multiplier
+
+### Strategy
+`src/strategy/signal_scorer.py` combines RSI, MACD, Bollinger, EMA, Volume into -100 to +100 score. Trade when |score| ≥ threshold.
 
 ## Versioning
 
 Always update `src/version.py` when making commits:
 
-- **MAJOR** (1.x.x → 2.0.0): Breaking changes, major refactors
-- **MINOR** (x.1.x → x.2.0): New features, significant enhancements
-- **PATCH** (x.x.1 → x.x.2): Bug fixes, small improvements
+- **MAJOR**: Breaking changes, major refactors
+- **MINOR**: New features, significant enhancements
+- **PATCH**: Bug fixes, small improvements
 
-Update the version BEFORE committing. Include the new version in the commit message when appropriate.
+Update the version BEFORE committing.
