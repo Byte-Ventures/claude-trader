@@ -59,6 +59,7 @@ class TradingDaemon:
         self._last_daily_report: Optional[date] = None
         self._last_weekly_report: Optional[date] = None
         self._last_monthly_report: Optional[date] = None
+        self._last_volatility: str = "normal"  # For adaptive interval
 
         # Create persistent event loop for async operations (avoids repeated asyncio.run())
         self._loop = asyncio.new_event_loop()
@@ -339,6 +340,24 @@ class TradingDaemon:
             logger.error("config_reload_failed", error=str(e))
             self.notifier.notify_error(str(e), "Config reload failed")
 
+    def _get_adaptive_interval(self) -> int:
+        """
+        Get check interval based on current market volatility.
+
+        Returns shorter intervals during high volatility (more opportunity/risk)
+        and longer intervals during low volatility (save resources).
+        """
+        if not self.settings.adaptive_interval_enabled:
+            return self.settings.check_interval_seconds
+
+        interval_map = {
+            "low": self.settings.interval_low_volatility,
+            "normal": self.settings.interval_normal,
+            "high": self.settings.interval_high_volatility,
+            "extreme": self.settings.interval_extreme_volatility,
+        }
+        return interval_map.get(self._last_volatility, self.settings.check_interval_seconds)
+
     def run(self) -> None:
         """Run the main trading loop."""
         self._running = True
@@ -388,8 +407,10 @@ class TradingDaemon:
                     time.sleep(60)
                     continue
 
-                # Wait for next iteration
-                self.shutdown_event.wait(self.settings.check_interval_seconds)
+                # Wait for next iteration (adaptive based on volatility)
+                interval = self._get_adaptive_interval()
+                logger.debug("next_check", interval=interval, volatility=self._last_volatility)
+                self.shutdown_event.wait(interval)
 
         except Exception as e:
             logger.critical("daemon_fatal_error", error=str(e))
@@ -500,6 +521,10 @@ class TradingDaemon:
             ema_gap=f"{((ind.ema_fast - ind.ema_slow) / ind.ema_slow * 100):.3f}%" if ind.ema_fast and ind.ema_slow else "N/A",
             volatility=ind.volatility,
         )
+
+        # Track volatility for adaptive interval
+        if ind.volatility:
+            self._last_volatility = ind.volatility
 
         logger.info(
             "trading_check",

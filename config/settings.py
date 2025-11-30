@@ -104,7 +104,37 @@ class Settings(BaseSettings):
         default=60,
         ge=10,
         le=3600,
-        description="Seconds between trading checks"
+        description="Seconds between trading checks (fallback when adaptive disabled)"
+    )
+
+    # Adaptive Interval Settings
+    adaptive_interval_enabled: bool = Field(
+        default=True,
+        description="Enable adaptive check intervals based on market volatility"
+    )
+    interval_low_volatility: int = Field(
+        default=120,
+        ge=30,
+        le=600,
+        description="Check interval during low volatility (seconds)"
+    )
+    interval_normal: int = Field(
+        default=60,
+        ge=10,
+        le=300,
+        description="Check interval during normal volatility (seconds)"
+    )
+    interval_high_volatility: int = Field(
+        default=30,
+        ge=10,
+        le=120,
+        description="Check interval during high volatility (seconds)"
+    )
+    interval_extreme_volatility: int = Field(
+        default=15,
+        ge=5,
+        le=60,
+        description="Check interval during extreme volatility (seconds)"
     )
 
     # Strategy Parameters - RSI
