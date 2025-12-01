@@ -586,7 +586,7 @@ class Database:
         volume: Optional[Decimal] = None,
         max_drawdown: Optional[Decimal] = None,
         is_paper: bool = False,
-    ) -> DailyStats:
+    ) -> None:
         """Update today's statistics."""
         today = date.today()
 
@@ -620,8 +620,7 @@ class Database:
             if max_drawdown is not None:
                 stats.max_drawdown_percent = str(max_drawdown)
 
-            session.flush()
-            return stats
+            session.commit()
 
     def get_daily_stats(
         self, target_date: Optional[date] = None, is_paper: bool = False
