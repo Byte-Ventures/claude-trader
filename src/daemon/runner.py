@@ -13,7 +13,7 @@ import asyncio
 import signal
 import time
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from threading import Event
 from typing import Optional, Union
 
@@ -461,6 +461,11 @@ class TradingDaemon:
                 portfolio_value=str(portfolio_value),
                 trading_pair=self.settings.trading_pair,
             )
+
+            # SAFETY CHECK: Verify positions have stop protection
+            # This catches situations where the bot crashed after opening a position
+            # but before creating the stop-loss
+            self._verify_position_stop_protection()
 
             # Main loop
             while not self.shutdown_event.is_set():
@@ -1668,7 +1673,8 @@ class TradingDaemon:
                 trailing_was_active = current_stop is not None
                 exit_type = "emergency_exit" if not trailing_was_active else "hard_stop_below_trailing"
                 # Defensive: avoid division by zero (entry_price should never be 0, but be safe)
-                loss_pct = round((entry_price - current_price) / entry_price * 100, 2) if entry_price > 0 else Decimal("0")
+                # Use Decimal.quantize() for proper Decimal arithmetic (not round() which expects float)
+                loss_pct = ((entry_price - current_price) / entry_price * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if entry_price > 0 else Decimal("0")
                 logger.warning(
                     "hard_stop_triggered",
                     exit_type=exit_type,
@@ -1712,8 +1718,8 @@ class TradingDaemon:
             # Check if stop is hit (profit protection - trailing only activates after profit)
             if current_stop is not None and current_price <= current_stop:
                 # Calculate profit locked in (trailing stop is profit protection)
-                # Defensive: avoid division by zero
-                profit_pct = round((current_price - entry_price) / entry_price * 100, 2) if entry_price > 0 else Decimal("0")
+                # Defensive: avoid division by zero, use Decimal.quantize() for proper arithmetic
+                profit_pct = ((current_price - entry_price) / entry_price * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if entry_price > 0 else Decimal("0")
                 logger.info(
                     "trailing_stop_triggered",
                     exit_type="profit_protection",
@@ -1729,6 +1735,76 @@ class TradingDaemon:
                 return "sell"
 
         return None
+
+    def _verify_position_stop_protection(self) -> None:
+        """
+        Safety check: Verify all open positions have active stop protection.
+
+        This catches situations where the bot crashed after opening a position
+        but before creating the trailing stop (e.g., between lines 912-915).
+
+        If an unprotected position is found:
+        1. Log a CRITICAL warning
+        2. Send alert to user
+        3. Attempt to create stop protection using current price
+
+        This is a recovery mechanism, not a normal operation.
+        """
+        is_paper = self.settings.is_paper_trading
+
+        # Get current position
+        position = self.db.get_current_position(
+            self.settings.trading_pair, is_paper=is_paper
+        )
+
+        if not position or position.get_quantity() <= Decimal("0"):
+            return  # No position, nothing to check
+
+        # Check if there's an active trailing stop
+        ts = self.db.get_active_trailing_stop(
+            symbol=self.settings.trading_pair, is_paper=is_paper
+        )
+
+        if ts is not None:
+            return  # Stop exists, all good
+
+        # CRITICAL: Position exists but no stop protection!
+        avg_cost = position.get_average_cost()
+        qty = position.get_quantity()
+
+        logger.critical(
+            "position_without_stop_protection",
+            symbol=self.settings.trading_pair,
+            quantity=str(qty),
+            avg_cost=str(avg_cost),
+            is_paper=is_paper,
+        )
+
+        self.notifier.send_alert(
+            f"⚠️ CRITICAL: Position found without stop protection! "
+            f"Qty: {qty}, Avg Cost: {avg_cost}. Creating emergency stop."
+        )
+
+        # Attempt to create stop protection
+        try:
+            candles = self.client.get_candles(
+                self.settings.trading_pair,
+                self.settings.candle_interval,
+                limit=100,
+            )
+            self._create_trailing_stop(
+                entry_price=avg_cost,
+                candles=candles,
+                is_paper=is_paper,
+                avg_cost=avg_cost,
+            )
+            logger.info("emergency_stop_created", avg_cost=str(avg_cost))
+            self.notifier.send_alert("✅ Emergency stop protection created successfully.")
+        except Exception as e:
+            logger.error("emergency_stop_creation_failed", error=str(e))
+            self.notifier.send_alert(
+                f"❌ FAILED to create emergency stop: {e}. Manual intervention required!"
+            )
 
     def _shutdown(self) -> None:
         """Graceful shutdown."""
