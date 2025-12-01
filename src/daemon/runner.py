@@ -481,6 +481,10 @@ class TradingDaemon:
                 # Check for hourly market analysis
                 self._check_hourly_analysis()
 
+                # Periodic safety check: ensure positions have stop protection
+                # This catches edge cases like manual position opens or recovery failures
+                self._periodic_stop_protection_check()
+
                 try:
                     self._trading_iteration()
                 except Exception as e:
@@ -1698,9 +1702,18 @@ class TradingDaemon:
                 # or if trailing was active but hard stop was hit anyway (shouldn't happen normally)
                 trailing_was_active = current_stop is not None
                 exit_type = "emergency_exit" if not trailing_was_active else "hard_stop_below_trailing"
-                # Defensive: avoid division by zero (entry_price should never be 0, but be safe)
+                # Calculate loss percentage
                 # Use Decimal.quantize() for proper Decimal arithmetic (not round() which expects float)
-                loss_pct = ((entry_price - current_price) / entry_price * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if entry_price > 0 else Decimal("0")
+                if entry_price <= 0:
+                    logger.error(
+                        "invalid_entry_price_in_trailing_stop",
+                        entry_price=str(entry_price),
+                        context="hard_stop_check",
+                        action="using_0_percent_as_fallback",
+                    )
+                    loss_pct = Decimal("0")
+                else:
+                    loss_pct = ((entry_price - current_price) / entry_price * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
                 logger.warning(
                     "hard_stop_triggered",
                     exit_type=exit_type,
@@ -1718,9 +1731,16 @@ class TradingDaemon:
 
             # Check if trailing stop is now activated
             if current_stop is None and activation and current_price >= activation:
-                # Activate: set initial stop at entry + distance - distance = entry (breakeven roughly)
-                # Actually: current_price - distance
+                # Activate: set initial stop at current_price - distance
+                # SAFETY: Never set trailing stop below hard stop
                 new_stop = current_price - distance
+                if hard_stop is not None and new_stop < hard_stop:
+                    new_stop = hard_stop
+                    logger.warning(
+                        "trailing_stop_floored_at_hard_stop",
+                        calculated_stop=str(current_price - distance),
+                        floored_to=str(hard_stop),
+                    )
                 self.db.update_trailing_stop(ts.id, new_stop_level=new_stop)
                 logger.info(
                     "trailing_stop_activated",
@@ -1732,6 +1752,9 @@ class TradingDaemon:
             # If activated, update stop if price moved up
             if current_stop is not None and distance:
                 potential_new_stop = current_price - distance
+                # SAFETY: Never let trailing stop go below hard stop
+                if hard_stop is not None and potential_new_stop < hard_stop:
+                    potential_new_stop = hard_stop
                 if potential_new_stop > current_stop:
                     self.db.update_trailing_stop(ts.id, new_stop_level=potential_new_stop)
                     logger.debug(
@@ -1744,8 +1767,17 @@ class TradingDaemon:
             # Check if stop is hit (profit protection - trailing only activates after profit)
             if current_stop is not None and current_price <= current_stop:
                 # Calculate profit locked in (trailing stop is profit protection)
-                # Defensive: avoid division by zero, use Decimal.quantize() for proper arithmetic
-                profit_pct = ((current_price - entry_price) / entry_price * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if entry_price > 0 else Decimal("0")
+                # Use Decimal.quantize() for proper Decimal arithmetic
+                if entry_price <= 0:
+                    logger.error(
+                        "invalid_entry_price_in_trailing_stop",
+                        entry_price=str(entry_price),
+                        context="trailing_stop_check",
+                        action="using_0_percent_as_fallback",
+                    )
+                    profit_pct = Decimal("0")
+                else:
+                    profit_pct = ((current_price - entry_price) / entry_price * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
                 logger.info(
                     "trailing_stop_triggered",
                     exit_type="profit_protection",
@@ -1831,6 +1863,34 @@ class TradingDaemon:
             self.notifier.send_alert(
                 f"❌ FAILED to create emergency stop: {e}. Manual intervention required!"
             )
+
+    def _periodic_stop_protection_check(self) -> None:
+        """
+        Periodic safety check: verify positions have stop protection.
+
+        Runs every 5 minutes (after startup check) to catch edge cases:
+        - Manual position opens
+        - Recovery failures
+        - Database corruption
+        """
+        now = datetime.now()
+
+        # Initialize timestamp if needed
+        if not hasattr(self, "_last_stop_check"):
+            self._last_stop_check = now
+            return  # Skip first check (startup already runs it)
+
+        # Check every 5 minutes
+        if (now - self._last_stop_check).total_seconds() < 300:
+            return
+
+        self._last_stop_check = now
+
+        # Run the full verification
+        try:
+            self._verify_position_stop_protection()
+        except Exception as e:
+            logger.error("periodic_stop_check_failed", error=str(e))
 
     def _shutdown(self) -> None:
         """Graceful shutdown."""
