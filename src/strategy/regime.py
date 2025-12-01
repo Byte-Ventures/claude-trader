@@ -215,7 +215,7 @@ _sentiment_last_fetch: Optional[float] = None
 SENTIMENT_CACHE_SECONDS = 900  # 15 minutes
 
 
-def get_cached_sentiment() -> Optional[FearGreedResult]:
+async def get_cached_sentiment() -> Optional[FearGreedResult]:
     """
     Get cached sentiment, fetching if stale.
 
@@ -230,7 +230,7 @@ def get_cached_sentiment() -> Optional[FearGreedResult]:
 
     if _sentiment_last_fetch is None or (now - _sentiment_last_fetch) > SENTIMENT_CACHE_SECONDS:
         try:
-            _sentiment_cache = fetch_fear_greed_index()
+            _sentiment_cache = await fetch_fear_greed_index()
             _sentiment_last_fetch = now
             logger.debug(
                 "sentiment_fetched",
