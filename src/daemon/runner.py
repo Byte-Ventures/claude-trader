@@ -538,16 +538,19 @@ class TradingDaemon:
                 limit=100,
             )
 
-            # Persist candles to rate_history for historical analysis
+            # Persist candles to rate_history (separate try/except - don't affect trading)
             if not candles.empty:
-                candle_dicts = candles.to_dict("records")
-                self.db.record_rates_bulk(
-                    candles=candle_dicts,
-                    symbol=self.settings.trading_pair,
-                    exchange=self.exchange_name,
-                    interval="1h",
-                    is_paper=self.settings.is_paper_trading,
-                )
+                try:
+                    candle_dicts = candles.to_dict("records")
+                    self.db.record_rates_bulk(
+                        candles=candle_dicts,
+                        symbol=self.settings.trading_pair,
+                        exchange=self.exchange_name,
+                        interval="1h",
+                        is_paper=self.settings.is_paper_trading,
+                    )
+                except Exception as rate_err:
+                    logger.warning("rate_history_save_failed", error=str(rate_err))
 
             base_balance = self.client.get_balance(self._base_currency).available
             quote_balance = self.client.get_balance(self._quote_currency).available

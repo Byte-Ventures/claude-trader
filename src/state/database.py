@@ -1105,8 +1105,15 @@ class Database:
         inserted = 0
         try:
             with self.session() as session:
+                # Normalize timestamps to Python datetime (pandas Timestamp -> datetime)
+                def to_datetime(ts):
+                    if hasattr(ts, 'to_pydatetime'):
+                        return ts.to_pydatetime().replace(tzinfo=None)
+                    return ts.replace(tzinfo=None) if hasattr(ts, 'tzinfo') and ts.tzinfo else ts
+
+                candle_timestamps = [to_datetime(c["timestamp"]) for c in candles]
+
                 # Batch fetch existing timestamps in one query for performance
-                candle_timestamps = [c["timestamp"] for c in candles]
                 existing_timestamps = set(
                     row[0] for row in session.query(RateHistory.timestamp)
                     .filter(
@@ -1120,13 +1127,13 @@ class Database:
                 )
 
                 # Insert only new candles
-                for candle in candles:
-                    if candle["timestamp"] not in existing_timestamps:
+                for candle, normalized_ts in zip(candles, candle_timestamps):
+                    if normalized_ts not in existing_timestamps:
                         rate = RateHistory(
                             symbol=symbol,
                             exchange=exchange,
                             interval=interval,
-                            timestamp=candle["timestamp"],
+                            timestamp=normalized_ts,
                             open_price=str(candle["open"]),
                             high_price=str(candle["high"]),
                             low_price=str(candle["low"]),
