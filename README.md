@@ -317,6 +317,16 @@ launchctl load ~/Library/LaunchAgents/com.btc-bot.plist
 
 Only trade what you can afford to lose.
 
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch from `develop`: `git checkout -b feature/my-feature develop`
+3. Make your changes and update `src/version.py`
+4. Push and create a PR to `develop`
+5. After review, changes will be merged to `develop`, then released to `main`
+
+See `CLAUDE.md` for detailed branching workflow and coding guidelines.
+
 ## License
 
 MIT
