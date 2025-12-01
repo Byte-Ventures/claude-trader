@@ -542,7 +542,12 @@ class TradingDaemon:
             self._last_volatility = ind.volatility
 
         # Calculate market regime for strategy adaptation
-        sentiment = get_cached_sentiment() if self.settings.regime_sentiment_enabled else None
+        sentiment = None
+        if self.settings.regime_sentiment_enabled:
+            try:
+                sentiment = self._loop.run_until_complete(get_cached_sentiment())
+            except Exception as e:
+                logger.debug("sentiment_fetch_skipped", error=str(e))
         trend = get_ema_trend_from_values(ind.ema_fast, ind.ema_slow) if ind.ema_fast and ind.ema_slow else "neutral"
 
         regime = self.market_regime.calculate(
