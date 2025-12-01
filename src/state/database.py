@@ -12,7 +12,7 @@ Tables:
 
 import json
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Generator, Optional
@@ -1105,11 +1105,16 @@ class Database:
         inserted = 0
         try:
             with self.session() as session:
-                # Normalize timestamps to Python datetime (pandas Timestamp -> datetime)
+                # Normalize timestamps to naive UTC datetime (pandas Timestamp -> datetime)
                 def to_datetime(ts):
                     if hasattr(ts, 'to_pydatetime'):
-                        return ts.to_pydatetime().replace(tzinfo=None)
-                    return ts.replace(tzinfo=None) if hasattr(ts, 'tzinfo') and ts.tzinfo else ts
+                        dt = ts.to_pydatetime()
+                    else:
+                        dt = ts
+                    # Convert to UTC before removing tzinfo (SQLite stores naive datetimes)
+                    if hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
+                        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+                    return dt
 
                 candle_timestamps = [to_datetime(c["timestamp"]) for c in candles]
 

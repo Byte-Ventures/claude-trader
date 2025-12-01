@@ -550,7 +550,14 @@ class TradingDaemon:
                         is_paper=self.settings.is_paper_trading,
                     )
                 except Exception as rate_err:
-                    logger.warning("rate_history_save_failed", error=str(rate_err))
+                    logger.warning(
+                        "rate_history_save_failed",
+                        error=str(rate_err),
+                        error_type=type(rate_err).__name__,
+                        symbol=self.settings.trading_pair,
+                        exchange=self.exchange_name,
+                        candle_count=len(candle_dicts),
+                    )
 
             base_balance = self.client.get_balance(self._base_currency).available
             quote_balance = self.client.get_balance(self._quote_currency).available
