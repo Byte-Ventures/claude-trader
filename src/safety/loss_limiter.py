@@ -10,7 +10,7 @@ Throttles or halts trading when limits are approached or exceeded.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Callable, Optional
 
@@ -312,7 +312,8 @@ class LossLimiter:
 
     def _check_daily_reset(self) -> None:
         """Check if we should reset daily counters."""
-        now = datetime.now()
+        # Use UTC for consistent reset time regardless of server timezone
+        now = datetime.now(timezone.utc)
         reset_time = now.replace(
             hour=self.config.daily_reset_hour_utc,
             minute=0,

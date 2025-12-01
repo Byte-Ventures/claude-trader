@@ -36,6 +36,9 @@ from src.indicators.ema import get_ema_trend_from_values
 
 logger = structlog.get_logger(__name__)
 
+# Default timeout for async operations (AI reviews, sentiment fetch)
+ASYNC_TIMEOUT_SECONDS = 120
+
 
 class TradingDaemon:
     """
@@ -63,6 +66,8 @@ class TradingDaemon:
         self._last_monthly_report: Optional[date] = None
         self._last_volatility: str = "normal"  # For adaptive interval
         self._last_regime: str = "neutral"  # For regime change notifications
+        self._last_hourly_analysis: Optional[datetime] = None  # For hourly market analysis
+        self._pending_post_volatility_analysis: bool = False  # Trigger analysis when volatility calms
 
         # Create persistent event loop for async operations (avoids repeated asyncio.run())
         self._loop = asyncio.new_event_loop()
@@ -122,24 +127,44 @@ class TradingDaemon:
             enabled=settings.telegram_enabled,
         )
 
-        # Initialize AI trade reviewer (optional, via OpenRouter)
+        # Initialize multi-agent AI trade reviewer (optional, via OpenRouter)
         self.trade_reviewer = None
         if settings.ai_review_enabled and settings.openrouter_api_key:
             from src.ai.trade_reviewer import TradeReviewer
             self.trade_reviewer = TradeReviewer(
                 api_key=settings.openrouter_api_key.get_secret_value(),
                 db=self.db,
-                veto_action=settings.claude_veto_action,
-                veto_threshold=settings.claude_veto_threshold,
-                position_reduction=settings.claude_position_reduction,
-                delay_minutes=settings.claude_delay_minutes,
-                interesting_hold_margin=settings.claude_interesting_hold_margin,
-                model=settings.openrouter_model,
+                reviewer_models=[
+                    settings.reviewer_model_1,
+                    settings.reviewer_model_2,
+                    settings.reviewer_model_3,
+                ],
+                judge_model=settings.judge_model,
+                veto_action=settings.veto_action,
+                veto_threshold=settings.veto_threshold,
+                position_reduction=settings.position_reduction,
+                delay_minutes=settings.delay_minutes,
+                interesting_hold_margin=settings.interesting_hold_margin,
+                review_all=settings.ai_review_all,
+                market_research_enabled=settings.market_research_enabled,
+                ai_web_search_enabled=settings.ai_web_search_enabled,
+                market_research_cache_minutes=settings.market_research_cache_minutes,
+            )
+            logger.info(
+                "multi_agent_trade_reviewer_initialized",
+                reviewers=[settings.reviewer_model_1, settings.reviewer_model_2, settings.reviewer_model_3],
+                judge=settings.judge_model,
                 review_all=settings.ai_review_all,
             )
-            logger.info("ai_trade_reviewer_initialized", model=settings.openrouter_model, review_all=settings.ai_review_all)
         else:
             logger.info("ai_trade_reviewer_disabled")
+
+        # Hourly market analysis uses trade_reviewer (if AI review enabled)
+        self._hourly_analysis_enabled = settings.hourly_analysis_enabled and self.trade_reviewer is not None
+        if self._hourly_analysis_enabled:
+            logger.info("hourly_market_analysis_enabled", uses_trade_reviewer=True)
+        else:
+            logger.info("hourly_market_analysis_disabled")
 
         # Initialize safety systems
         self.kill_switch = KillSwitch(
@@ -223,6 +248,35 @@ class TradingDaemon:
         # Register SIGUSR2 for config hot-reload
         signal.signal(signal.SIGUSR2, self._handle_reload_signal)
         logger.info("config_reload_signal_registered", signal="SIGUSR2")
+
+    def _run_async_with_timeout(self, coro, timeout: int = ASYNC_TIMEOUT_SECONDS, default=None):
+        """
+        Run an async coroutine with timeout protection.
+
+        Prevents daemon from hanging indefinitely if external APIs are slow.
+
+        Args:
+            coro: Async coroutine to execute
+            timeout: Timeout in seconds (default: 120)
+            default: Value to return on timeout (default: None)
+
+        Returns:
+            Coroutine result or default value on timeout
+        """
+        async def _with_timeout():
+            task = asyncio.create_task(coro)
+            try:
+                return await asyncio.wait_for(task, timeout=timeout)
+            except asyncio.TimeoutError:
+                task.cancel()
+                try:
+                    await task  # Allow cleanup
+                except asyncio.CancelledError:
+                    pass
+                logger.warning("async_operation_timeout", timeout=timeout)
+                return default
+
+        return self._loop.run_until_complete(_with_timeout())
 
     def _validate_trading_pair(self, trading_pair: str) -> None:
         """
@@ -341,11 +395,11 @@ class TradingDaemon:
             # Update TradeReviewer (if enabled)
             if self.trade_reviewer:
                 self.trade_reviewer.review_all = new_settings.ai_review_all
-                self.trade_reviewer.veto_action = new_settings.claude_veto_action
-                self.trade_reviewer.veto_threshold = new_settings.claude_veto_threshold
-                self.trade_reviewer.position_reduction = new_settings.claude_position_reduction
-                self.trade_reviewer.delay_minutes = new_settings.claude_delay_minutes
-                self.trade_reviewer.interesting_hold_margin = new_settings.claude_interesting_hold_margin
+                self.trade_reviewer.veto_action = new_settings.veto_action
+                self.trade_reviewer.veto_threshold = new_settings.veto_threshold
+                self.trade_reviewer.position_reduction = new_settings.position_reduction
+                self.trade_reviewer.delay_minutes = new_settings.delay_minutes
+                self.trade_reviewer.interesting_hold_margin = new_settings.interesting_hold_margin
 
             logger.info(
                 "config_reload_complete",
@@ -418,6 +472,9 @@ class TradingDaemon:
                 self._check_daily_report()
                 self._check_weekly_report()
                 self._check_monthly_report()
+
+                # Check for hourly market analysis
+                self._check_hourly_analysis()
 
                 try:
                     self._trading_iteration()
@@ -543,15 +600,25 @@ class TradingDaemon:
             volatility=ind.volatility,
         )
 
-        # Track volatility for adaptive interval
+        # Track volatility for adaptive interval and post-volatility analysis
         if ind.volatility:
+            old_volatility = self._last_volatility
             self._last_volatility = ind.volatility
+
+            # Detect transition from high/extreme to normal/low
+            if old_volatility in ("high", "extreme") and ind.volatility in ("normal", "low"):
+                self._pending_post_volatility_analysis = True
+                logger.info(
+                    "post_volatility_analysis_pending",
+                    from_volatility=old_volatility,
+                    to_volatility=ind.volatility,
+                )
 
         # Calculate market regime for strategy adaptation
         sentiment = None
         if self.settings.regime_sentiment_enabled:
             try:
-                sentiment = self._loop.run_until_complete(get_cached_sentiment())
+                sentiment = self._run_async_with_timeout(get_cached_sentiment(), timeout=30)
             except Exception as e:
                 logger.debug("sentiment_fetch_skipped", error=str(e))
         trend = get_ema_trend_from_values(ind.ema_fast, ind.ema_slow) if ind.ema_fast and ind.ema_slow else "neutral"
@@ -643,41 +710,70 @@ class TradingDaemon:
 
             if should_review:
                 try:
-                    # Run async review using persistent event loop (more efficient than asyncio.run())
-                    review = self._loop.run_until_complete(self.trade_reviewer.review_trade(
-                        signal_result=signal_result,
-                        current_price=current_price,
-                        trading_pair=self.settings.trading_pair,
-                        review_type=review_type,
-                    ))
+                    # Run async multi-agent review with timeout protection
+                    review = self._run_async_with_timeout(
+                        self.trade_reviewer.review_trade(
+                            signal_result=signal_result,
+                            current_price=current_price,
+                            trading_pair=self.settings.trading_pair,
+                            review_type=review_type,
+                        ),
+                        timeout=ASYNC_TIMEOUT_SECONDS,
+                    )
+                    if review is None:
+                        logger.warning("trade_review_timeout")
+                        # Continue with trade on timeout (fail open)
+                        raise TimeoutError("Trade review timed out")
 
                     # Always notify Telegram
                     self.notifier.notify_trade_review(review, review_type)
 
+                    # Log multi-agent review summary
+                    agent_summary = [
+                        {
+                            "model": r.model.split("/")[-1],
+                            "stance": r.stance,
+                            "approved": r.approved,
+                            "confidence": f"{r.confidence:.2f}",
+                            "summary": getattr(r, 'summary', '')[:50],
+                        }
+                        for r in review.reviews
+                    ]
                     logger.info(
-                        "claude_trade_review",
+                        "multi_agent_trade_review",
                         review_type=review_type,
-                        approved=review.approved,
-                        confidence=f"{review.confidence:.2f}",
-                        sentiment=review.sentiment,
-                        veto_action=review.veto_action,
+                        agents=agent_summary,
+                        judge_decision="APPROVED" if review.judge_decision else "REJECTED",
+                        judge_confidence=f"{review.judge_confidence:.2f}",
+                        judge_recommendation=review.judge_recommendation,
+                        judge_reasoning=review.judge_reasoning,
+                        veto_action=review.final_veto_action or "none",
                     )
 
+                    # Log full reasoning for each agent (separate entries for readability)
+                    for r in review.reviews:
+                        logger.debug(
+                            "agent_full_reasoning",
+                            model=r.model.split("/")[-1],
+                            stance=r.stance,
+                            reasoning=r.reasoning,
+                        )
+
                     # Handle veto (only for actual trades, not interesting holds)
-                    if review_type == "trade" and not review.approved:
-                        if review.veto_action == VetoAction.SKIP.value:
-                            logger.info("trade_vetoed", reason=review.reasoning)
+                    if review_type == "trade" and not review.judge_decision:
+                        if review.final_veto_action == VetoAction.SKIP.value:
+                            logger.info("trade_vetoed", reason=review.judge_reasoning)
                             return  # Skip this iteration
-                        elif review.veto_action == VetoAction.REDUCE.value:
-                            claude_veto_multiplier = self.settings.claude_position_reduction
+                        elif review.final_veto_action == VetoAction.REDUCE.value:
+                            claude_veto_multiplier = self.settings.position_reduction
                             logger.info(
-                                "trade_reduced_by_claude",
+                                "trade_reduced_by_review",
                                 multiplier=f"{claude_veto_multiplier:.2f}",
                             )
-                        elif review.veto_action == VetoAction.DELAY.value:
+                        elif review.final_veto_action == VetoAction.DELAY.value:
                             logger.info(
-                                "trade_delayed_by_claude",
-                                delay_minutes=self.settings.claude_delay_minutes,
+                                "trade_delayed_by_review",
+                                delay_minutes=self.settings.delay_minutes,
                             )
                             return  # Skip this iteration (user can check Telegram)
                         # VetoAction.INFO: log but proceed with trade
@@ -715,7 +811,8 @@ class TradingDaemon:
                 )
                 self._execute_buy(
                     candles, current_price, quote_balance, base_balance,
-                    signal_result.score, safety_multiplier
+                    signal_result.score, safety_multiplier,
+                    rsi_value=signal_result.indicators.rsi,
                 )
             else:
                 logger.info(
@@ -755,6 +852,7 @@ class TradingDaemon:
         base_balance: Decimal,
         signal_score: int,
         safety_multiplier: float,
+        rsi_value: Optional[float] = None,
     ) -> None:
         """Execute a buy order."""
         # Calculate position size
@@ -839,6 +937,10 @@ class TradingDaemon:
                 price=str(result.filled_price),
                 fee=str(result.fee),
             )
+
+            # Record oversold buy for crash protection rate limiting
+            if rsi_value is not None and rsi_value < 25:
+                self.signal_scorer.record_oversold_buy()
 
             self.circuit_breaker.record_order_success()
         else:
@@ -1305,6 +1407,162 @@ class TradingDaemon:
         )
 
         self.notifier.send_message_sync(message)
+
+    def _check_hourly_analysis(self) -> None:
+        """Run hourly market analysis during volatile conditions or post-volatility."""
+        # Skip if hourly analysis not enabled
+        if not self._hourly_analysis_enabled:
+            return
+
+        now = datetime.now()
+        is_post_volatility = self._pending_post_volatility_analysis
+
+        # Check if we should run analysis
+        should_run = False
+        analysis_reason = ""
+
+        if is_post_volatility:
+            # Post-volatility analysis: run immediately (don't wait for hourly cooldown)
+            should_run = True
+            analysis_reason = "post_volatility"
+            self._pending_post_volatility_analysis = False
+        elif self._last_volatility in ("high", "extreme"):
+            # During high/extreme volatility: run once per hour
+            if self._last_hourly_analysis:
+                elapsed = (now - self._last_hourly_analysis).total_seconds()
+                if elapsed >= 3600:
+                    should_run = True
+                    analysis_reason = "hourly_volatile"
+            else:
+                should_run = True
+                analysis_reason = "hourly_volatile"
+
+        if not should_run:
+            return
+
+        # Run analysis
+        try:
+            # Get current market data for analysis
+            current_price = self.client.get_current_price(self.settings.trading_pair)
+            candles = self.client.get_candles(
+                self.settings.trading_pair,
+                granularity="ONE_HOUR",
+                limit=100,
+            )
+
+            # Calculate indicators
+            signal_result = self.signal_scorer.calculate_score(candles, current_price)
+            indicators = signal_result.indicators
+
+            # Get sentiment
+            sentiment_value = None
+            sentiment_class = "Unknown"
+            if self.settings.regime_sentiment_enabled:
+                try:
+                    sentiment_result = self._run_async_with_timeout(get_cached_sentiment(), timeout=30)
+                    if sentiment_result and sentiment_result.value:
+                        sentiment_value = sentiment_result.value
+                        sentiment_class = sentiment_result.classification or "Unknown"
+                except Exception as e:
+                    logger.debug("sentiment_fetch_skipped", error=str(e))
+
+            # Calculate price changes from candles
+            price_change_1h = None
+            price_change_24h = None
+            if len(candles) >= 2:
+                prev_close = candles["close"].iloc[-2]
+                curr_close = candles["close"].iloc[-1]
+                if prev_close > 0:
+                    price_change_1h = ((curr_close - prev_close) / prev_close) * 100
+            if len(candles) >= 24:
+                prev_24h = candles["close"].iloc[-24]
+                curr_close = candles["close"].iloc[-1]
+                if prev_24h > 0:
+                    price_change_24h = ((curr_close - prev_24h) / prev_24h) * 100
+
+            # Build indicators dict for analyze_market
+            indicators_dict = {
+                "rsi": indicators.rsi,
+                "macd_histogram": indicators.macd_histogram,
+                "bb_percent_b": None,
+                "ema_gap": None,
+            }
+            # Calculate Bollinger %B
+            if indicators.bb_lower and indicators.bb_upper:
+                bb_range = indicators.bb_upper - indicators.bb_lower
+                if bb_range > 0:
+                    indicators_dict["bb_percent_b"] = round(
+                        (float(current_price) - indicators.bb_lower) / bb_range, 2
+                    )
+            # Calculate EMA gap
+            if indicators.ema_slow and indicators.ema_slow > 0:
+                indicators_dict["ema_gap"] = round(
+                    ((float(current_price) - indicators.ema_slow) / indicators.ema_slow) * 100, 2
+                )
+
+            # Run multi-agent market analysis with timeout protection
+            review = self._run_async_with_timeout(
+                self.trade_reviewer.analyze_market(
+                    indicators=indicators_dict,
+                    current_price=current_price,
+                    fear_greed=sentiment_value or 50,
+                    fear_greed_class=sentiment_class,
+                    regime=self._last_regime,
+                    volatility=self._last_volatility,
+                    price_change_1h=price_change_1h,
+                    price_change_24h=price_change_24h,
+                ),
+                timeout=ASYNC_TIMEOUT_SECONDS,
+            )
+            if review is None:
+                logger.warning("market_analysis_timeout")
+                return  # Skip this analysis cycle
+
+            # Log multi-agent analysis summary
+            agent_summary = [
+                {
+                    "model": r.model.split("/")[-1],
+                    "stance": r.stance,
+                    "outlook": r.sentiment,
+                    "confidence": f"{r.confidence:.2f}",
+                    "summary": getattr(r, 'summary', '')[:50],
+                }
+                for r in review.reviews
+            ]
+            logger.info(
+                "hourly_market_analysis",
+                reason=analysis_reason,
+                agents=agent_summary,
+                judge_confidence=f"{review.judge_confidence:.2f}",
+                judge_recommendation=review.judge_recommendation,
+                judge_reasoning=review.judge_reasoning,
+            )
+
+            # Log full reasoning for each agent at debug level
+            for r in review.reviews:
+                logger.debug(
+                    "market_analysis_agent_reasoning",
+                    model=r.model.split("/")[-1],
+                    stance=r.stance,
+                    reasoning=r.reasoning,
+                )
+
+            # Send Telegram notification
+            self.notifier.notify_market_analysis(
+                review=review,
+                indicators=indicators,
+                volatility=self._last_volatility,
+                fear_greed=sentiment_value or 50,
+                fear_greed_class=sentiment_class,
+                current_price=current_price,
+                analysis_reason=analysis_reason,
+            )
+
+        except Exception as e:
+            logger.error("hourly_analysis_failed", error=str(e))
+
+        # Update timestamp regardless of success/failure to prevent spam on errors
+        self._last_hourly_analysis = now
 
     def _create_trailing_stop(
         self, entry_price: Decimal, candles, is_paper: bool = False

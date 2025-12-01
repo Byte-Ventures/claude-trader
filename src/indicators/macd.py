@@ -155,3 +155,54 @@ def is_macd_converging(macd_result: MACDResult, lookback: int = 5) -> bool:
 
     # Lines are converging if histogram is getting smaller
     return recent_hist.iloc[-1] < recent_hist.iloc[0]
+
+
+def get_macd_signal_graduated(macd_result: MACDResult, price: float) -> float:
+    """
+    Get graduated trading signal from MACD (-1.0 to +1.0).
+
+    Uses histogram normalized by price to determine signal strength:
+    - Positive histogram = bullish (0 to +1.0)
+    - Negative histogram = bearish (0 to -1.0)
+    - MACD above signal line adds bullish boost
+    - MACD below signal line adds bearish boost
+
+    Args:
+        macd_result: MACD calculation result
+        price: Current price (used for normalization)
+
+    Returns:
+        Float from -1.0 to +1.0
+    """
+    if len(macd_result.histogram) < 1 or price <= 0:
+        return 0.0
+
+    histogram = macd_result.histogram.iloc[-1]
+    macd_line = macd_result.macd_line.iloc[-1]
+    signal_line = macd_result.signal_line.iloc[-1]
+
+    if pd.isna(histogram) or pd.isna(macd_line) or pd.isna(signal_line):
+        return 0.0
+
+    # Normalize histogram by price (typical range: -0.5% to +0.5% of price)
+    # Multiply by 200 so that 0.5% of price = 1.0 signal
+    hist_normalized = (histogram / price) * 200
+
+    # Dead zone: very small histogram relative to price
+    if abs(hist_normalized) < 0.1:
+        return 0.0
+
+    # Base signal from histogram (clamp to -0.8 to +0.8)
+    base_signal = max(-0.8, min(0.8, hist_normalized))
+
+    # Boost based on MACD/signal relationship (±0.2)
+    if macd_line > signal_line:
+        relationship_boost = 0.2
+    elif macd_line < signal_line:
+        relationship_boost = -0.2
+    else:
+        relationship_boost = 0.0
+
+    # Combine and clamp to -1.0 to +1.0
+    total_signal = base_signal + relationship_boost
+    return max(-1.0, min(1.0, total_signal))

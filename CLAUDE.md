@@ -67,3 +67,45 @@ Update the version BEFORE committing.
 - All merges to `main` must be done via pull requests
 - Direct commits to `main` are not allowed
 - Tag releases on `main` with version (e.g., `v1.9.3`)
+
+## Pull Request Reviews (CRITICAL)
+
+**This is a financial trading tool. All PR review comments MUST be fetched and thoroughly analyzed before merging.**
+
+### Fetching PR Review Comments
+
+```bash
+# Get all comments on a PR (includes bot reviews)
+gh api repos/Byte-Ventures/claude-trader/issues/{PR_NUMBER}/comments
+
+# Get code review comments (inline)
+gh api repos/Byte-Ventures/claude-trader/pulls/{PR_NUMBER}/comments
+
+# View PR with all details
+gh pr view {PR_NUMBER} --comments
+```
+
+### Review Process
+
+1. **After creating a PR**, poll for review comments for at least 5 minutes:
+   ```bash
+   # Poll every 60 seconds for 5 minutes
+   for i in {1..5}; do
+     echo "Checking for reviews (attempt $i/5)..."
+     gh api repos/Byte-Ventures/claude-trader/issues/{PR_NUMBER}/comments
+     sleep 60
+   done
+   ```
+2. **Before merging any PR**, fetch and read ALL review comments
+3. **Critical issues** (marked 🔴) must be fixed before merge
+4. **High priority issues** (marked 🟡) should be addressed or documented why not
+5. **Security concerns** require immediate attention
+6. After fixes, push new commit and re-request review if needed
+
+### Bot Reviews
+
+The `claude[bot]` automatically reviews PRs. Its comments appear under `/issues/{PR_NUMBER}/comments`. Always read these thoroughly - they may identify:
+- Type errors
+- Security vulnerabilities
+- Missing error handling
+- API compatibility issues

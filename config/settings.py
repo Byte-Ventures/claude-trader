@@ -7,6 +7,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+import os
+import warnings
+
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -226,42 +229,54 @@ class Settings(BaseSettings):
         description="Enable Telegram notifications"
     )
 
-    # AI Trade Review (via OpenRouter)
+    # Multi-Agent Trade Review (via OpenRouter)
     openrouter_api_key: Optional[SecretStr] = Field(
         default=None,
         description="OpenRouter API key for AI trade review"
     )
     ai_review_enabled: bool = Field(
         default=False,
-        description="Enable AI trade review via OpenRouter"
+        description="Enable multi-agent AI trade review via OpenRouter"
     )
-    openrouter_model: str = Field(
-        default="anthropic/claude-sonnet-4",
-        description="Model to use via OpenRouter (e.g., anthropic/claude-3-haiku, openai/gpt-4o)"
+    reviewer_model_1: str = Field(
+        default="x-ai/grok-4-fast",
+        description="First reviewer model (stance randomly assigned)"
     )
-    claude_veto_action: VetoAction = Field(
+    reviewer_model_2: str = Field(
+        default="qwen/qwen3-next-80b-a3b-instruct",
+        description="Second reviewer model (stance randomly assigned)"
+    )
+    reviewer_model_3: str = Field(
+        default="google/gemini-2.5-flash",
+        description="Third reviewer model (stance randomly assigned)"
+    )
+    judge_model: str = Field(
+        default="deepseek/deepseek-chat-v3.1",
+        description="Judge model for final decision synthesis"
+    )
+    veto_action: VetoAction = Field(
         default=VetoAction.INFO,
         description="Action on veto: skip, reduce, delay, info"
     )
-    claude_veto_threshold: float = Field(
+    veto_threshold: float = Field(
         default=0.8,
         ge=0.5,
         le=1.0,
         description="Confidence threshold to trigger veto"
     )
-    claude_position_reduction: float = Field(
+    position_reduction: float = Field(
         default=0.5,
         ge=0.1,
         le=0.9,
         description="Position size multiplier for 'reduce' veto action"
     )
-    claude_delay_minutes: int = Field(
+    delay_minutes: int = Field(
         default=15,
         ge=5,
         le=60,
         description="Minutes to delay for 'delay' veto action"
     )
-    claude_interesting_hold_margin: int = Field(
+    interesting_hold_margin: int = Field(
         default=15,
         ge=5,
         le=30,
@@ -270,6 +285,28 @@ class Settings(BaseSettings):
     ai_review_all: bool = Field(
         default=False,
         description="Review ALL decisions with AI (for debugging/testing)"
+    )
+
+    # Hourly Market Analysis (uses same multi-agent system as trade reviews)
+    hourly_analysis_enabled: bool = Field(
+        default=True,
+        description="Enable hourly AI market analysis during volatile conditions (uses reviewer models)"
+    )
+
+    # Market Research (for hourly analysis)
+    market_research_enabled: bool = Field(
+        default=True,
+        description="Fetch online research (news, on-chain data) for market analysis"
+    )
+    ai_web_search_enabled: bool = Field(
+        default=True,
+        description="Allow AI models to search web during market analysis"
+    )
+    market_research_cache_minutes: int = Field(
+        default=15,
+        ge=5,
+        le=60,
+        description="Cache duration for research data (minutes)"
     )
 
     # Market Regime Adaptation
@@ -344,6 +381,41 @@ class Settings(BaseSettings):
                 # Disable Telegram if not configured
                 self.telegram_enabled = False
         return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_deprecated_claude_vars(cls, data: dict) -> dict:
+        """
+        Backward compatibility: support old CLAUDE_* environment variable names.
+
+        Maps deprecated names to new names with a deprecation warning.
+        """
+        # Mapping of old CLAUDE_* vars to new names
+        deprecated_mapping = {
+            "CLAUDE_VETO_ACTION": "VETO_ACTION",
+            "CLAUDE_VETO_THRESHOLD": "VETO_THRESHOLD",
+            "CLAUDE_POSITION_REDUCTION": "POSITION_REDUCTION",
+            "CLAUDE_DELAY_MINUTES": "DELAY_MINUTES",
+            "CLAUDE_INTERESTING_HOLD_MARGIN": "INTERESTING_HOLD_MARGIN",
+        }
+
+        for old_name, new_name in deprecated_mapping.items():
+            old_value = os.environ.get(old_name)
+            new_value = os.environ.get(new_name)
+
+            # If old var is set but new var is not, use old value and warn
+            if old_value is not None and new_value is None:
+                warnings.warn(
+                    f"Environment variable {old_name} is deprecated. Use {new_name} instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                # Set the new key in the data dict
+                key = new_name.lower()
+                if key not in data or data.get(key) is None:
+                    data[key] = old_value
+
+        return data
 
     @property
     def is_paper_trading(self) -> bool:
