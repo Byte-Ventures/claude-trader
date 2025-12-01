@@ -469,7 +469,7 @@ class TelegramNotifier:
             f"{new_emoji} <b>{new_regime.replace('_', ' ').title()}</b>\n\n"
             f"<b>Adjustments</b>:\n"
             f"  Threshold: {threshold_text}\n"
-            f"  Position size: {position_mult:.0%}\n\n"
+            f"  Position size: {position_mult:.2f}×\n\n"
             f"<b>Market Conditions</b>:\n{components_text}\n\n"
             f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
