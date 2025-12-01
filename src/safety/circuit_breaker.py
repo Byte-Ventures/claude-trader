@@ -64,6 +64,10 @@ class CircuitBreakerConfig:
 
     # Time window for price change detection (seconds)
     price_window: int = 3600  # 1 hour
+    price_window_24h: int = 86400  # 24 hours for sustained crash detection
+
+    # Extended window thresholds (24-hour)
+    price_drop_red_24h: float = 20.0  # 20% drop in 24h triggers RED
 
     # BLACK state recovery (None = manual only, hours value = auto-recovery)
     black_recovery_hours: Optional[int] = None
@@ -107,6 +111,7 @@ class CircuitBreaker:
 
         # Price history for change detection
         self._price_history: list[tuple[datetime, float]] = []
+        self._price_history_24h: list[tuple[datetime, float]] = []
 
     @property
     def level(self) -> BreakerLevel:
@@ -238,11 +243,18 @@ class CircuitBreaker:
         """
         now = datetime.now()
         self._price_history.append((now, price))
+        self._price_history_24h.append((now, price))
 
-        # Clean old entries
+        # Clean old entries (1-hour window)
         cutoff = now - timedelta(seconds=self.config.price_window)
         self._price_history = [
             (ts, p) for ts, p in self._price_history if ts > cutoff
+        ]
+
+        # Clean old entries (24-hour window)
+        cutoff_24h = now - timedelta(seconds=self.config.price_window_24h)
+        self._price_history_24h = [
+            (ts, p) for ts, p in self._price_history_24h if ts > cutoff_24h
         ]
 
     def check_price_movement(self, current_price: float) -> Optional[BreakerStatus]:
@@ -257,24 +269,30 @@ class CircuitBreaker:
         """
         self.record_price(current_price)
 
-        if len(self._price_history) < 2:
-            return None
+        # Check 1-hour window (flash crash detection)
+        if len(self._price_history) >= 2:
+            oldest_price = self._price_history[0][1]
+            change_percent = ((current_price - oldest_price) / oldest_price) * 100
 
-        # Get oldest price in window
-        oldest_price = self._price_history[0][1]
-        change_percent = ((current_price - oldest_price) / oldest_price) * 100
+            # Check for price drop
+            if change_percent <= -self.config.price_drop_red:
+                self.trip(BreakerLevel.RED, f"Price dropped {abs(change_percent):.1f}% in {self.config.price_window // 60} minutes")
+            elif change_percent <= -self.config.price_drop_yellow:
+                self.trip(BreakerLevel.YELLOW, f"Price dropped {abs(change_percent):.1f}% in {self.config.price_window // 60} minutes")
 
-        # Check for price drop
-        if change_percent <= -self.config.price_drop_red:
-            self.trip(BreakerLevel.RED, f"Price dropped {abs(change_percent):.1f}% in {self.config.price_window // 60} minutes")
-        elif change_percent <= -self.config.price_drop_yellow:
-            self.trip(BreakerLevel.YELLOW, f"Price dropped {abs(change_percent):.1f}% in {self.config.price_window // 60} minutes")
+            # Check for price spike
+            if change_percent >= self.config.price_spike_red:
+                self.trip(BreakerLevel.RED, f"Price spiked {change_percent:.1f}% in {self.config.price_window // 60} minutes")
+            elif change_percent >= self.config.price_spike_yellow:
+                self.trip(BreakerLevel.YELLOW, f"Price spiked {change_percent:.1f}% in {self.config.price_window // 60} minutes")
 
-        # Check for price spike
-        if change_percent >= self.config.price_spike_red:
-            self.trip(BreakerLevel.RED, f"Price spiked {change_percent:.1f}% in {self.config.price_window // 60} minutes")
-        elif change_percent >= self.config.price_spike_yellow:
-            self.trip(BreakerLevel.YELLOW, f"Price spiked {change_percent:.1f}% in {self.config.price_window // 60} minutes")
+        # Check 24-hour window (sustained crash detection)
+        if len(self._price_history_24h) >= 2:
+            oldest_price_24h = self._price_history_24h[0][1]
+            change_percent_24h = ((current_price - oldest_price_24h) / oldest_price_24h) * 100
+
+            if change_percent_24h <= -self.config.price_drop_red_24h:
+                self.trip(BreakerLevel.RED, f"Price dropped {abs(change_percent_24h):.1f}% in 24 hours (sustained crash)")
 
         return self.status
 

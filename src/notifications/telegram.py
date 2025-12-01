@@ -42,6 +42,7 @@ DEFAULT_COOLDOWNS = {
     "startup": 0,             # Always send
     "shutdown": 0,            # Always send
     "kill_switch": 0,         # Always send (critical)
+    "market_analysis": 0,     # Always send (fires once per hour)
 }
 
 
@@ -359,13 +360,12 @@ class TelegramNotifier:
 
     def notify_trade_review(self, review, review_type: str) -> None:
         """
-        Send AI trade analysis to Telegram.
+        Send multi-agent AI trade analysis to Telegram.
 
         Args:
-            review: ReviewResult from TradeReviewer
+            review: MultiAgentReviewResult from TradeReviewer
             review_type: "trade", "interesting_hold", or "hold"
         """
-        sentiment_emoji = {"bullish": "🟢", "bearish": "🔴", "neutral": "🟡"}
         ctx = review.trade_context
 
         # Format signal breakdown
@@ -373,36 +373,123 @@ class TelegramNotifier:
         breakdown_text = self._format_signal_breakdown(breakdown)
 
         if review_type in ("interesting_hold", "hold"):
-            # Hold notification (interesting or regular debug hold)
+            # Hold notification with multi-agent summary
             title = "🔍 <b>Interesting Hold</b>" if review_type == "interesting_hold" else "📋 <b>Hold Analysis</b>"
+
+            # Build agent summary for holds (with reasoning)
+            stance_emoji = {"pro": "🟢", "neutral": "⚪", "opposing": "🔴"}
+            agent_lines = []
+            for agent in review.reviews:
+                model_short = agent.model.split("/")[-1]
+                verdict = "✅" if agent.approved else "❌"
+                conf = f"{agent.confidence*100:.0f}%"
+                stance_label = agent.stance.capitalize()
+                reasoning_short = agent.reasoning[:80] + "..." if len(agent.reasoning) > 80 else agent.reasoning
+                agent_lines.append(
+                    f"{stance_emoji.get(agent.stance, '⚪')} <b>{model_short}</b> ({stance_label}): "
+                    f"{verdict} {conf}\n  <i>{reasoning_short}</i>"
+                )
+            agents_text = "\n\n".join(agent_lines) if agent_lines else "No reviews"
+
+            # Format recommendation
+            rec_emoji = {"wait": "⏳", "accumulate": "📈", "reduce": "📉"}
+            rec_text = {
+                "wait": "Wait for clearer signals",
+                "accumulate": "Good opportunity to accumulate",
+                "reduce": "Consider reducing exposure",
+            }
+            recommendation = review.judge_recommendation
+
+            # For holds: APPROVED means "consider action", REJECTED means "hold confirmed"
+            # Flip terminology to be intuitive for holds
+            if review.judge_decision:
+                judge_decision_text = "⚠️ ACTION SUGGESTED"
+            else:
+                judge_decision_text = "✅ HOLD CONFIRMED"
+
             message = (
                 f"{title}\n\n"
                 f"Signal Score: {ctx.get('score', 0)}/100 (threshold: 60)\n"
-                f"Price: ${ctx.get('price', 0):,.2f}\n\n"
+                f"Price: ${ctx.get('price', 0):,.2f}\n"
+                f"📊 Fear & Greed: {ctx.get('fear_greed', 'N/A')} ({ctx.get('fear_greed_class', '')})\n\n"
                 f"<b>Signal Breakdown</b>:\n{breakdown_text}\n\n"
-                f"{sentiment_emoji.get(review.sentiment, '⚪')} <b>Sentiment</b>: {review.sentiment.title()}\n"
-                f"📊 <b>Fear & Greed</b>: {ctx.get('fear_greed', 'N/A')} ({ctx.get('fear_greed_class', '')})\n\n"
-                f"💬 <b>Why holding</b>:\n{review.reasoning}\n\n"
+                f"<b>Agent Reviews</b>:\n{agents_text}\n\n"
+                f"<b>━━━ Judge Decision ━━━</b>\n"
+                f"{judge_decision_text} ({review.judge_confidence*100:.0f}% confidence)\n"
+                f"{rec_emoji.get(recommendation, '📌')} Recommendation: <b>{rec_text.get(recommendation, recommendation.upper())}</b>\n\n"
+                f"<i>{review.judge_reasoning}</i>\n\n"
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
         else:
-            # Trade review notification
-            emoji = "✅" if review.approved else "⛔"
+            # Multi-agent trade review notification
             action = ctx.get('action', 'unknown').upper()
 
-            veto_text = ""
-            if not review.approved and review.veto_action:
-                veto_text = f"\n🚫 <b>VETOED</b> - Action: {review.veto_action}"
+            # Build agent reviews section
+            stance_emoji = {"pro": "🟢", "neutral": "⚪", "opposing": "🔴"}
+            agent_lines = []
+
+            for agent in review.reviews:
+                model_short = agent.model.split("/")[-1]
+                verdict = "✅" if agent.approved else "❌"
+                conf = f"{agent.confidence*100:.0f}%"
+                stance_label = agent.stance.capitalize()
+                reasoning_short = agent.reasoning[:80] + "..." if len(agent.reasoning) > 80 else agent.reasoning
+                agent_lines.append(
+                    f"{stance_emoji.get(agent.stance, '⚪')} <b>{model_short}</b> ({stance_label}): "
+                    f"{verdict} {conf}\n  <i>{reasoning_short}</i>"
+                )
+
+            agents_text = "\n\n".join(agent_lines) if agent_lines else "  No agent reviews"
+
+            # Format recommendation
+            rec_emoji = {"wait": "⏳", "accumulate": "📈", "reduce": "📉"}
+            rec_text = {
+                "wait": "Wait for clearer signals",
+                "accumulate": "Good opportunity to accumulate",
+                "reduce": "Consider reducing exposure",
+            }
+            recommendation = review.judge_recommendation
+
+            # Judge decision
+            judge_decision_text = "✅ APPROVED" if review.judge_decision else "⛔ REJECTED"
+
+            # Veto action explanation
+            veto_action = review.final_veto_action
+            if veto_action:
+                veto_explanations = {
+                    "skip": "🚫 TRADE CANCELLED",
+                    "reduce": "⚠️ POSITION REDUCED TO 50%",
+                    "delay": "⏸️ TRADE DELAYED 15 MIN",
+                    "info": "ℹ️ WARNING LOGGED, TRADE PROCEEDS",
+                }
+                veto_text = f"\n\n<b>Veto Action</b>: {veto_explanations.get(veto_action, veto_action.upper())}"
+            else:
+                veto_text = ""
+
+            # Final outcome
+            if review.judge_decision:
+                outcome = "✅ <b>TRADE WILL EXECUTE</b>"
+            elif veto_action == "skip":
+                outcome = "🚫 <b>TRADE BLOCKED</b>"
+            elif veto_action == "reduce":
+                outcome = "⚠️ <b>TRADE EXECUTES (REDUCED)</b>"
+            elif veto_action == "delay":
+                outcome = "⏸️ <b>TRADE DELAYED</b>"
+            else:
+                outcome = "ℹ️ <b>TRADE PROCEEDS (INFO ONLY)</b>"
 
             message = (
-                f"{emoji} <b>Trade Review</b>\n\n"
-                f"Signal: {action} @ ${ctx.get('price', 0):,.2f}\n"
-                f"Technical Score: {ctx.get('score', 0)}/100\n\n"
-                f"<b>Signal Breakdown</b>:\n{breakdown_text}\n\n"
-                f"{sentiment_emoji.get(review.sentiment, '⚪')} <b>Sentiment</b>: {review.sentiment.title()}\n"
-                f"📊 <b>Fear & Greed</b>: {ctx.get('fear_greed', 'N/A')} ({ctx.get('fear_greed_class', '')})\n\n"
-                f"💬 <b>Claude's Analysis</b>:\n{review.reasoning}"
+                f"🤖 <b>Multi-Agent Trade Review</b>\n\n"
+                f"📊 <b>Trade</b>: {action} @ ${ctx.get('price', 0):,.2f}\n"
+                f"Signal Score: {ctx.get('score', 0)}/100\n"
+                f"Fear & Greed: {ctx.get('fear_greed', 'N/A')} ({ctx.get('fear_greed_class', '')})\n\n"
+                f"<b>Agent Reviews</b>:\n{agents_text}\n\n"
+                f"<b>━━━ Judge Decision ━━━</b>\n"
+                f"{judge_decision_text} ({review.judge_confidence*100:.0f}% confidence)\n"
+                f"{rec_emoji.get(recommendation, '📌')} Recommendation: <b>{rec_text.get(recommendation, recommendation.upper())}</b>\n\n"
+                f"<i>{review.judge_reasoning}</i>"
                 f"{veto_text}\n\n"
+                f"{outcome}\n\n"
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
 
@@ -506,3 +593,81 @@ class TelegramNotifier:
                     lines.append(f"  ➖ {name}: 0")
 
         return "\n".join(lines) if lines else "  No breakdown available"
+
+    def notify_market_analysis(
+        self,
+        analysis,
+        indicators,
+        volatility: str,
+        fear_greed: int,
+        fear_greed_class: str,
+        current_price: Decimal,
+    ) -> None:
+        """
+        Send hourly market analysis notification.
+
+        Args:
+            analysis: MarketAnalysis result from AI
+            indicators: Current indicator values
+            volatility: Volatility level
+            fear_greed: Fear & Greed index value
+            fear_greed_class: Fear & Greed classification
+            current_price: Current BTC price
+        """
+        # Outlook emoji
+        outlook_emoji = {
+            "bullish": "🟢",
+            "bearish": "🔴",
+            "neutral": "⚪",
+        }
+
+        # Volatility emoji
+        vol_emoji = {
+            "low": "🌙",
+            "normal": "☀️",
+            "high": "⚡",
+            "extreme": "🌪️",
+        }
+
+        # Recommendation emoji
+        rec_emoji = {
+            "wait": "⏳",
+            "accumulate": "📈",
+            "reduce": "📉",
+        }
+
+        # Format RSI status
+        rsi_status = "N/A"
+        if indicators.rsi:
+            if indicators.rsi < 30:
+                rsi_status = f"{indicators.rsi:.1f} (Oversold)"
+            elif indicators.rsi > 70:
+                rsi_status = f"{indicators.rsi:.1f} (Overbought)"
+            else:
+                rsi_status = f"{indicators.rsi:.1f}"
+
+        # Format MACD
+        macd_status = "N/A"
+        if indicators.macd_histogram:
+            if indicators.macd_histogram > 0:
+                macd_status = f"{indicators.macd_histogram:.0f} (Bullish)"
+            else:
+                macd_status = f"{indicators.macd_histogram:.0f} (Bearish)"
+
+        message = (
+            f"📊 <b>Hourly Market Analysis</b>\n\n"
+            f"<b>Outlook</b>: {outlook_emoji.get(analysis.outlook, '⚪')} "
+            f"{analysis.outlook.title()} ({analysis.confidence*100:.0f}% confidence)\n"
+            f"<b>Volatility</b>: {vol_emoji.get(volatility, '☀️')} {volatility.title()}\n\n"
+            f"<b>Current Indicators</b>:\n"
+            f"  💰 Price: ${float(current_price):,.2f}\n"
+            f"  📊 RSI: {rsi_status}\n"
+            f"  📈 MACD: {macd_status}\n"
+            f"  😨 Fear & Greed: {fear_greed} ({fear_greed_class})\n\n"
+            f"💡 <b>Summary</b>:\n{analysis.summary}\n\n"
+            f"{rec_emoji.get(analysis.recommendation, '⏳')} <b>Recommendation</b>: "
+            f"{analysis.recommendation.title()}\n\n"
+            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
+        self.send_message_sync(message)

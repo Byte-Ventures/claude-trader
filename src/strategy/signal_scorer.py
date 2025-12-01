@@ -8,6 +8,7 @@ Trade execution requires score magnitude >= threshold (default: 60).
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Optional
 
@@ -15,7 +16,7 @@ import pandas as pd
 import structlog
 
 from src.indicators.rsi import calculate_rsi, get_rsi_signal_graduated
-from src.indicators.macd import calculate_macd, get_macd_signal, get_macd_histogram_signal
+from src.indicators.macd import calculate_macd, get_macd_signal_graduated
 from src.indicators.bollinger import calculate_bollinger_bands, get_bollinger_signal_graduated
 from src.indicators.ema import calculate_ema_crossover, get_ema_signal_graduated, get_ema_trend
 from src.indicators.atr import calculate_atr, get_volatility_level
@@ -104,6 +105,9 @@ class SignalScorer:
         self.weights = weights or SignalWeights()
         self.threshold = threshold
 
+        # Crash protection: track oversold buys
+        self._oversold_buy_times: list[datetime] = []
+
         # Indicator parameters
         self.rsi_period = rsi_period
         self.rsi_oversold = rsi_oversold
@@ -163,6 +167,43 @@ class SignalScorer:
             self.atr_period = atr_period
 
         logger.info("signal_scorer_settings_updated")
+
+    def record_oversold_buy(self) -> None:
+        """Record an oversold buy for rate limiting during crashes."""
+        now = datetime.now()
+        self._oversold_buy_times.append(now)
+        # Clean old entries
+        cutoff = now - timedelta(hours=24)
+        self._oversold_buy_times = [t for t in self._oversold_buy_times if t > cutoff]
+        logger.debug("oversold_buy_recorded", count=len(self._oversold_buy_times))
+
+    def can_buy_oversold(self) -> bool:
+        """Check if we can make another oversold buy (max 2 per 24h)."""
+        now = datetime.now()
+        cutoff = now - timedelta(hours=24)
+        recent_buys = [t for t in self._oversold_buy_times if t > cutoff]
+        return len(recent_buys) < 2
+
+    def is_price_stabilized(self, close_prices: pd.Series, window_candles: int = 12) -> bool:
+        """
+        Check if price has stopped falling (stabilized).
+
+        Args:
+            close_prices: Series of closing prices
+            window_candles: Number of candles to check (default 12 = ~2 hours with 10-min candles)
+
+        Returns:
+            True if price is stable/recovering (not making new lows)
+        """
+        if len(close_prices) < window_candles:
+            return True  # Not enough data, allow trade
+
+        recent = close_prices.tail(window_candles)
+        current = recent.iloc[-1]
+        min_in_window = recent.min()
+
+        # Stabilized if current price >= minimum in window (not making new lows)
+        return current >= min_in_window
 
     def calculate_score(
         self,
@@ -228,11 +269,9 @@ class SignalScorer:
         breakdown["rsi"] = rsi_score
         total_score += rsi_score
 
-        # MACD component (crossover + histogram)
-        macd_cross = get_macd_signal(macd_result)
-        macd_hist = get_macd_histogram_signal(macd_result)
-        # Equal weight for crossover and histogram (50/50)
-        macd_score = int((macd_cross * 0.5 + macd_hist * 0.5) * self.weights.macd)
+        # MACD component (graduated: returns -1.0 to +1.0)
+        macd_signal = get_macd_signal_graduated(macd_result, price)
+        macd_score = int(macd_signal * self.weights.macd)
         breakdown["macd"] = macd_score
         total_score += macd_score
 
@@ -285,10 +324,33 @@ class SignalScorer:
             breakdown["volume"] = 0
 
         # Trend filter: penalize counter-trend trades (scaled by signal strength)
-        # Buying in a downtrend or selling in an uptrend is riskier
+        # Skip penalty for extreme RSI (mean-reversion zones) with crash protection
         trend = get_ema_trend(ema_result)
         trend_adjustment = 0
-        if total_score > 0 and trend == "bearish":
+        rsi_extreme = indicators.rsi is not None and (indicators.rsi < 25 or indicators.rsi > 75)
+
+        # Crash protection checks for mean-reversion trades
+        can_mean_revert = self.can_buy_oversold()
+        price_stable = self.is_price_stabilized(close)
+
+        if rsi_extreme and can_mean_revert and price_stable:
+            # Allow mean-reversion trade - all conditions met
+            logger.debug("trend_filter_skipped", reason="extreme_rsi_stable", rsi=indicators.rsi)
+        elif rsi_extreme and not can_mean_revert:
+            # Hit buy limit - apply trend filter anyway
+            logger.debug("trend_filter_applied", reason="oversold_buy_limit_reached", rsi=indicators.rsi)
+            if total_score > 0 and trend == "bearish":
+                signal_confidence = abs(total_score) / 100
+                trend_adjustment = -int(20 * (1 - signal_confidence * 0.5))
+                total_score += trend_adjustment
+        elif rsi_extreme and not price_stable:
+            # Price still falling - apply trend filter
+            logger.debug("trend_filter_applied", reason="price_still_falling", rsi=indicators.rsi)
+            if total_score > 0 and trend == "bearish":
+                signal_confidence = abs(total_score) / 100
+                trend_adjustment = -int(20 * (1 - signal_confidence * 0.5))
+                total_score += trend_adjustment
+        elif total_score > 0 and trend == "bearish":
             # Scale penalty: stronger signals get less penalty (10-20 points)
             signal_confidence = abs(total_score) / 100
             trend_adjustment = -int(20 * (1 - signal_confidence * 0.5))

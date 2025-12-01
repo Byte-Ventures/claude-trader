@@ -226,42 +226,54 @@ class Settings(BaseSettings):
         description="Enable Telegram notifications"
     )
 
-    # AI Trade Review (via OpenRouter)
+    # Multi-Agent Trade Review (via OpenRouter)
     openrouter_api_key: Optional[SecretStr] = Field(
         default=None,
         description="OpenRouter API key for AI trade review"
     )
     ai_review_enabled: bool = Field(
         default=False,
-        description="Enable AI trade review via OpenRouter"
+        description="Enable multi-agent AI trade review via OpenRouter"
     )
-    openrouter_model: str = Field(
-        default="anthropic/claude-sonnet-4",
-        description="Model to use via OpenRouter (e.g., anthropic/claude-3-haiku, openai/gpt-4o)"
+    reviewer_model_1: str = Field(
+        default="x-ai/grok-4-fast",
+        description="First reviewer model (stance randomly assigned)"
     )
-    claude_veto_action: VetoAction = Field(
+    reviewer_model_2: str = Field(
+        default="openai/gpt-5-mini",
+        description="Second reviewer model (stance randomly assigned)"
+    )
+    reviewer_model_3: str = Field(
+        default="google/gemini-2.5-flash",
+        description="Third reviewer model (stance randomly assigned)"
+    )
+    judge_model: str = Field(
+        default="deepseek/deepseek-chat-v3.1",
+        description="Judge model for final decision synthesis"
+    )
+    veto_action: VetoAction = Field(
         default=VetoAction.INFO,
         description="Action on veto: skip, reduce, delay, info"
     )
-    claude_veto_threshold: float = Field(
+    veto_threshold: float = Field(
         default=0.8,
         ge=0.5,
         le=1.0,
         description="Confidence threshold to trigger veto"
     )
-    claude_position_reduction: float = Field(
+    position_reduction: float = Field(
         default=0.5,
         ge=0.1,
         le=0.9,
         description="Position size multiplier for 'reduce' veto action"
     )
-    claude_delay_minutes: int = Field(
+    delay_minutes: int = Field(
         default=15,
         ge=5,
         le=60,
         description="Minutes to delay for 'delay' veto action"
     )
-    claude_interesting_hold_margin: int = Field(
+    interesting_hold_margin: int = Field(
         default=15,
         ge=5,
         le=30,
@@ -270,6 +282,16 @@ class Settings(BaseSettings):
     ai_review_all: bool = Field(
         default=False,
         description="Review ALL decisions with AI (for debugging/testing)"
+    )
+
+    # Hourly Market Analysis
+    hourly_analysis_enabled: bool = Field(
+        default=True,
+        description="Enable hourly AI market analysis during volatile conditions"
+    )
+    hourly_analysis_model: str = Field(
+        default="anthropic/claude-sonnet-4.5",
+        description="Model to use for hourly market analysis"
     )
 
     # Market Regime Adaptation

@@ -8,6 +8,8 @@ Works with any trading pair (BTC-USD, BTC-EUR, ETH-USD, etc.).
 
 - **Multi-Exchange**: Supports Coinbase and Kraken with unified interface
 - **Multi-Indicator Strategy**: Combines RSI, MACD, Bollinger Bands, EMA crossover, and ATR
+- **Multi-Agent AI Review**: 3 reviewers (Pro/Neutral/Opposing) + judge for trade decisions
+- **Hourly Market Analysis**: AI-powered analysis during volatile conditions
 - **Safety Systems**: Kill switch, circuit breaker, loss limits, order validation
 - **Paper Trading**: Test strategies with virtual money using real market data
 - **Telegram Notifications**: Real-time alerts for trades, errors, and daily summaries
@@ -80,15 +82,29 @@ Edit `.env` to customize. See `.env.example` for all options with documentation.
 | `STOP_LOSS_ATR_MULTIPLIER` | `1.5` | Stop loss distance (ATR multiples) |
 | `TAKE_PROFIT_ATR_MULTIPLIER` | `2.0` | Take profit distance (ATR multiples) |
 
-### AI Trade Review (Optional)
+### Multi-Agent AI Trade Review (Optional)
+
+Uses 3 reviewer agents with different stances (Pro, Neutral, Opposing) plus a judge for final decision.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AI_REVIEW_ENABLED` | `false` | Enable AI review via OpenRouter |
+| `AI_REVIEW_ENABLED` | `false` | Enable multi-agent AI review via OpenRouter |
 | `OPENROUTER_API_KEY` | - | API key from openrouter.ai |
-| `OPENROUTER_MODEL` | `anthropic/claude-sonnet-4` | AI model to use |
-| `CLAUDE_VETO_ACTION` | `info` | `skip`, `reduce`, `delay`, or `info` |
+| `REVIEWER_MODEL_1` | `x-ai/grok-4-fast` | First reviewer model |
+| `REVIEWER_MODEL_2` | `openai/gpt-5-mini` | Second reviewer model |
+| `REVIEWER_MODEL_3` | `google/gemini-2.5-flash` | Third reviewer model |
+| `JUDGE_MODEL` | `deepseek/deepseek-chat-v3.1` | Judge model for final decision |
+| `VETO_ACTION` | `info` | `skip`, `reduce`, `delay`, or `info` |
 | `AI_REVIEW_ALL` | `false` | Review ALL decisions (debug mode) |
+
+### Hourly Market Analysis (Optional)
+
+AI-powered market analysis during volatile conditions (runs hourly when volatility is high/extreme).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HOURLY_ANALYSIS_ENABLED` | `true` | Enable hourly AI analysis |
+| `HOURLY_ANALYSIS_MODEL` | `anthropic/claude-sonnet-4.5` | Model for market analysis |
 
 ## Trading Strategy
 
@@ -214,7 +230,8 @@ coinbase-trader/
 │   ├── notifications/
 │   │   └── telegram.py
 │   ├── ai/
-│   │   └── trade_reviewer.py    # AI trade review (OpenRouter)
+│   │   ├── trade_reviewer.py    # Multi-agent AI trade review
+│   │   └── market_analyzer.py   # Hourly AI market analysis
 │   ├── state/
 │   │   └── database.py          # SQLite persistence
 │   └── daemon/

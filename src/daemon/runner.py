@@ -33,6 +33,7 @@ from src.strategy.signal_scorer import SignalScorer
 from src.strategy.position_sizer import PositionSizer, PositionSizeConfig
 from src.strategy.regime import MarketRegime, RegimeConfig, RegimeAdjustments, get_cached_sentiment
 from src.indicators.ema import get_ema_trend_from_values
+from src.ai.market_analyzer import MarketAnalyzer
 
 logger = structlog.get_logger(__name__)
 
@@ -63,6 +64,7 @@ class TradingDaemon:
         self._last_monthly_report: Optional[date] = None
         self._last_volatility: str = "normal"  # For adaptive interval
         self._last_regime: str = "neutral"  # For regime change notifications
+        self._last_hourly_analysis: Optional[datetime] = None  # For hourly market analysis
 
         # Create persistent event loop for async operations (avoids repeated asyncio.run())
         self._loop = asyncio.new_event_loop()
@@ -122,24 +124,45 @@ class TradingDaemon:
             enabled=settings.telegram_enabled,
         )
 
-        # Initialize AI trade reviewer (optional, via OpenRouter)
+        # Initialize multi-agent AI trade reviewer (optional, via OpenRouter)
         self.trade_reviewer = None
         if settings.ai_review_enabled and settings.openrouter_api_key:
             from src.ai.trade_reviewer import TradeReviewer
             self.trade_reviewer = TradeReviewer(
                 api_key=settings.openrouter_api_key.get_secret_value(),
                 db=self.db,
-                veto_action=settings.claude_veto_action,
-                veto_threshold=settings.claude_veto_threshold,
-                position_reduction=settings.claude_position_reduction,
-                delay_minutes=settings.claude_delay_minutes,
-                interesting_hold_margin=settings.claude_interesting_hold_margin,
-                model=settings.openrouter_model,
+                reviewer_models=[
+                    settings.reviewer_model_1,
+                    settings.reviewer_model_2,
+                    settings.reviewer_model_3,
+                ],
+                judge_model=settings.judge_model,
+                veto_action=settings.veto_action,
+                veto_threshold=settings.veto_threshold,
+                position_reduction=settings.position_reduction,
+                delay_minutes=settings.delay_minutes,
+                interesting_hold_margin=settings.interesting_hold_margin,
                 review_all=settings.ai_review_all,
             )
-            logger.info("ai_trade_reviewer_initialized", model=settings.openrouter_model, review_all=settings.ai_review_all)
+            logger.info(
+                "multi_agent_trade_reviewer_initialized",
+                reviewers=[settings.reviewer_model_1, settings.reviewer_model_2, settings.reviewer_model_3],
+                judge=settings.judge_model,
+                review_all=settings.ai_review_all,
+            )
         else:
             logger.info("ai_trade_reviewer_disabled")
+
+        # Initialize hourly market analyzer (optional, via OpenRouter)
+        self.market_analyzer: Optional[MarketAnalyzer] = None
+        if settings.hourly_analysis_enabled and settings.openrouter_api_key:
+            self.market_analyzer = MarketAnalyzer(
+                api_key=settings.openrouter_api_key.get_secret_value(),
+                model=settings.hourly_analysis_model,
+            )
+            logger.info("market_analyzer_initialized", model=settings.hourly_analysis_model)
+        else:
+            logger.info("market_analyzer_disabled")
 
         # Initialize safety systems
         self.kill_switch = KillSwitch(
@@ -341,11 +364,11 @@ class TradingDaemon:
             # Update TradeReviewer (if enabled)
             if self.trade_reviewer:
                 self.trade_reviewer.review_all = new_settings.ai_review_all
-                self.trade_reviewer.veto_action = new_settings.claude_veto_action
-                self.trade_reviewer.veto_threshold = new_settings.claude_veto_threshold
-                self.trade_reviewer.position_reduction = new_settings.claude_position_reduction
-                self.trade_reviewer.delay_minutes = new_settings.claude_delay_minutes
-                self.trade_reviewer.interesting_hold_margin = new_settings.claude_interesting_hold_margin
+                self.trade_reviewer.veto_action = new_settings.veto_action
+                self.trade_reviewer.veto_threshold = new_settings.veto_threshold
+                self.trade_reviewer.position_reduction = new_settings.position_reduction
+                self.trade_reviewer.delay_minutes = new_settings.delay_minutes
+                self.trade_reviewer.interesting_hold_margin = new_settings.interesting_hold_margin
 
             logger.info(
                 "config_reload_complete",
@@ -418,6 +441,9 @@ class TradingDaemon:
                 self._check_daily_report()
                 self._check_weekly_report()
                 self._check_monthly_report()
+
+                # Check for hourly market analysis
+                self._check_hourly_analysis()
 
                 try:
                     self._trading_iteration()
@@ -643,7 +669,7 @@ class TradingDaemon:
 
             if should_review:
                 try:
-                    # Run async review using persistent event loop (more efficient than asyncio.run())
+                    # Run async multi-agent review using persistent event loop
                     review = self._loop.run_until_complete(self.trade_reviewer.review_trade(
                         signal_result=signal_result,
                         current_price=current_price,
@@ -654,30 +680,37 @@ class TradingDaemon:
                     # Always notify Telegram
                     self.notifier.notify_trade_review(review, review_type)
 
+                    # Log multi-agent review summary
+                    agent_summary = [
+                        {"model": r.model.split("/")[-1], "stance": r.stance, "approved": r.approved, "confidence": f"{r.confidence:.2f}"}
+                        for r in review.reviews
+                    ]
                     logger.info(
-                        "claude_trade_review",
+                        "multi_agent_trade_review",
                         review_type=review_type,
-                        approved=review.approved,
-                        confidence=f"{review.confidence:.2f}",
-                        sentiment=review.sentiment,
-                        veto_action=review.veto_action,
+                        agents=agent_summary,
+                        judge_decision="APPROVED" if review.judge_decision else "REJECTED",
+                        judge_confidence=f"{review.judge_confidence:.2f}",
+                        judge_recommendation=review.judge_recommendation,
+                        judge_reasoning=review.judge_reasoning[:100],
+                        veto_action=review.final_veto_action or "none",
                     )
 
                     # Handle veto (only for actual trades, not interesting holds)
-                    if review_type == "trade" and not review.approved:
-                        if review.veto_action == VetoAction.SKIP.value:
-                            logger.info("trade_vetoed", reason=review.reasoning)
+                    if review_type == "trade" and not review.judge_decision:
+                        if review.final_veto_action == VetoAction.SKIP.value:
+                            logger.info("trade_vetoed", reason=review.judge_reasoning)
                             return  # Skip this iteration
-                        elif review.veto_action == VetoAction.REDUCE.value:
-                            claude_veto_multiplier = self.settings.claude_position_reduction
+                        elif review.final_veto_action == VetoAction.REDUCE.value:
+                            claude_veto_multiplier = self.settings.position_reduction
                             logger.info(
-                                "trade_reduced_by_claude",
+                                "trade_reduced_by_review",
                                 multiplier=f"{claude_veto_multiplier:.2f}",
                             )
-                        elif review.veto_action == VetoAction.DELAY.value:
+                        elif review.final_veto_action == VetoAction.DELAY.value:
                             logger.info(
-                                "trade_delayed_by_claude",
-                                delay_minutes=self.settings.claude_delay_minutes,
+                                "trade_delayed_by_review",
+                                delay_minutes=self.settings.delay_minutes,
                             )
                             return  # Skip this iteration (user can check Telegram)
                         # VetoAction.INFO: log but proceed with trade
@@ -715,7 +748,8 @@ class TradingDaemon:
                 )
                 self._execute_buy(
                     candles, current_price, quote_balance, base_balance,
-                    signal_result.score, safety_multiplier
+                    signal_result.score, safety_multiplier,
+                    rsi_value=signal_result.indicators.rsi,
                 )
             else:
                 logger.info(
@@ -755,6 +789,7 @@ class TradingDaemon:
         base_balance: Decimal,
         signal_score: int,
         safety_multiplier: float,
+        rsi_value: Optional[float] = None,
     ) -> None:
         """Execute a buy order."""
         # Calculate position size
@@ -839,6 +874,10 @@ class TradingDaemon:
                 price=str(result.filled_price),
                 fee=str(result.fee),
             )
+
+            # Record oversold buy for crash protection rate limiting
+            if rsi_value is not None and rsi_value < 25:
+                self.signal_scorer.record_oversold_buy()
 
             self.circuit_breaker.record_order_success()
         else:
@@ -1305,6 +1344,103 @@ class TradingDaemon:
         )
 
         self.notifier.send_message_sync(message)
+
+    def _check_hourly_analysis(self) -> None:
+        """Run hourly market analysis during volatile conditions."""
+        # Skip if market analyzer not initialized
+        if not self.market_analyzer:
+            return
+
+        now = datetime.now()
+
+        # Only run once per hour
+        if self._last_hourly_analysis:
+            elapsed = (now - self._last_hourly_analysis).total_seconds()
+            if elapsed < 3600:
+                return
+
+        # Only run during high/extreme volatility
+        if self._last_volatility not in ("high", "extreme"):
+            return
+
+        # Run analysis
+        try:
+            # Get current market data for analysis
+            current_price = self.client.get_current_price(self.settings.trading_pair)
+            candles = self.client.get_candles(
+                self.settings.trading_pair,
+                granularity="ONE_HOUR",
+                limit=100,
+            )
+
+            # Calculate indicators
+            signal_result = self.signal_scorer.calculate_score(candles, current_price)
+            indicators = signal_result.indicators
+
+            # Get sentiment
+            sentiment_value = None
+            sentiment_class = "Unknown"
+            if self.settings.regime_sentiment_enabled:
+                try:
+                    sentiment_result = self._loop.run_until_complete(get_cached_sentiment())
+                    if sentiment_result and sentiment_result.value:
+                        sentiment_value = sentiment_result.value
+                        sentiment_class = sentiment_result.classification or "Unknown"
+                except Exception as e:
+                    logger.debug("sentiment_fetch_skipped", error=str(e))
+
+            # Calculate price changes from candles
+            price_change_1h = None
+            price_change_24h = None
+            if len(candles) >= 2:
+                prev_close = candles["close"].iloc[-2]
+                curr_close = candles["close"].iloc[-1]
+                if prev_close > 0:
+                    price_change_1h = ((curr_close - prev_close) / prev_close) * 100
+            if len(candles) >= 24:
+                prev_24h = candles["close"].iloc[-24]
+                curr_close = candles["close"].iloc[-1]
+                if prev_24h > 0:
+                    price_change_24h = ((curr_close - prev_24h) / prev_24h) * 100
+
+            # Run AI analysis
+            analysis = self._loop.run_until_complete(
+                self.market_analyzer.analyze_market(
+                    indicators=indicators,
+                    current_price=current_price,
+                    fear_greed=sentiment_value or 50,
+                    fear_greed_class=sentiment_class,
+                    regime=self._last_regime,
+                    volatility=self._last_volatility,
+                    price_change_1h=price_change_1h,
+                    price_change_24h=price_change_24h,
+                )
+            )
+
+            logger.info(
+                "hourly_market_analysis",
+                outlook=analysis.outlook,
+                confidence=f"{analysis.confidence:.2f}",
+                recommendation=analysis.recommendation,
+                summary=analysis.summary,
+                key_observation=analysis.key_observation,
+            )
+
+            # Send Telegram notification
+            self.notifier.notify_market_analysis(
+                analysis=analysis,
+                indicators=indicators,
+                volatility=self._last_volatility,
+                fear_greed=sentiment_value or 50,
+                fear_greed_class=sentiment_class,
+                current_price=current_price,
+            )
+
+        except Exception as e:
+            logger.error("hourly_analysis_failed", error=str(e))
+
+        # Update timestamp regardless of success/failure to prevent spam on errors
+        self._last_hourly_analysis = now
 
     def _create_trailing_stop(
         self, entry_price: Decimal, candles, is_paper: bool = False
