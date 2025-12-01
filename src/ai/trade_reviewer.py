@@ -1020,7 +1020,7 @@ Based on these three perspectives, provide the final market outlook."""
             tools = get_tools_for_model(model, enabled=True)
             if tools:
                 request_body["tools"] = tools
-                request_body["tool_choice"] = "required"  # Force web search
+                request_body["tool_choice"] = "auto"  # Let model decide when to search
 
         logger.debug("api_request", model=model, tools_enabled=tools is not None)
 

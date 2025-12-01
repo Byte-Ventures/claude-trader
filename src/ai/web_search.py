@@ -51,11 +51,11 @@ async def execute_web_search(query: str, max_results: int = 3) -> str:
         return "Web search unavailable: ddgs package not installed"
 
     try:
-        # Run sync search in thread pool to avoid blocking
+        # Run sync search in thread pool with timeout to prevent hanging
         loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(
-            None,
-            lambda: _sync_search(query, max_results)
+        results = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: _sync_search(query, max_results)),
+            timeout=15.0
         )
 
         if not results:
@@ -79,6 +79,9 @@ async def execute_web_search(query: str, max_results: int = 3) -> str:
         )
         return "\n".join(formatted)
 
+    except asyncio.TimeoutError:
+        logger.warning("web_search_timeout", query=query, timeout=15.0)
+        return f"Search timed out after 15 seconds for: {query}"
     except Exception as e:
         logger.error("web_search_failed", query=query, error=str(e))
         return f"Search failed: {str(e)[:100]}"

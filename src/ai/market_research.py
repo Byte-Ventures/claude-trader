@@ -8,7 +8,7 @@ from free APIs with caching to avoid rate limits.
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 import structlog
@@ -17,7 +17,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 logger = structlog.get_logger(__name__)
 
 # Cache storage
-_cache: dict[str, tuple[datetime, any]] = {}
+_cache: dict[str, tuple[datetime, Any]] = {}
 _cache_ttl_minutes: int = 15
 
 
@@ -27,7 +27,7 @@ def set_cache_ttl(minutes: int) -> None:
     _cache_ttl_minutes = minutes
 
 
-def _get_cached(key: str) -> Optional[any]:
+def _get_cached(key: str) -> Optional[Any]:
     """Get cached value if not expired."""
     if key in _cache:
         cached_at, value = _cache[key]
@@ -37,7 +37,7 @@ def _get_cached(key: str) -> Optional[any]:
     return None
 
 
-def _set_cached(key: str, value: any) -> None:
+def _set_cached(key: str, value: Any) -> None:
     """Cache a value."""
     _cache[key] = (datetime.now(), value)
 
@@ -112,14 +112,9 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
 
         news_items = []
         for item in data.get("Data", [])[:limit]:
-            # Determine sentiment from tags or default to neutral
-            tags = item.get("tags", "").lower()
-            if any(word in tags for word in ["bullish", "rally", "surge", "high"]):
-                sentiment = "positive"
-            elif any(word in tags for word in ["bearish", "crash", "drop", "low", "fear"]):
-                sentiment = "negative"
-            else:
-                sentiment = "neutral"
+            # Don't hardcode sentiment - let the AI model analyze news context
+            # The title and source are provided; the model will determine sentiment
+            sentiment = "neutral"
 
             news_items.append(NewsItem(
                 title=item.get("title", "")[:100],
