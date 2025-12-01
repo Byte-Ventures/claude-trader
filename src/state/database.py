@@ -135,6 +135,23 @@ class SystemState(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class RegimeHistory(Base):
+    """Historical record of market regime changes."""
+
+    __tablename__ = "regime_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    regime_name = Column(String(30), nullable=False)  # risk_on, neutral, risk_off, etc.
+    threshold_adjustment = Column(Integer, nullable=False)
+    position_multiplier = Column(String(10), nullable=False)
+    sentiment_value = Column(Integer, nullable=True)  # Fear & Greed value
+    sentiment_category = Column(String(30), nullable=True)
+    volatility_level = Column(String(20), nullable=True)
+    trend_direction = Column(String(20), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    is_paper = Column(Boolean, default=False)
+
+
 class TrailingStop(Base):
     """Trailing stop tracking for open positions."""
 
@@ -765,3 +782,65 @@ class Database:
                 TrailingStop.is_active == True,
             ).update({"is_active": False})
             return result > 0
+
+    # Regime history methods
+    def record_regime_change(
+        self,
+        regime_name: str,
+        threshold_adjustment: int,
+        position_multiplier: float,
+        sentiment_value: Optional[int] = None,
+        sentiment_category: Optional[str] = None,
+        volatility_level: Optional[str] = None,
+        trend_direction: Optional[str] = None,
+        is_paper: bool = False,
+    ) -> RegimeHistory:
+        """Record a market regime change."""
+        with self.session() as session:
+            record = RegimeHistory(
+                regime_name=regime_name,
+                threshold_adjustment=threshold_adjustment,
+                position_multiplier=str(position_multiplier),
+                sentiment_value=sentiment_value,
+                sentiment_category=sentiment_category,
+                volatility_level=volatility_level,
+                trend_direction=trend_direction,
+                is_paper=is_paper,
+            )
+            session.add(record)
+            session.flush()
+
+            logger.info(
+                "regime_change_recorded",
+                regime=regime_name,
+                threshold_adj=threshold_adjustment,
+                position_mult=position_multiplier,
+            )
+            return record
+
+    def get_last_regime(self, is_paper: bool = False) -> Optional[str]:
+        """Get the last recorded regime name for session recovery."""
+        with self.session() as session:
+            record = (
+                session.query(RegimeHistory)
+                .filter(RegimeHistory.is_paper == is_paper)
+                .order_by(RegimeHistory.created_at.desc())
+                .first()
+            )
+            return record.regime_name if record else None
+
+    def get_regime_history(
+        self, hours: int = 24, is_paper: bool = False
+    ) -> list[RegimeHistory]:
+        """Get regime change history for the past N hours."""
+        with self.session() as session:
+            cutoff = datetime.utcnow() - timedelta(hours=hours)
+            return (
+                session.query(RegimeHistory)
+                .filter(
+                    RegimeHistory.is_paper == is_paper,
+                    RegimeHistory.created_at > cutoff,
+                )
+                .order_by(RegimeHistory.created_at.desc())
+                .all()
+            )

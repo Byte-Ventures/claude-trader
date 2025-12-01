@@ -36,6 +36,7 @@ DEFAULT_COOLDOWNS = {
     "loss_limit": 3600,       # 1 hour
     "error": 1800,            # 30 minutes - same error won't repeat
     "order_failed": 1800,     # 30 minutes
+    "regime_change": 0,       # Always send (only fires on actual change)
     "trade": 0,               # Always send trade notifications
     "daily_summary": 0,       # Always send summaries
     "startup": 0,             # Always send
@@ -404,6 +405,74 @@ class TelegramNotifier:
                 f"{veto_text}\n\n"
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
+
+        self.send_message_sync(message)
+
+    def notify_regime_change(
+        self,
+        old_regime: str,
+        new_regime: str,
+        threshold_adj: int,
+        position_mult: float,
+        components: dict,
+    ) -> None:
+        """
+        Send notification when market regime changes.
+
+        Args:
+            old_regime: Previous regime name
+            new_regime: New regime name
+            threshold_adj: Threshold adjustment being applied
+            position_mult: Position size multiplier being applied
+            components: Breakdown of regime components (sentiment, volatility, trend)
+        """
+        # Regime emojis
+        regime_emoji = {
+            "risk_on": "🟢",
+            "opportunistic": "🟡",
+            "neutral": "⚪",
+            "cautious": "🟠",
+            "risk_off": "🔴",
+            "disabled": "⚫",
+        }
+
+        old_emoji = regime_emoji.get(old_regime, "⚪")
+        new_emoji = regime_emoji.get(new_regime, "⚪")
+
+        # Format components breakdown
+        component_lines = []
+        if "sentiment" in components:
+            s = components["sentiment"]
+            component_lines.append(
+                f"  Fear & Greed: {s.get('value', 'N/A')} ({s.get('category', '')})"
+            )
+        if "volatility" in components:
+            v = components["volatility"]
+            component_lines.append(f"  Volatility: {v.get('level', 'N/A')}")
+        if "trend" in components:
+            t = components["trend"]
+            component_lines.append(f"  Trend: {t.get('direction', 'N/A')}")
+
+        components_text = "\n".join(component_lines) if component_lines else "  No data"
+
+        # Threshold direction
+        if threshold_adj < 0:
+            threshold_text = f"{threshold_adj} (easier to trade)"
+        elif threshold_adj > 0:
+            threshold_text = f"+{threshold_adj} (harder to trade)"
+        else:
+            threshold_text = "0 (no change)"
+
+        message = (
+            f"📊 <b>Market Regime Changed</b>\n\n"
+            f"{old_emoji} {old_regime.replace('_', ' ').title()} → "
+            f"{new_emoji} <b>{new_regime.replace('_', ' ').title()}</b>\n\n"
+            f"<b>Adjustments</b>:\n"
+            f"  Threshold: {threshold_text}\n"
+            f"  Position size: {position_mult:.0%}\n\n"
+            f"<b>Market Conditions</b>:\n{components_text}\n\n"
+            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
 
         self.send_message_sync(message)
 

@@ -62,6 +62,7 @@ class TradingDaemon:
         self._last_weekly_report: Optional[date] = None
         self._last_monthly_report: Optional[date] = None
         self._last_volatility: str = "normal"  # For adaptive interval
+        self._last_regime: str = "neutral"  # For regime change notifications
 
         # Create persistent event loop for async operations (avoids repeated asyncio.run())
         self._loop = asyncio.new_event_loop()
@@ -208,6 +209,11 @@ class TradingDaemon:
             )
         )
         if settings.regime_adaptation_enabled:
+            # Restore last regime from database
+            last_regime = self.db.get_last_regime(is_paper=settings.is_paper_trading)
+            if last_regime:
+                self._last_regime = last_regime
+                logger.info("regime_restored_from_db", regime=last_regime)
             logger.info("market_regime_initialized", scale=settings.regime_adjustment_scale)
 
         # Register shutdown handlers
@@ -556,6 +562,52 @@ class TradingDaemon:
             trend=trend,
             signal_action=signal_result.action,
         )
+
+        # Notify on regime change
+        if regime.regime_name != self._last_regime:
+            logger.info(
+                "regime_changed",
+                old_regime=self._last_regime,
+                new_regime=regime.regime_name,
+                threshold_adj=regime.threshold_adjustment,
+                position_mult=regime.position_multiplier,
+            )
+
+            # Extract component data for logging
+            sentiment_value = None
+            sentiment_category = None
+            volatility_level = None
+            trend_direction = None
+
+            if "sentiment" in regime.components:
+                sentiment_value = regime.components["sentiment"].get("value")
+                sentiment_category = regime.components["sentiment"].get("category")
+            if "volatility" in regime.components:
+                volatility_level = regime.components["volatility"].get("level")
+            if "trend" in regime.components:
+                trend_direction = regime.components["trend"].get("direction")
+
+            # Record to database
+            self.db.record_regime_change(
+                regime_name=regime.regime_name,
+                threshold_adjustment=regime.threshold_adjustment,
+                position_multiplier=regime.position_multiplier,
+                sentiment_value=sentiment_value,
+                sentiment_category=sentiment_category,
+                volatility_level=volatility_level,
+                trend_direction=trend_direction,
+                is_paper=self.settings.is_paper_trading,
+            )
+
+            # Send Telegram notification
+            self.notifier.notify_regime_change(
+                old_regime=self._last_regime,
+                new_regime=regime.regime_name,
+                threshold_adj=regime.threshold_adjustment,
+                position_mult=regime.position_multiplier,
+                components=regime.components,
+            )
+            self._last_regime = regime.regime_name
 
         # Apply regime threshold adjustment to determine effective action
         effective_threshold = self.settings.signal_threshold + regime.threshold_adjustment
