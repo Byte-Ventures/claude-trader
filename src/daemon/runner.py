@@ -13,7 +13,7 @@ import asyncio
 import signal
 import time
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from threading import Event
 from typing import Optional, Union
 
@@ -38,6 +38,9 @@ logger = structlog.get_logger(__name__)
 
 # Default timeout for async operations (AI reviews, sentiment fetch)
 ASYNC_TIMEOUT_SECONDS = 120
+
+# Interval for periodic stop protection checks (seconds)
+STOP_PROTECTION_CHECK_INTERVAL_SECONDS = 300  # 5 minutes
 
 
 class TradingDaemon:
@@ -68,6 +71,7 @@ class TradingDaemon:
         self._last_regime: str = "neutral"  # For regime change notifications
         self._last_hourly_analysis: Optional[datetime] = None  # For hourly market analysis
         self._pending_post_volatility_analysis: bool = False  # Trigger analysis when volatility calms
+        self._last_stop_check: Optional[datetime] = None  # For periodic stop protection checks
 
         # Create persistent event loop for async operations (avoids repeated asyncio.run())
         self._loop = asyncio.new_event_loop()
@@ -462,6 +466,11 @@ class TradingDaemon:
                 trading_pair=self.settings.trading_pair,
             )
 
+            # SAFETY CHECK: Verify positions have stop protection
+            # This catches situations where the bot crashed after opening a position
+            # but before creating the stop-loss
+            self._verify_position_stop_protection()
+
             # Main loop
             while not self.shutdown_event.is_set():
                 # Check for config reload request
@@ -475,6 +484,10 @@ class TradingDaemon:
 
                 # Check for hourly market analysis
                 self._check_hourly_analysis()
+
+                # Periodic safety check: ensure positions have stop protection
+                # This catches edge cases like manual position opens or recovery failures
+                self._periodic_stop_protection_check()
 
                 try:
                     self._trading_iteration()
@@ -908,11 +921,47 @@ class TradingDaemon:
                 spot_rate=current_price,
             )
 
-            # Update position tracking for cost basis
-            self._update_position_after_buy(result.size, filled_price, result.fee, is_paper)
-
-            # Create trailing stop for the new position
-            self._create_trailing_stop(filled_price, candles, is_paper)
+            # Update position tracking and create stop protection
+            # CRITICAL: If stop creation fails, immediately close position (fail-safe)
+            try:
+                new_avg_cost = self._update_position_after_buy(result.size, filled_price, result.fee, is_paper)
+                self._create_trailing_stop(filled_price, candles, is_paper, avg_cost=new_avg_cost)
+            except Exception as stop_error:
+                # FAIL-SAFE: Cannot protect position, must close immediately
+                logger.critical(
+                    "stop_creation_failed_emergency_close",
+                    error=str(stop_error),
+                    action="closing_unprotected_position",
+                )
+                self.notifier.send_alert(
+                    f"🚨 EMERGENCY: Stop creation failed, closing position immediately: {stop_error}"
+                )
+                # Emergency sell the position we just bought
+                emergency_result = self.client.market_sell(
+                    self.settings.trading_pair,
+                    result.size,
+                )
+                if emergency_result.success:
+                    logger.warning(
+                        "emergency_position_closed",
+                        size=str(result.size),
+                        buy_price=str(filled_price),
+                        sell_price=str(emergency_result.filled_price),
+                    )
+                    self.notifier.send_alert(
+                        f"✅ Emergency close successful: sold {result.size} at {emergency_result.filled_price}"
+                    )
+                else:
+                    # Double failure - halt trading
+                    logger.critical(
+                        "emergency_close_failed_halting",
+                        error=emergency_result.error,
+                    )
+                    self.notifier.send_alert(
+                        f"🔴 CRITICAL: Emergency close FAILED. Halting trading. Manual intervention required!"
+                    )
+                    self.kill_switch.activate(f"Emergency close failed: {emergency_result.error}")
+                return  # Don't continue with normal post-buy flow
 
             # Update loss limiter (fee is a realized loss on buy)
             self.loss_limiter.record_trade(
@@ -1058,7 +1107,7 @@ class TradingDaemon:
 
     def _update_position_after_buy(
         self, size: Decimal, price: Decimal, fee: Decimal, is_paper: bool = False
-    ) -> None:
+    ) -> Decimal:
         """
         Update position with new buy, recalculating weighted average cost.
 
@@ -1069,6 +1118,9 @@ class TradingDaemon:
             price: Price paid per unit
             fee: Trading fee paid (in quote currency)
             is_paper: Whether this is a paper trade
+
+        Returns:
+            The new weighted average cost for the position
         """
         current = self.db.get_current_position(self.settings.trading_pair, is_paper=is_paper)
 
@@ -1098,6 +1150,8 @@ class TradingDaemon:
             new_qty=str(new_qty),
             new_avg_cost=str(new_avg_cost),
         )
+
+        return new_avg_cost
 
     def _calculate_realized_pnl(
         self, size: Decimal, sell_price: Decimal, fee: Decimal, is_paper: bool = False
@@ -1565,45 +1619,102 @@ class TradingDaemon:
         self._last_hourly_analysis = now
 
     def _create_trailing_stop(
-        self, entry_price: Decimal, candles, is_paper: bool = False
+        self,
+        entry_price: Decimal,
+        candles,  # pd.DataFrame with OHLCV data
+        is_paper: bool = False,
+        *,  # Force keyword-only for avg_cost
+        avg_cost: Decimal,
     ) -> None:
-        """Create a trailing stop for a new buy position."""
-        from src.strategy.indicators.atr import calculate_atr
+        """Create or update trailing stop for a position.
+
+        Args:
+            entry_price: The price at which the buy was executed (for logging)
+            candles: pandas DataFrame with OHLCV data for ATR calculation
+            is_paper: Whether this is paper trading
+            avg_cost: REQUIRED - Weighted average cost for hard stop calculation.
+                     Must be passed from caller to avoid race conditions.
+                     Do NOT query DB here - caller has the authoritative value.
+        """
+        from src.indicators.atr import calculate_atr
 
         try:
             # Calculate ATR for trailing stop distance
             atr_result = calculate_atr(candles, period=self.settings.atr_period)
             atr = atr_result.current
 
-            # Trailing activates at 1 ATR profit
-            activation = entry_price + atr
+            # Trailing activates at 1 ATR profit from average cost
+            activation = avg_cost + atr
             # Trailing distance is based on config multiplier
             distance = atr * Decimal(str(self.settings.trailing_stop_atr_multiplier))
 
-            self.db.create_trailing_stop(
-                symbol=self.settings.trading_pair,
-                side="buy",
-                entry_price=entry_price,
-                trailing_activation=activation,
-                trailing_distance=distance,
-                is_paper=is_paper,
+            # Hard stop: based on average cost, not latest entry
+            hard_stop = avg_cost - (atr * Decimal(str(self.settings.stop_loss_atr_multiplier)))
+
+            # Check if we're DCA'ing (stop already exists)
+            # If so, UPDATE the existing stop in-place to avoid any window
+            # where the position is unprotected during the transition
+            existing_stop = self.db.get_active_trailing_stop(
+                symbol=self.settings.trading_pair, is_paper=is_paper
             )
 
-            logger.info(
-                "trailing_stop_set",
-                entry_price=str(entry_price),
-                activation=str(activation),
-                distance=str(distance),
-            )
+            if existing_stop:
+                # DCA: Update existing stop without deactivating
+                self.db.update_trailing_stop_for_dca(
+                    symbol=self.settings.trading_pair,
+                    entry_price=avg_cost,
+                    trailing_activation=activation,
+                    trailing_distance=distance,
+                    hard_stop=hard_stop,
+                    is_paper=is_paper,
+                )
+                logger.info(
+                    "trailing_stop_updated_dca",
+                    entry_price=str(entry_price),
+                    avg_cost=str(avg_cost),
+                    activation=str(activation),
+                    distance=str(distance),
+                    hard_stop=str(hard_stop),
+                )
+            else:
+                # First buy: Create new stop
+                self.db.create_trailing_stop(
+                    symbol=self.settings.trading_pair,
+                    side="buy",
+                    entry_price=avg_cost,
+                    trailing_activation=activation,
+                    trailing_distance=distance,
+                    is_paper=is_paper,
+                    hard_stop=hard_stop,
+                )
+                logger.info(
+                    "trailing_stop_created",
+                    entry_price=str(entry_price),
+                    avg_cost=str(avg_cost),
+                    activation=str(activation),
+                    distance=str(distance),
+                    hard_stop=str(hard_stop),
+                )
         except Exception as e:
+            # CRITICAL: Re-raise to allow caller to handle (emergency close position)
             logger.error("trailing_stop_creation_failed", error=str(e))
+            raise
 
     def _check_trailing_stop(self, current_price: Decimal) -> Optional[str]:
         """
         Check and update trailing stop, return action if stop triggered.
 
+        Priority order (for buy positions):
+        1. Hard stop (emergency capital protection, always active, never moves)
+        2. Trailing stop activation (activates at 1 ATR profit above avg cost)
+        3. Trailing stop update (follows price up, locks in gains)
+        4. Trailing stop trigger (price drops to stop level, locks profit)
+
+        The entry_price stored in trailing_stops is the weighted average cost,
+        not the individual entry price, ensuring correct calculations for DCA.
+
         Returns:
-            "sell" if trailing stop triggered, None otherwise
+            "sell" if trailing stop or hard stop triggered, None otherwise
         """
         is_paper = self.settings.is_paper_trading
         ts = self.db.get_active_trailing_stop(
@@ -1618,14 +1729,60 @@ class TradingDaemon:
         activation = ts.get_trailing_activation()
         distance = ts.get_trailing_distance()
         current_stop = ts.get_trailing_stop()
+        hard_stop = ts.get_hard_stop()
 
-        # For buy positions: check if price activated trailing, then if stop hit
+        # For buy positions: check hard stop first, then trailing stop logic
         if ts.side == "buy":
+            # CHECK HARD STOP FIRST (always active, never moves)
+            # This is emergency capital protection - triggers before trailing can activate
+            if hard_stop is not None and current_price <= hard_stop:
+                # Determine if this was an emergency exit (trailing never activated)
+                # or if trailing was active but hard stop was hit anyway (shouldn't happen normally)
+                trailing_was_active = current_stop is not None
+                exit_type = "emergency_exit" if not trailing_was_active else "hard_stop_below_trailing"
+                # Calculate loss percentage
+                # Use Decimal.quantize() for proper Decimal arithmetic (not round() which expects float)
+                if entry_price <= 0:
+                    # CRITICAL: Invalid entry_price indicates data corruption - halt trading
+                    logger.critical(
+                        "invalid_entry_price_halting_trading",
+                        entry_price=str(entry_price),
+                        context="hard_stop_check",
+                    )
+                    self.notifier.send_alert(
+                        f"🔴 CRITICAL: Invalid entry_price ({entry_price}) detected. Halting trading!"
+                    )
+                    self.kill_switch.activate(f"Data corruption: entry_price={entry_price}")
+                    loss_pct = Decimal("0")  # Proceed with sell to close position
+                else:
+                    loss_pct = ((entry_price - current_price) / entry_price * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                logger.warning(
+                    "hard_stop_triggered",
+                    exit_type=exit_type,
+                    current_price=str(current_price),
+                    hard_stop=str(hard_stop),
+                    entry_price=str(entry_price),
+                    trailing_was_active=trailing_was_active,
+                    loss_percent=str(loss_pct),
+                )
+                self.db.deactivate_trailing_stop(
+                    symbol=self.settings.trading_pair,
+                    is_paper=is_paper,
+                )
+                return "sell"
+
             # Check if trailing stop is now activated
             if current_stop is None and activation and current_price >= activation:
-                # Activate: set initial stop at entry + distance - distance = entry (breakeven roughly)
-                # Actually: current_price - distance
+                # Activate: set initial stop at current_price - distance
+                # SAFETY: Never set trailing stop below hard stop
                 new_stop = current_price - distance
+                if hard_stop is not None and new_stop < hard_stop:
+                    new_stop = hard_stop
+                    logger.warning(
+                        "trailing_stop_floored_at_hard_stop",
+                        calculated_stop=str(current_price - distance),
+                        floored_to=str(hard_stop),
+                    )
                 self.db.update_trailing_stop(ts.id, new_stop_level=new_stop)
                 logger.info(
                     "trailing_stop_activated",
@@ -1637,6 +1794,9 @@ class TradingDaemon:
             # If activated, update stop if price moved up
             if current_stop is not None and distance:
                 potential_new_stop = current_price - distance
+                # SAFETY: Never let trailing stop go below hard stop
+                if hard_stop is not None and potential_new_stop < hard_stop:
+                    potential_new_stop = hard_stop
                 if potential_new_stop > current_stop:
                     self.db.update_trailing_stop(ts.id, new_stop_level=potential_new_stop)
                     logger.debug(
@@ -1646,12 +1806,31 @@ class TradingDaemon:
                     )
                     current_stop = potential_new_stop
 
-            # Check if stop is hit
+            # Check if stop is hit (profit protection - trailing only activates after profit)
             if current_stop is not None and current_price <= current_stop:
+                # Calculate profit locked in (trailing stop is profit protection)
+                # Use Decimal.quantize() for proper Decimal arithmetic
+                if entry_price <= 0:
+                    # CRITICAL: Invalid entry_price indicates data corruption - halt trading
+                    logger.critical(
+                        "invalid_entry_price_halting_trading",
+                        entry_price=str(entry_price),
+                        context="trailing_stop_check",
+                    )
+                    self.notifier.send_alert(
+                        f"🔴 CRITICAL: Invalid entry_price ({entry_price}) detected. Halting trading!"
+                    )
+                    self.kill_switch.activate(f"Data corruption: entry_price={entry_price}")
+                    profit_pct = Decimal("0")  # Proceed with sell to close position
+                else:
+                    profit_pct = ((current_price - entry_price) / entry_price * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
                 logger.info(
                     "trailing_stop_triggered",
+                    exit_type="profit_protection",
                     current_price=str(current_price),
                     stop_level=str(current_stop),
+                    entry_price=str(entry_price),
+                    profit_percent=str(profit_pct),
                 )
                 self.db.deactivate_trailing_stop(
                     symbol=self.settings.trading_pair,
@@ -1660,6 +1839,102 @@ class TradingDaemon:
                 return "sell"
 
         return None
+
+    def _verify_position_stop_protection(self) -> None:
+        """
+        Safety check: Verify all open positions have active stop protection.
+
+        This catches situations where the bot crashed after opening a position
+        but before creating the trailing stop (e.g., between lines 912-915).
+
+        If an unprotected position is found:
+        1. Log a CRITICAL warning
+        2. Send alert to user
+        3. Attempt to create stop protection using current price
+
+        This is a recovery mechanism, not a normal operation.
+        """
+        is_paper = self.settings.is_paper_trading
+
+        # Get current position
+        position = self.db.get_current_position(
+            self.settings.trading_pair, is_paper=is_paper
+        )
+
+        if not position or position.get_quantity() <= Decimal("0"):
+            return  # No position, nothing to check
+
+        # Check if there's an active trailing stop
+        ts = self.db.get_active_trailing_stop(
+            symbol=self.settings.trading_pair, is_paper=is_paper
+        )
+
+        if ts is not None:
+            return  # Stop exists, all good
+
+        # CRITICAL: Position exists but no stop protection!
+        avg_cost = position.get_average_cost()
+        qty = position.get_quantity()
+
+        logger.critical(
+            "position_without_stop_protection",
+            symbol=self.settings.trading_pair,
+            quantity=str(qty),
+            avg_cost=str(avg_cost),
+            is_paper=is_paper,
+        )
+
+        self.notifier.send_alert(
+            f"⚠️ CRITICAL: Position found without stop protection! "
+            f"Qty: {qty}, Avg Cost: {avg_cost}. Creating emergency stop."
+        )
+
+        # Attempt to create stop protection
+        try:
+            candles = self.client.get_candles(
+                self.settings.trading_pair,
+                self.settings.candle_interval,
+                limit=100,
+            )
+            self._create_trailing_stop(
+                entry_price=avg_cost,
+                candles=candles,
+                is_paper=is_paper,
+                avg_cost=avg_cost,
+            )
+            logger.info("emergency_stop_created", avg_cost=str(avg_cost))
+            self.notifier.send_alert("✅ Emergency stop protection created successfully.")
+        except Exception as e:
+            logger.error("emergency_stop_creation_failed", error=str(e))
+            self.notifier.send_alert(
+                f"❌ FAILED to create emergency stop: {e}. Manual intervention required!"
+            )
+
+    def _periodic_stop_protection_check(self) -> None:
+        """
+        Periodic safety check: verify positions have stop protection.
+
+        Runs every STOP_PROTECTION_CHECK_INTERVAL_SECONDS (after startup check)
+        to catch edge cases:
+        - Manual position opens
+        - Recovery failures
+        - Database corruption
+        """
+        now = datetime.now()
+
+        # Skip if not enough time has passed (initialized to None in __init__)
+        if self._last_stop_check is not None:
+            elapsed = (now - self._last_stop_check).total_seconds()
+            if elapsed < STOP_PROTECTION_CHECK_INTERVAL_SECONDS:
+                return
+
+        self._last_stop_check = now
+
+        # Run the full verification
+        try:
+            self._verify_position_stop_protection()
+        except Exception as e:
+            logger.error("periodic_stop_check_failed", error=str(e))
 
     def _shutdown(self) -> None:
         """Graceful shutdown."""

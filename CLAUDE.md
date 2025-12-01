@@ -37,6 +37,16 @@ All exchange clients implement `ExchangeClient` protocol (`src/api/exchange_prot
 ### Strategy
 `src/strategy/signal_scorer.py` combines RSI, MACD, Bollinger, EMA, Volume into -100 to +100 score. Trade when |score| ≥ threshold.
 
+## Database Operations
+
+All database operations MUST support both PAPER and ACTUAL (live) trading modes. They MUST be kept completely separate:
+
+- Every table with trading data has `is_paper` column
+- All queries MUST filter by `is_paper` parameter
+- Paper and live data must NEVER mix
+- Both modes must be independently functional
+- Test with paper trading before enabling live trading
+
 ## Versioning
 
 Always update `src/version.py` when making commits:
@@ -87,13 +97,13 @@ gh pr view {PR_NUMBER} --comments
 
 ### Review Process
 
-1. **After creating a PR**, poll for review comments for at least 5 minutes:
+1. **After creating a PR**, poll for review comments for at least 10 minutes:
    ```bash
-   # Poll every 60 seconds for 5 minutes
-   for i in {1..5}; do
-     echo "Checking for reviews (attempt $i/5)..."
+   # Poll every 30 seconds for 10 minutes
+   for i in {1..20}; do
+     echo "Checking for reviews (attempt $i/20)..."
      gh api repos/Byte-Ventures/claude-trader/issues/{PR_NUMBER}/comments
-     sleep 60
+     sleep 30
    done
    ```
 2. **Before merging any PR**, fetch and read ALL review comments

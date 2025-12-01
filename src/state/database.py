@@ -7,6 +7,7 @@ Tables:
 - trades: Executed trades (fills)
 - daily_stats: Daily trading statistics
 - system_state: Key-value store for recovery state
+- rate_history: Historical OHLCV price data for analysis and replay
 """
 
 import json
@@ -21,9 +22,11 @@ from sqlalchemy import (
     Column,
     Date,
     DateTime,
+    Index,
     Integer,
     String,
     Text,
+    UniqueConstraint,
     create_engine,
     func,
     text,
@@ -164,6 +167,7 @@ class TrailingStop(Base):
     trailing_stop = Column(String(50), nullable=True)  # Current stop level
     trailing_activation = Column(String(50), nullable=True)  # Price where trailing activates
     trailing_distance = Column(String(50), nullable=True)  # ATR-based distance
+    hard_stop = Column(String(50), nullable=True)  # Hard stop-loss price (never moves)
     is_active = Column(Boolean, default=False)
     is_paper = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -180,6 +184,92 @@ class TrailingStop(Base):
 
     def get_trailing_distance(self) -> Optional[Decimal]:
         return Decimal(self.trailing_distance) if self.trailing_distance else None
+
+    def get_hard_stop(self) -> Optional[Decimal]:
+        return Decimal(self.hard_stop) if self.hard_stop else None
+
+
+class RateHistory(Base):
+    """Historical OHLCV price data for analysis and replay testing.
+
+    Stores candlestick data from exchanges for:
+    - Backtesting and strategy replay
+    - Historical analysis and reporting
+    - Training data for ML models
+
+    Note: All timestamps are stored in UTC.
+    """
+
+    __tablename__ = "rate_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False, default="BTC-USD")
+    exchange = Column(String(20), nullable=False, default="kraken")
+    interval = Column(String(10), nullable=False, default="1m")  # 1m, 5m, 15m, 1h, 1d
+    timestamp = Column(DateTime, nullable=False)  # Candle start time (UTC)
+    open_price = Column(String(50), nullable=False)
+    high_price = Column(String(50), nullable=False)
+    low_price = Column(String(50), nullable=False)
+    close_price = Column(String(50), nullable=False)
+    volume = Column(String(50), nullable=False)
+    is_paper = Column(Boolean, nullable=False, default=False)  # Paper vs live data
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Unique constraint: one candle per symbol/exchange/interval/timestamp/is_paper
+    __table_args__ = (
+        UniqueConstraint('symbol', 'exchange', 'interval', 'timestamp', 'is_paper', name='uq_rate_candle_v2'),
+        Index('ix_rate_history_lookup_v2', 'symbol', 'exchange', 'interval', 'is_paper', 'timestamp'),
+    )
+
+    def get_open(self) -> Decimal:
+        try:
+            value = Decimal(self.open_price) if self.open_price else Decimal("0")
+            if value < Decimal("0"):
+                raise ValueError(f"Negative open price: {value}")
+            return value
+        except Exception as e:
+            logger.error("decimal_conversion_failed", field="open_price", value=self.open_price, error=str(e), rate_id=self.id)
+            raise ValueError(f"Invalid open_price: {self.open_price}") from e
+
+    def get_high(self) -> Decimal:
+        try:
+            value = Decimal(self.high_price) if self.high_price else Decimal("0")
+            if value < Decimal("0"):
+                raise ValueError(f"Negative high price: {value}")
+            return value
+        except Exception as e:
+            logger.error("decimal_conversion_failed", field="high_price", value=self.high_price, error=str(e), rate_id=self.id)
+            raise ValueError(f"Invalid high_price: {self.high_price}") from e
+
+    def get_low(self) -> Decimal:
+        try:
+            value = Decimal(self.low_price) if self.low_price else Decimal("0")
+            if value < Decimal("0"):
+                raise ValueError(f"Negative low price: {value}")
+            return value
+        except Exception as e:
+            logger.error("decimal_conversion_failed", field="low_price", value=self.low_price, error=str(e), rate_id=self.id)
+            raise ValueError(f"Invalid low_price: {self.low_price}") from e
+
+    def get_close(self) -> Decimal:
+        try:
+            value = Decimal(self.close_price) if self.close_price else Decimal("0")
+            if value < Decimal("0"):
+                raise ValueError(f"Negative close price: {value}")
+            return value
+        except Exception as e:
+            logger.error("decimal_conversion_failed", field="close_price", value=self.close_price, error=str(e), rate_id=self.id)
+            raise ValueError(f"Invalid close_price: {self.close_price}") from e
+
+    def get_volume(self) -> Decimal:
+        try:
+            value = Decimal(self.volume) if self.volume else Decimal("0")
+            if value < Decimal("0"):
+                raise ValueError(f"Negative volume: {value}")
+            return value
+        except Exception as e:
+            logger.error("decimal_conversion_failed", field="volume", value=self.volume, error=str(e), rate_id=self.id)
+            raise ValueError(f"Invalid volume: {self.volume}") from e
 
 
 class Database:
@@ -373,6 +463,42 @@ class Database:
                     conn.commit()
             except Exception as e:
                 logger.debug("daily_stats_price_migration_skipped", reason=str(e))
+
+            # Add hard_stop column to trailing_stops table
+            try:
+                result = conn.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type='table' AND name='trailing_stops'")
+                )
+                ts_schema = result.scalar()
+                if ts_schema and "hard_stop" not in ts_schema:
+                    conn.execute(text("ALTER TABLE trailing_stops ADD COLUMN hard_stop VARCHAR(50)"))
+                    logger.info("migrated_trailing_stops_added_hard_stop")
+                    conn.commit()
+            except Exception as e:
+                logger.debug("trailing_stops_hard_stop_migration_skipped", reason=str(e))
+
+            # Add is_paper column to rate_history table
+            # NOTE: SQLite doesn't support ALTER CONSTRAINT, so the unique constraint
+            # (uq_rate_candle_v2) that includes is_paper won't be created on existing DBs.
+            # For existing databases: either recreate the table or accept the limitation.
+            # New databases created after this version will have correct constraints.
+            try:
+                result = conn.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type='table' AND name='rate_history'")
+                )
+                rh_schema = result.scalar()
+                if rh_schema and "is_paper" not in rh_schema:
+                    conn.execute(text("ALTER TABLE rate_history ADD COLUMN is_paper BOOLEAN DEFAULT 0"))
+                    logger.info("migrated_rate_history_added_is_paper")
+                    logger.warning(
+                        "rate_history_constraint_limitation",
+                        message="Unique constraint uq_rate_candle_v2 not updated on existing DB. "
+                                "Paper/live data separation relies on application logic. "
+                                "For full constraint support, recreate rate_history table."
+                    )
+                    conn.commit()
+            except Exception as e:
+                logger.debug("rate_history_is_paper_migration_skipped", reason=str(e))
 
     @contextmanager
     def session(self) -> Generator[Session, None, None]:
@@ -704,8 +830,9 @@ class Database:
         trailing_activation: Decimal,
         trailing_distance: Decimal,
         is_paper: bool = False,
+        hard_stop: Optional[Decimal] = None,
     ) -> TrailingStop:
-        """Create a new trailing stop record."""
+        """Create a new trailing stop record with optional hard stop-loss."""
         with self.session() as session:
             # Deactivate any existing active trailing stops for this symbol/mode
             session.query(TrailingStop).filter(
@@ -720,6 +847,7 @@ class Database:
                 entry_price=str(entry_price),
                 trailing_activation=str(trailing_activation),
                 trailing_distance=str(trailing_distance),
+                hard_stop=str(hard_stop) if hard_stop else None,
                 is_active=True,
                 is_paper=is_paper,
             )
@@ -733,6 +861,7 @@ class Database:
                 entry_price=str(entry_price),
                 activation=str(trailing_activation),
                 distance=str(trailing_distance),
+                hard_stop=str(hard_stop) if hard_stop else None,
             )
             return trailing_stop
 
@@ -769,6 +898,56 @@ class Database:
                 ts.is_active = is_active
 
             session.flush()
+            return ts
+
+    def update_trailing_stop_for_dca(
+        self,
+        symbol: str,
+        entry_price: Decimal,
+        trailing_activation: Decimal,
+        trailing_distance: Decimal,
+        hard_stop: Optional[Decimal] = None,
+        is_paper: bool = False,
+    ) -> Optional[TrailingStop]:
+        """
+        Update existing trailing stop for DCA (position averaging).
+
+        Unlike create_trailing_stop, this method updates the existing stop
+        in-place without deactivating it, ensuring there's NO window where
+        the position is unprotected.
+
+        Returns the updated TrailingStop, or None if no active stop exists.
+        """
+        with self.session() as session:
+            ts = (
+                session.query(TrailingStop)
+                .filter(
+                    TrailingStop.symbol == symbol,
+                    TrailingStop.is_paper == is_paper,
+                    TrailingStop.is_active == True,
+                )
+                .first()
+            )
+
+            if not ts:
+                return None
+
+            # Update stop parameters based on new avg_cost
+            ts.entry_price = str(entry_price)
+            ts.trailing_activation = str(trailing_activation)
+            ts.trailing_distance = str(trailing_distance)
+            ts.hard_stop = str(hard_stop) if hard_stop else None
+            # Note: Don't reset trailing_stop level - let it continue trailing
+
+            session.flush()
+
+            logger.info(
+                "trailing_stop_updated_for_dca",
+                id=ts.id,
+                entry_price=str(entry_price),
+                activation=str(trailing_activation),
+                hard_stop=str(hard_stop) if hard_stop else None,
+            )
             return ts
 
     def deactivate_trailing_stop(
@@ -843,4 +1022,222 @@ class Database:
                 )
                 .order_by(RegimeHistory.created_at.desc())
                 .all()
+            )
+
+    # Rate history methods
+    def record_rate(
+        self,
+        timestamp: datetime,
+        open_price: Decimal,
+        high_price: Decimal,
+        low_price: Decimal,
+        close_price: Decimal,
+        volume: Decimal,
+        symbol: str = "BTC-USD",
+        exchange: str = "kraken",
+        interval: str = "1m",
+        is_paper: bool = False,
+    ) -> Optional[RateHistory]:
+        """
+        Record a single OHLCV candle.
+
+        Uses INSERT OR IGNORE to skip duplicates (same symbol/exchange/interval/timestamp/is_paper).
+        """
+        with self.session() as session:
+            # Check if candle already exists
+            existing = (
+                session.query(RateHistory)
+                .filter(
+                    RateHistory.symbol == symbol,
+                    RateHistory.exchange == exchange,
+                    RateHistory.interval == interval,
+                    RateHistory.timestamp == timestamp,
+                    RateHistory.is_paper == is_paper,
+                )
+                .first()
+            )
+
+            if existing:
+                return None  # Skip duplicate
+
+            rate = RateHistory(
+                symbol=symbol,
+                exchange=exchange,
+                interval=interval,
+                timestamp=timestamp,
+                open_price=str(open_price),
+                high_price=str(high_price),
+                low_price=str(low_price),
+                close_price=str(close_price),
+                volume=str(volume),
+                is_paper=is_paper,
+            )
+            session.add(rate)
+            return rate
+
+    def record_rates_bulk(
+        self,
+        candles: list[dict],
+        symbol: str = "BTC-USD",
+        exchange: str = "kraken",
+        interval: str = "1m",
+        is_paper: bool = False,
+    ) -> int:
+        """
+        Record multiple OHLCV candles efficiently.
+
+        Args:
+            candles: List of dicts with keys: timestamp, open, high, low, close, volume
+            is_paper: Whether this is paper trading data
+
+        Returns:
+            Number of new candles inserted (skips duplicates)
+
+        Raises:
+            Exception: Re-raised if batch insert fails. The session context manager
+                      automatically handles rollback on exception, so if an error
+                      occurs, NO candles from this batch will be committed.
+                      This ensures atomic operation - all or nothing.
+        """
+        if not candles:
+            return 0
+
+        inserted = 0
+        try:
+            with self.session() as session:
+                # Batch fetch existing timestamps in one query for performance
+                candle_timestamps = [c["timestamp"] for c in candles]
+                existing_timestamps = set(
+                    row[0] for row in session.query(RateHistory.timestamp)
+                    .filter(
+                        RateHistory.symbol == symbol,
+                        RateHistory.exchange == exchange,
+                        RateHistory.interval == interval,
+                        RateHistory.is_paper == is_paper,
+                        RateHistory.timestamp.in_(candle_timestamps),
+                    )
+                    .all()
+                )
+
+                # Insert only new candles
+                for candle in candles:
+                    if candle["timestamp"] not in existing_timestamps:
+                        rate = RateHistory(
+                            symbol=symbol,
+                            exchange=exchange,
+                            interval=interval,
+                            timestamp=candle["timestamp"],
+                            open_price=str(candle["open"]),
+                            high_price=str(candle["high"]),
+                            low_price=str(candle["low"]),
+                            close_price=str(candle["close"]),
+                            volume=str(candle["volume"]),
+                            is_paper=is_paper,
+                        )
+                        session.add(rate)
+                        inserted += 1
+
+            if inserted > 0:
+                logger.info(
+                    "rates_recorded",
+                    count=inserted,
+                    symbol=symbol,
+                    exchange=exchange,
+                    interval=interval,
+                )
+            return inserted
+        except Exception as e:
+            logger.error(
+                "rate_bulk_insert_failed",
+                error=str(e),
+                count=len(candles),
+                inserted_before_error=inserted,
+            )
+            raise  # Re-raise to signal failure to caller
+
+    def get_rates(
+        self,
+        symbol: str = "BTC-USD",
+        exchange: str = "kraken",
+        interval: str = "1m",
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+        limit: int = 1000,
+        is_paper: bool = False,
+    ) -> list[RateHistory]:
+        """
+        Get historical rate data for analysis or replay.
+
+        Args:
+            symbol: Trading pair
+            exchange: Exchange name
+            interval: Candle interval
+            start: Start timestamp (inclusive, UTC)
+            end: End timestamp (inclusive, UTC)
+            limit: Maximum records to return
+            is_paper: Whether to fetch paper trading data
+
+        Returns:
+            List of RateHistory records ordered by timestamp ASC
+        """
+        with self.session() as session:
+            query = session.query(RateHistory).filter(
+                RateHistory.symbol == symbol,
+                RateHistory.exchange == exchange,
+                RateHistory.interval == interval,
+                RateHistory.is_paper == is_paper,
+            )
+
+            if start:
+                query = query.filter(RateHistory.timestamp >= start)
+            if end:
+                query = query.filter(RateHistory.timestamp <= end)
+
+            return (
+                query
+                .order_by(RateHistory.timestamp.asc())
+                .limit(limit)
+                .all()
+            )
+
+    def get_latest_rate_timestamp(
+        self,
+        symbol: str = "BTC-USD",
+        exchange: str = "kraken",
+        interval: str = "1m",
+        is_paper: bool = False,
+    ) -> Optional[datetime]:
+        """Get the timestamp of the most recent stored candle (UTC)."""
+        with self.session() as session:
+            result = (
+                session.query(RateHistory.timestamp)
+                .filter(
+                    RateHistory.symbol == symbol,
+                    RateHistory.exchange == exchange,
+                    RateHistory.interval == interval,
+                    RateHistory.is_paper == is_paper,
+                )
+                .order_by(RateHistory.timestamp.desc())
+                .first()
+            )
+            return result[0] if result else None
+
+    def get_rate_count(
+        self,
+        symbol: str = "BTC-USD",
+        exchange: str = "kraken",
+        interval: str = "1m",
+        is_paper: bool = False,
+    ) -> int:
+        """Get total number of stored candles for a symbol/exchange/interval."""
+        with self.session() as session:
+            return (
+                session.query(func.count(RateHistory.id))
+                .filter(
+                    RateHistory.symbol == symbol,
+                    RateHistory.exchange == exchange,
+                    RateHistory.interval == interval,
+                    RateHistory.is_paper == is_paper,
+                )
+                .scalar()
             )
