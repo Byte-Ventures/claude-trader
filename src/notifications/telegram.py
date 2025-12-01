@@ -377,14 +377,19 @@ class TelegramNotifier:
             title = "🔍 <b>Interesting Hold</b>" if review_type == "interesting_hold" else "📋 <b>Hold Analysis</b>"
 
             # Build agent summary for holds (with reasoning)
+            # For holds: approved=True means "hold is correct", approved=False means "should act"
             stance_emoji = {"pro": "🟢", "neutral": "⚪", "opposing": "🔴"}
             agent_lines = []
             for agent in review.reviews:
                 model_short = agent.model.split("/")[-1]
-                verdict = "✅" if agent.approved else "❌"
-                conf = f"{agent.confidence*100:.0f}%"
+                # Descriptive verdict for holds
+                if agent.approved:
+                    verdict = "✅ Hold"
+                else:
+                    verdict = "❌ Act"
+                conf = f"({agent.confidence*100:.0f}%)"
                 stance_label = agent.stance.capitalize()
-                reasoning_short = agent.reasoning[:80] + "..." if len(agent.reasoning) > 80 else agent.reasoning
+                reasoning_short = agent.reasoning[:100] + "..." if len(agent.reasoning) > 100 else agent.reasoning
                 agent_lines.append(
                     f"{stance_emoji.get(agent.stance, '⚪')} <b>{model_short}</b> ({stance_label}): "
                     f"{verdict} {conf}\n  <i>{reasoning_short}</i>"
@@ -425,15 +430,20 @@ class TelegramNotifier:
             action = ctx.get('action', 'unknown').upper()
 
             # Build agent reviews section
+            # For trades: approved=True means "approve trade", approved=False means "reject trade"
             stance_emoji = {"pro": "🟢", "neutral": "⚪", "opposing": "🔴"}
             agent_lines = []
 
             for agent in review.reviews:
                 model_short = agent.model.split("/")[-1]
-                verdict = "✅" if agent.approved else "❌"
-                conf = f"{agent.confidence*100:.0f}%"
+                # Descriptive verdict for trades
+                if agent.approved:
+                    verdict = "✅ Trade"
+                else:
+                    verdict = "❌ Skip"
+                conf = f"({agent.confidence*100:.0f}%)"
                 stance_label = agent.stance.capitalize()
-                reasoning_short = agent.reasoning[:80] + "..." if len(agent.reasoning) > 80 else agent.reasoning
+                reasoning_short = agent.reasoning[:100] + "..." if len(agent.reasoning) > 100 else agent.reasoning
                 agent_lines.append(
                     f"{stance_emoji.get(agent.stance, '⚪')} <b>{model_short}</b> ({stance_label}): "
                     f"{verdict} {conf}\n  <i>{reasoning_short}</i>"
