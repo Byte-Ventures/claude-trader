@@ -31,7 +31,6 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 import structlog
@@ -1116,8 +1115,8 @@ class Database:
                     if hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
                         dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
                     else:
-                        # Naive datetime - assumed to be UTC but log for visibility
-                        logger.debug("rate_history_naive_timestamp", timestamp=str(dt))
+                        # Naive datetime - assumed to be UTC, warn since this could hide bugs
+                        logger.warning("rate_history_naive_timestamp", timestamp=str(dt))
                     return dt
 
                 candle_timestamps = [to_datetime(c["timestamp"]) for c in candles]
@@ -1135,30 +1134,23 @@ class Database:
                     .all()
                 )
 
-                # Insert only new candles
+                # Insert only new candles (batch - flush happens at context exit)
                 for candle, normalized_ts in zip(candles, candle_timestamps):
                     if normalized_ts not in existing_timestamps:
-                        try:
-                            rate = RateHistory(
-                                symbol=symbol,
-                                exchange=exchange,
-                                interval=interval,
-                                timestamp=normalized_ts,
-                                # Normalize to Decimal to avoid float precision issues
-                                open_price=str(Decimal(str(candle["open"]))),
-                                high_price=str(Decimal(str(candle["high"]))),
-                                low_price=str(Decimal(str(candle["low"]))),
-                                close_price=str(Decimal(str(candle["close"]))),
-                                volume=str(Decimal(str(candle["volume"]))),
-                                is_paper=is_paper,
-                            )
-                            session.add(rate)
-                            session.flush()  # Flush to catch IntegrityError per-insert
-                            inserted += 1
-                        except IntegrityError:
-                            # Race condition: another process inserted this timestamp
-                            session.rollback()
-                            logger.debug("rate_history_duplicate_skipped", timestamp=str(normalized_ts))
+                        rate = RateHistory(
+                            symbol=symbol,
+                            exchange=exchange,
+                            interval=interval,
+                            timestamp=normalized_ts,
+                            open_price=str(candle["open"]),
+                            high_price=str(candle["high"]),
+                            low_price=str(candle["low"]),
+                            close_price=str(candle["close"]),
+                            volume=str(candle["volume"]),
+                            is_paper=is_paper,
+                        )
+                        session.add(rate)
+                        inserted += 1
 
             if inserted > 0:
                 logger.info(

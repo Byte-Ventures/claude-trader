@@ -15,7 +15,21 @@
       "mcp__zen__precommit",
       "mcp__zen__secaudit",
       "mcp__zen__analyze",
-      "mcp__zen__chat"
+      "mcp__zen__chat",
+      "Bash(tree:*)",
+      "Bash(xargs:*)",
+      "Bash(python3:*)",
+      "Bash(cat:*)",
+      "Bash(find:*)",
+      "WebFetch(domain:openrouter.ai)",
+      "Bash(pip3 index:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh api:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(pip3 install:*)",
+      "Bash(gh pr create:*)"
     ],
     "deny": [],
     "ask": []
