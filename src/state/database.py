@@ -900,6 +900,56 @@ class Database:
             session.flush()
             return ts
 
+    def update_trailing_stop_for_dca(
+        self,
+        symbol: str,
+        entry_price: Decimal,
+        trailing_activation: Decimal,
+        trailing_distance: Decimal,
+        hard_stop: Optional[Decimal] = None,
+        is_paper: bool = False,
+    ) -> Optional[TrailingStop]:
+        """
+        Update existing trailing stop for DCA (position averaging).
+
+        Unlike create_trailing_stop, this method updates the existing stop
+        in-place without deactivating it, ensuring there's NO window where
+        the position is unprotected.
+
+        Returns the updated TrailingStop, or None if no active stop exists.
+        """
+        with self.session() as session:
+            ts = (
+                session.query(TrailingStop)
+                .filter(
+                    TrailingStop.symbol == symbol,
+                    TrailingStop.is_paper == is_paper,
+                    TrailingStop.is_active == True,
+                )
+                .first()
+            )
+
+            if not ts:
+                return None
+
+            # Update stop parameters based on new avg_cost
+            ts.entry_price = str(entry_price)
+            ts.trailing_activation = str(trailing_activation)
+            ts.trailing_distance = str(trailing_distance)
+            ts.hard_stop = str(hard_stop) if hard_stop else None
+            # Note: Don't reset trailing_stop level - let it continue trailing
+
+            session.flush()
+
+            logger.info(
+                "trailing_stop_updated_for_dca",
+                id=ts.id,
+                entry_price=str(entry_price),
+                activation=str(trailing_activation),
+                hard_stop=str(hard_stop) if hard_stop else None,
+            )
+            return ts
+
     def deactivate_trailing_stop(
         self, symbol: str = "BTC-USD", is_paper: bool = False
     ) -> bool:

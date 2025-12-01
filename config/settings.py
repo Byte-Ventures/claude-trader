@@ -382,6 +382,39 @@ class Settings(BaseSettings):
                 self.telegram_enabled = False
         return self
 
+    @model_validator(mode="after")
+    def validate_stop_loss_config(self) -> "Settings":
+        """
+        Validate stop-loss and trailing stop configuration.
+
+        Trailing stop activates at 1 ATR profit from avg_cost.
+        Hard stop is at stop_loss_atr_multiplier below avg_cost.
+
+        If stop_loss_atr_multiplier < 1, the hard stop distance is smaller
+        than the trailing activation distance, meaning the position is more
+        likely to hit hard stop before trailing can activate (less profit potential).
+        """
+        import warnings
+
+        if self.stop_loss_atr_multiplier < 1.0:
+            warnings.warn(
+                f"stop_loss_atr_multiplier ({self.stop_loss_atr_multiplier}) is less than "
+                f"trailing activation (1.0 ATR). Hard stop may trigger before trailing "
+                f"stop can activate, reducing profit potential. Consider increasing to >= 1.0.",
+                UserWarning,
+            )
+
+        # Warn if stop loss is very tight relative to trailing distance
+        if self.stop_loss_atr_multiplier < self.trailing_stop_atr_multiplier:
+            warnings.warn(
+                f"stop_loss_atr_multiplier ({self.stop_loss_atr_multiplier}) is less than "
+                f"trailing_stop_atr_multiplier ({self.trailing_stop_atr_multiplier}). "
+                f"This creates tight stops with loose trails - ensure this is intentional.",
+                UserWarning,
+            )
+
+        return self
+
     @model_validator(mode="before")
     @classmethod
     def migrate_deprecated_claude_vars(cls, data: dict) -> dict:

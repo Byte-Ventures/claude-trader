@@ -1607,24 +1607,50 @@ class TradingDaemon:
             # Hard stop: based on average cost, not latest entry
             hard_stop = avg_cost - (atr * Decimal(str(self.settings.stop_loss_atr_multiplier)))
 
-            self.db.create_trailing_stop(
-                symbol=self.settings.trading_pair,
-                side="buy",
-                entry_price=avg_cost,  # Use avg_cost for consistency
-                trailing_activation=activation,
-                trailing_distance=distance,
-                is_paper=is_paper,
-                hard_stop=hard_stop,
+            # Check if we're DCA'ing (stop already exists)
+            # If so, UPDATE the existing stop in-place to avoid any window
+            # where the position is unprotected during the transition
+            existing_stop = self.db.get_active_trailing_stop(
+                symbol=self.settings.trading_pair, is_paper=is_paper
             )
 
-            logger.info(
-                "trailing_stop_set",
-                entry_price=str(entry_price),
-                avg_cost=str(avg_cost),
-                activation=str(activation),
-                distance=str(distance),
-                hard_stop=str(hard_stop),
-            )
+            if existing_stop:
+                # DCA: Update existing stop without deactivating
+                self.db.update_trailing_stop_for_dca(
+                    symbol=self.settings.trading_pair,
+                    entry_price=avg_cost,
+                    trailing_activation=activation,
+                    trailing_distance=distance,
+                    hard_stop=hard_stop,
+                    is_paper=is_paper,
+                )
+                logger.info(
+                    "trailing_stop_updated_dca",
+                    entry_price=str(entry_price),
+                    avg_cost=str(avg_cost),
+                    activation=str(activation),
+                    distance=str(distance),
+                    hard_stop=str(hard_stop),
+                )
+            else:
+                # First buy: Create new stop
+                self.db.create_trailing_stop(
+                    symbol=self.settings.trading_pair,
+                    side="buy",
+                    entry_price=avg_cost,
+                    trailing_activation=activation,
+                    trailing_distance=distance,
+                    is_paper=is_paper,
+                    hard_stop=hard_stop,
+                )
+                logger.info(
+                    "trailing_stop_created",
+                    entry_price=str(entry_price),
+                    avg_cost=str(avg_cost),
+                    activation=str(activation),
+                    distance=str(distance),
+                    hard_stop=str(hard_stop),
+                )
         except Exception as e:
             # CRITICAL: Position opened without stop protection!
             logger.error("trailing_stop_creation_failed", error=str(e))
