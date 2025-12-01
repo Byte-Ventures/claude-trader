@@ -608,7 +608,7 @@ class TelegramNotifier:
 
     def notify_market_analysis(
         self,
-        analysis,
+        review,
         indicators,
         volatility: str,
         fear_greed: int,
@@ -616,22 +616,18 @@ class TelegramNotifier:
         current_price: Decimal,
     ) -> None:
         """
-        Send hourly market analysis notification.
+        Send multi-agent hourly market analysis notification.
 
         Args:
-            analysis: MarketAnalysis result from AI
+            review: MultiAgentReviewResult from TradeReviewer.analyze_market()
             indicators: Current indicator values
             volatility: Volatility level
             fear_greed: Fear & Greed index value
             fear_greed_class: Fear & Greed classification
             current_price: Current BTC price
         """
-        # Outlook emoji
-        outlook_emoji = {
-            "bullish": "🟢",
-            "bearish": "🔴",
-            "neutral": "⚪",
-        }
+        # Stance emoji (for market analysis: bullish/neutral/bearish)
+        stance_emoji = {"bullish": "🟢", "neutral": "⚪", "bearish": "🔴"}
 
         # Volatility emoji
         vol_emoji = {
@@ -646,6 +642,11 @@ class TelegramNotifier:
             "wait": "⏳",
             "accumulate": "📈",
             "reduce": "📉",
+        }
+        rec_text = {
+            "wait": "Wait for clearer signals",
+            "accumulate": "Good opportunity to accumulate",
+            "reduce": "Consider reducing exposure",
         }
 
         # Format RSI status
@@ -666,19 +667,35 @@ class TelegramNotifier:
             else:
                 macd_status = f"{indicators.macd_histogram:.0f} (Bearish)"
 
+        # Build agent reviews section
+        agent_lines = []
+        for agent in review.reviews:
+            model_short = agent.model.split("/")[-1]
+            stance_label = agent.stance.capitalize()
+            outlook = agent.sentiment.capitalize()  # outlook stored in sentiment field
+            conf = f"({agent.confidence*100:.0f}%)"
+            summary = getattr(agent, 'summary', None) or agent.reasoning[:80]
+            agent_lines.append(
+                f"{stance_emoji.get(agent.stance, '⚪')} <b>{model_short}</b> ({stance_label}): "
+                f"{outlook} {conf}\n  <i>{summary}</i>"
+            )
+        agents_text = "\n\n".join(agent_lines) if agent_lines else "No reviews"
+
+        recommendation = review.judge_recommendation
+
         message = (
             f"📊 <b>Hourly Market Analysis</b>\n\n"
-            f"<b>Outlook</b>: {outlook_emoji.get(analysis.outlook, '⚪')} "
-            f"{analysis.outlook.title()} ({analysis.confidence*100:.0f}% confidence)\n"
             f"<b>Volatility</b>: {vol_emoji.get(volatility, '☀️')} {volatility.title()}\n\n"
             f"<b>Current Indicators</b>:\n"
             f"  💰 Price: ${float(current_price):,.2f}\n"
             f"  📊 RSI: {rsi_status}\n"
             f"  📈 MACD: {macd_status}\n"
             f"  😨 Fear & Greed: {fear_greed} ({fear_greed_class})\n\n"
-            f"💡 <b>Summary</b>:\n{analysis.summary}\n\n"
-            f"{rec_emoji.get(analysis.recommendation, '⏳')} <b>Recommendation</b>: "
-            f"{analysis.recommendation.title()}\n\n"
+            f"<b>Analyst Reviews</b>:\n{agents_text}\n\n"
+            f"<b>━━━ Judge Synthesis ━━━</b>\n"
+            f"Confidence: {review.judge_confidence*100:.0f}%\n"
+            f"{rec_emoji.get(recommendation, '📌')} Recommendation: <b>{rec_text.get(recommendation, recommendation.upper())}</b>\n\n"
+            f"<i>{review.judge_reasoning}</i>\n\n"
             f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 

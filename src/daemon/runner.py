@@ -33,7 +33,6 @@ from src.strategy.signal_scorer import SignalScorer
 from src.strategy.position_sizer import PositionSizer, PositionSizeConfig
 from src.strategy.regime import MarketRegime, RegimeConfig, RegimeAdjustments, get_cached_sentiment
 from src.indicators.ema import get_ema_trend_from_values
-from src.ai.market_analyzer import MarketAnalyzer
 
 logger = structlog.get_logger(__name__)
 
@@ -153,16 +152,12 @@ class TradingDaemon:
         else:
             logger.info("ai_trade_reviewer_disabled")
 
-        # Initialize hourly market analyzer (optional, via OpenRouter)
-        self.market_analyzer: Optional[MarketAnalyzer] = None
-        if settings.hourly_analysis_enabled and settings.openrouter_api_key:
-            self.market_analyzer = MarketAnalyzer(
-                api_key=settings.openrouter_api_key.get_secret_value(),
-                model=settings.hourly_analysis_model,
-            )
-            logger.info("market_analyzer_initialized", model=settings.hourly_analysis_model)
+        # Hourly market analysis uses trade_reviewer (if AI review enabled)
+        self._hourly_analysis_enabled = settings.hourly_analysis_enabled and self.trade_reviewer is not None
+        if self._hourly_analysis_enabled:
+            logger.info("hourly_market_analysis_enabled", uses_trade_reviewer=True)
         else:
-            logger.info("market_analyzer_disabled")
+            logger.info("hourly_market_analysis_disabled")
 
         # Initialize safety systems
         self.kill_switch = KillSwitch(
@@ -1362,8 +1357,8 @@ class TradingDaemon:
 
     def _check_hourly_analysis(self) -> None:
         """Run hourly market analysis during volatile conditions."""
-        # Skip if market analyzer not initialized
-        if not self.market_analyzer:
+        # Skip if hourly analysis not enabled
+        if not self._hourly_analysis_enabled:
             return
 
         now = datetime.now()
@@ -1418,10 +1413,30 @@ class TradingDaemon:
                 if prev_24h > 0:
                     price_change_24h = ((curr_close - prev_24h) / prev_24h) * 100
 
-            # Run AI analysis
-            analysis = self._loop.run_until_complete(
-                self.market_analyzer.analyze_market(
-                    indicators=indicators,
+            # Build indicators dict for analyze_market
+            indicators_dict = {
+                "rsi": indicators.rsi,
+                "macd_histogram": indicators.macd_histogram,
+                "bb_percent_b": None,
+                "ema_gap": None,
+            }
+            # Calculate Bollinger %B
+            if indicators.bb_lower and indicators.bb_upper:
+                bb_range = indicators.bb_upper - indicators.bb_lower
+                if bb_range > 0:
+                    indicators_dict["bb_percent_b"] = round(
+                        (float(current_price) - indicators.bb_lower) / bb_range, 2
+                    )
+            # Calculate EMA gap
+            if indicators.ema_slow and indicators.ema_slow > 0:
+                indicators_dict["ema_gap"] = round(
+                    ((float(current_price) - indicators.ema_slow) / indicators.ema_slow) * 100, 2
+                )
+
+            # Run multi-agent market analysis
+            review = self._loop.run_until_complete(
+                self.trade_reviewer.analyze_market(
+                    indicators=indicators_dict,
                     current_price=current_price,
                     fear_greed=sentiment_value or 50,
                     fear_greed_class=sentiment_class,
@@ -1432,18 +1447,37 @@ class TradingDaemon:
                 )
             )
 
+            # Log multi-agent analysis summary
+            agent_summary = [
+                {
+                    "model": r.model.split("/")[-1],
+                    "stance": r.stance,
+                    "outlook": r.sentiment,
+                    "confidence": f"{r.confidence:.2f}",
+                    "summary": getattr(r, 'summary', '')[:50],
+                }
+                for r in review.reviews
+            ]
             logger.info(
                 "hourly_market_analysis",
-                outlook=analysis.outlook,
-                confidence=f"{analysis.confidence:.2f}",
-                recommendation=analysis.recommendation,
-                summary=analysis.summary,
-                key_observation=analysis.key_observation,
+                agents=agent_summary,
+                judge_confidence=f"{review.judge_confidence:.2f}",
+                judge_recommendation=review.judge_recommendation,
+                judge_reasoning=review.judge_reasoning,
             )
+
+            # Log full reasoning for each agent at debug level
+            for r in review.reviews:
+                logger.debug(
+                    "market_analysis_agent_reasoning",
+                    model=r.model.split("/")[-1],
+                    stance=r.stance,
+                    reasoning=r.reasoning,
+                )
 
             # Send Telegram notification
             self.notifier.notify_market_analysis(
-                analysis=analysis,
+                review=review,
                 indicators=indicators,
                 volatility=self._last_volatility,
                 fear_greed=sentiment_value or 50,

@@ -91,7 +91,7 @@ Uses 3 reviewer agents with different stances (Pro, Neutral, Opposing) plus a ju
 | `AI_REVIEW_ENABLED` | `false` | Enable multi-agent AI review via OpenRouter |
 | `OPENROUTER_API_KEY` | - | API key from openrouter.ai |
 | `REVIEWER_MODEL_1` | `x-ai/grok-4-fast` | First reviewer model |
-| `REVIEWER_MODEL_2` | `openai/gpt-5-mini` | Second reviewer model |
+| `REVIEWER_MODEL_2` | `qwen/qwen3-next-80b-a3b-instruct` | Second reviewer model |
 | `REVIEWER_MODEL_3` | `google/gemini-2.5-flash` | Third reviewer model |
 | `JUDGE_MODEL` | `deepseek/deepseek-chat-v3.1` | Judge model for final decision |
 | `VETO_ACTION` | `info` | `skip`, `reduce`, `delay`, or `info` |
@@ -99,12 +99,11 @@ Uses 3 reviewer agents with different stances (Pro, Neutral, Opposing) plus a ju
 
 ### Hourly Market Analysis (Optional)
 
-AI-powered market analysis during volatile conditions (runs hourly when volatility is high/extreme).
+AI-powered market analysis during volatile conditions (runs hourly when volatility is high/extreme). Uses the same multi-agent system as trade reviews (3 reviewers with bullish/neutral/bearish stances + judge).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HOURLY_ANALYSIS_ENABLED` | `true` | Enable hourly AI analysis |
-| `HOURLY_ANALYSIS_MODEL` | `anthropic/claude-sonnet-4.5` | Model for market analysis |
+| `HOURLY_ANALYSIS_ENABLED` | `true` | Enable hourly AI analysis (uses reviewer models) |
 
 ## Trading Strategy
 

@@ -240,7 +240,7 @@ class Settings(BaseSettings):
         description="First reviewer model (stance randomly assigned)"
     )
     reviewer_model_2: str = Field(
-        default="openai/gpt-5-mini",
+        default="qwen/qwen3-next-80b-a3b-instruct",
         description="Second reviewer model (stance randomly assigned)"
     )
     reviewer_model_3: str = Field(
@@ -284,14 +284,10 @@ class Settings(BaseSettings):
         description="Review ALL decisions with AI (for debugging/testing)"
     )
 
-    # Hourly Market Analysis
+    # Hourly Market Analysis (uses same multi-agent system as trade reviews)
     hourly_analysis_enabled: bool = Field(
         default=True,
-        description="Enable hourly AI market analysis during volatile conditions"
-    )
-    hourly_analysis_model: str = Field(
-        default="anthropic/claude-sonnet-4.5",
-        description="Model to use for hourly market analysis"
+        description="Enable hourly AI market analysis during volatile conditions (uses reviewer models)"
     )
 
     # Market Regime Adaptation

@@ -186,6 +186,117 @@ Respond with JSON only:
   "confidence": 0.0-1.0
 }"""
 
+# Market Analysis prompts (different stances for market outlook)
+SYSTEM_PROMPT_MARKET_BULLISH = """You are a Bitcoin market analyst with a BULLISH outlook.
+
+Your role is to identify and emphasize positive signals, upside potential, and reasons for optimism.
+Be persuasive but honest - acknowledge risks briefly while focusing on opportunities.
+
+Indicators explained:
+- RSI: 0-100 scale. <30 = oversold (bullish), >70 = overbought (bearish)
+- MACD histogram: Positive = bullish momentum, Negative = bearish momentum
+- Bollinger %B: 0-1 scale. <0.2 = near lower band (oversold), >0.8 = near upper band (overbought)
+- EMA gap: Price vs slow EMA. Negative = price below EMA (bearish trend)
+- Fear & Greed: 0-100. <25 = Extreme Fear (contrarian bullish), >75 = Extreme Greed
+
+Focus on:
+- Oversold conditions as buying opportunities
+- Positive momentum signals
+- Contrarian opportunities in fear
+- Technical support levels
+
+Respond with JSON only:
+{
+  "outlook": "bullish"/"bearish"/"neutral",
+  "confidence": 0.0-1.0,
+  "summary": "One short sentence (max 15 words) with your key bullish argument",
+  "reasoning": "2-3 sentences with detailed bullish analysis"
+}"""
+
+SYSTEM_PROMPT_MARKET_NEUTRAL = """You are a Bitcoin market analyst with a NEUTRAL stance.
+
+Your role is to provide balanced, unbiased analysis. Weigh both bullish and bearish factors equally.
+Present facts objectively without advocating for any direction.
+
+Indicators explained:
+- RSI: 0-100 scale. <30 = oversold (bullish), >70 = overbought (bearish)
+- MACD histogram: Positive = bullish momentum, Negative = bearish momentum
+- Bollinger %B: 0-1 scale. <0.2 = near lower band (oversold), >0.8 = near upper band (overbought)
+- EMA gap: Price vs slow EMA. Negative = price below EMA (bearish trend)
+- Fear & Greed: 0-100. <25 = Extreme Fear, >75 = Extreme Greed
+
+Analyze:
+- Both positive and negative signals equally
+- Current market sentiment vs technical signals
+- Risk factors AND opportunities
+- Overall market conditions
+
+Respond with JSON only:
+{
+  "outlook": "bullish"/"bearish"/"neutral",
+  "confidence": 0.0-1.0,
+  "summary": "One short sentence (max 15 words) with your key observation",
+  "reasoning": "2-3 sentences with detailed balanced analysis"
+}"""
+
+SYSTEM_PROMPT_MARKET_BEARISH = """You are a Bitcoin market analyst with a BEARISH outlook.
+
+Your role is to identify and emphasize warning signs, downside risks, and reasons for caution.
+Be critical but honest - acknowledge potential upside briefly while focusing on risks.
+
+Indicators explained:
+- RSI: 0-100 scale. <30 = oversold (bullish), >70 = overbought (bearish)
+- MACD histogram: Positive = bullish momentum, Negative = bearish momentum
+- Bollinger %B: 0-1 scale. <0.2 = near lower band (oversold), >0.8 = near upper band (overbought)
+- EMA gap: Price vs slow EMA. Negative = price below EMA (bearish trend)
+- Fear & Greed: 0-100. <25 = Extreme Fear, >75 = Extreme Greed (contrarian bearish)
+
+Focus on:
+- Overbought conditions as selling signals
+- Negative momentum and trend weakness
+- Resistance levels and potential reversals
+- Risk factors in current conditions
+
+Respond with JSON only:
+{
+  "outlook": "bullish"/"bearish"/"neutral",
+  "confidence": 0.0-1.0,
+  "summary": "One short sentence (max 15 words) with your key concern",
+  "reasoning": "2-3 sentences with detailed bearish analysis"
+}"""
+
+SYSTEM_PROMPT_MARKET_JUDGE = """You are the final decision maker synthesizing market analysis from three analysts.
+
+You will receive three analyses from different perspectives:
+1. A BULLISH stance (focusing on upside)
+2. A NEUTRAL stance (balanced view)
+3. A BEARISH stance (focusing on risks)
+
+Your job is to:
+1. Consider the strength of each argument
+2. Weigh the confidence levels
+3. Look for consensus or strong disagreement
+4. Synthesize into a final market outlook
+
+Decision guidelines:
+- If all three agree on direction, follow the consensus
+- If BULLISH and NEUTRAL are positive with high confidence, lean bullish
+- If BEARISH has very strong arguments (>0.8 confidence), lean cautious
+- When signals conflict, provide nuanced analysis
+
+Respond with JSON only:
+{
+  "outlook": "bullish"/"bearish"/"neutral",
+  "confidence": 0.0-1.0,
+  "recommendation": "wait"/"accumulate"/"reduce",
+  "reasoning": "2-3 sentences synthesizing the three perspectives"
+}
+
+Recommendation meanings:
+- "wait": Hold current position, wait for clearer signals
+- "accumulate": Good opportunity to buy/add to position
+- "reduce": Consider reducing exposure or taking profits"""
+
 
 class TradeReviewer:
     """
@@ -571,6 +682,239 @@ Market Context:
 - Fear & Greed Index: {context['fear_greed']} ({context['fear_greed_class']})
 
 Explain what the indicators are showing."""
+
+    # ========== Market Analysis (Multi-Agent) ==========
+
+    async def analyze_market(
+        self,
+        indicators: dict,
+        current_price: Decimal,
+        fear_greed: int,
+        fear_greed_class: str,
+        regime: str,
+        volatility: str,
+        price_change_1h: Optional[float] = None,
+        price_change_24h: Optional[float] = None,
+    ) -> MultiAgentReviewResult:
+        """
+        Multi-agent market analysis.
+
+        Uses 3 reviewers with bullish/neutral/bearish stances
+        plus a judge for final synthesis.
+
+        Args:
+            indicators: Dict with rsi, macd_histogram, bb values, ema values
+            current_price: Current BTC price
+            fear_greed: Fear & Greed index value
+            fear_greed_class: Fear & Greed classification
+            regime: Current market regime
+            volatility: Volatility level (low/normal/high/extreme)
+            price_change_1h: Optional 1-hour price change %
+            price_change_24h: Optional 24-hour price change %
+
+        Returns:
+            MultiAgentReviewResult with all reviews and judge decision
+        """
+        self._check_circuit_breaker_reset()
+
+        # Build market context
+        context = {
+            "review_type": "market_analysis",
+            "price": float(current_price),
+            "fear_greed": fear_greed,
+            "fear_greed_class": fear_greed_class,
+            "regime": regime,
+            "volatility": volatility,
+            "price_change_1h": price_change_1h,
+            "price_change_24h": price_change_24h,
+            "indicators": indicators,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+
+        try:
+            # Randomly assign stances to models
+            stances = ["bullish", "neutral", "bearish"]
+            random.shuffle(stances)
+            assignments = list(zip(self.reviewer_models, stances))
+
+            logger.info(
+                "multi_agent_market_analysis_starting",
+                assignments=[(m.split("/")[-1], s) for m, s in assignments],
+            )
+
+            # Run all 3 reviewers in parallel
+            reviews = await asyncio.gather(*[
+                self._run_market_reviewer(model, stance, context)
+                for model, stance in assignments
+            ], return_exceptions=True)
+
+            # Filter out exceptions
+            valid_reviews = []
+            for i, review in enumerate(reviews):
+                if isinstance(review, Exception):
+                    logger.error(
+                        "market_reviewer_failed",
+                        model=assignments[i][0],
+                        stance=assignments[i][1],
+                        error=str(review),
+                    )
+                    # Create fallback review
+                    valid_reviews.append(AgentReview(
+                        stance=assignments[i][1],
+                        model=assignments[i][0],
+                        approved=True,  # Not used for market analysis
+                        confidence=0.0,
+                        summary="Analysis unavailable",
+                        reasoning=f"Analysis failed: {str(review)[:200]}",
+                        sentiment="neutral",
+                    ))
+                else:
+                    valid_reviews.append(review)
+
+            # Run judge with all reviews
+            judge_result = await self._run_market_judge(valid_reviews, context)
+
+            self._consecutive_failures = 0
+
+            return MultiAgentReviewResult(
+                reviews=valid_reviews,
+                judge_decision=True,  # Not used for market analysis
+                judge_confidence=judge_result["confidence"],
+                judge_reasoning=judge_result["reasoning"],
+                judge_recommendation=judge_result["recommendation"],
+                final_veto_action=None,  # Not used for market analysis
+                trade_context=context,
+            )
+
+        except Exception as e:
+            self._consecutive_failures += 1
+            self._last_failure_time = datetime.now()
+            logger.error(
+                "multi_agent_market_analysis_failed",
+                error=str(e),
+                consecutive_failures=self._consecutive_failures,
+            )
+
+            return MultiAgentReviewResult(
+                reviews=[],
+                judge_decision=True,
+                judge_confidence=0.0,
+                judge_reasoning=f"Market analysis failed: {str(e)[:200]}",
+                judge_recommendation="wait",
+                final_veto_action=None,
+                trade_context=context,
+            )
+
+    async def _run_market_reviewer(
+        self, model: str, stance: str, context: dict
+    ) -> AgentReview:
+        """Run single market reviewer with assigned stance."""
+        system_prompts = {
+            "bullish": SYSTEM_PROMPT_MARKET_BULLISH,
+            "neutral": SYSTEM_PROMPT_MARKET_NEUTRAL,
+            "bearish": SYSTEM_PROMPT_MARKET_BEARISH,
+        }
+
+        prompt = self._build_market_prompt(context)
+        response = await self._call_api(model, system_prompts[stance], prompt)
+        data = self._extract_json(response)
+
+        summary = data.get("summary", "")
+        reasoning = data.get("reasoning", "No reasoning provided")
+
+        # Fallback: if no summary, use first sentence of reasoning
+        if not summary and reasoning:
+            summary = reasoning.split('.')[0] + '.' if '.' in reasoning else reasoning[:80]
+
+        # Map outlook to sentiment for consistency
+        outlook = data.get("outlook", "neutral")
+
+        return AgentReview(
+            stance=stance,
+            model=model,
+            approved=True,  # Not used for market analysis
+            confidence=max(0.0, min(1.0, float(data.get("confidence", 0.5)))),
+            summary=summary,
+            reasoning=reasoning,
+            sentiment=outlook,  # Store outlook as sentiment
+        )
+
+    async def _run_market_judge(
+        self, reviews: list[AgentReview], context: dict
+    ) -> dict:
+        """Run judge to synthesize market reviews."""
+        prompt = self._build_market_judge_prompt(reviews, context)
+        response = await self._call_api(self.judge_model, SYSTEM_PROMPT_MARKET_JUDGE, prompt)
+        data = self._extract_json(response)
+
+        # Validate recommendation
+        recommendation = data.get("recommendation", "wait")
+        if recommendation not in ("wait", "accumulate", "reduce"):
+            recommendation = "wait"
+
+        return {
+            "outlook": data.get("outlook", "neutral"),
+            "confidence": max(0.0, min(1.0, float(data.get("confidence", 0.5)))),
+            "reasoning": data.get("reasoning", "No reasoning provided"),
+            "recommendation": recommendation,
+        }
+
+    def _build_market_prompt(self, context: dict) -> str:
+        """Build prompt for market analysis reviewers."""
+        indicators = context.get("indicators", {})
+
+        # Format indicator values
+        rsi_str = f"{indicators.get('rsi', 'N/A')}"
+        macd_str = f"{indicators.get('macd_histogram', 'N/A')}"
+        bb_str = f"{indicators.get('bb_percent_b', 'N/A')}"
+        ema_gap_str = f"{indicators.get('ema_gap', 'N/A')}"
+
+        # Build price change info
+        price_changes = []
+        if context.get("price_change_1h") is not None:
+            price_changes.append(f"1h: {context['price_change_1h']:+.2f}%")
+        if context.get("price_change_24h") is not None:
+            price_changes.append(f"24h: {context['price_change_24h']:+.2f}%")
+        price_change_str = ", ".join(price_changes) if price_changes else "N/A"
+
+        return f"""Analyze current Bitcoin market conditions:
+
+Price: ${context['price']:,.2f}
+Price Changes: {price_change_str}
+Volatility: {context['volatility'].upper()}
+Market Regime: {context['regime']}
+
+Technical Indicators:
+- RSI: {rsi_str}
+- MACD Histogram: {macd_str}
+- Bollinger %B: {bb_str}
+- EMA Gap: {ema_gap_str}
+
+Sentiment:
+- Fear & Greed Index: {context['fear_greed']} ({context['fear_greed_class']})
+
+Provide your market analysis from your assigned perspective."""
+
+    def _build_market_judge_prompt(self, reviews: list[AgentReview], context: dict) -> str:
+        """Build prompt for market judge with all reviews."""
+        reviews_text = []
+        for review in reviews:
+            stance_label = review.stance.upper()
+            model_short = review.model.split("/")[-1]
+            outlook = review.sentiment.upper()
+            reviews_text.append(
+                f"[{stance_label}] ({model_short}) - Outlook: {outlook} ({review.confidence:.0%} confidence)\n"
+                f"  Reasoning: {review.reasoning}"
+            )
+
+        return f"""Market Analysis at ${context['price']:,.2f}
+Volatility: {context['volatility'].upper()}
+Fear & Greed: {context['fear_greed']} ({context['fear_greed_class']})
+
+Analyst Reviews:
+{chr(10).join(reviews_text)}
+
+Based on these three perspectives, provide the final market outlook."""
 
     async def _call_api(self, model: str, system_prompt: str, user_prompt: str) -> str:
         """Call OpenRouter API."""
