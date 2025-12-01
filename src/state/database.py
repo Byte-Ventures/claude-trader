@@ -204,7 +204,7 @@ class Database:
             echo=False,
             connect_args={"check_same_thread": False},
         )
-        self.SessionLocal = sessionmaker(bind=self.engine)
+        self.SessionLocal = sessionmaker(bind=self.engine, expire_on_commit=False)
 
         # Create tables
         Base.metadata.create_all(self.engine)
