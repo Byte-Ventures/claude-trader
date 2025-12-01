@@ -224,32 +224,37 @@ class RateHistory(Base):
     def get_open(self) -> Decimal:
         try:
             return Decimal(self.open_price) if self.open_price else Decimal("0")
-        except Exception:
-            return Decimal("0")
+        except Exception as e:
+            logger.error("decimal_conversion_failed", field="open_price", value=self.open_price, error=str(e), rate_id=self.id)
+            raise ValueError(f"Invalid open_price: {self.open_price}") from e
 
     def get_high(self) -> Decimal:
         try:
             return Decimal(self.high_price) if self.high_price else Decimal("0")
-        except Exception:
-            return Decimal("0")
+        except Exception as e:
+            logger.error("decimal_conversion_failed", field="high_price", value=self.high_price, error=str(e), rate_id=self.id)
+            raise ValueError(f"Invalid high_price: {self.high_price}") from e
 
     def get_low(self) -> Decimal:
         try:
             return Decimal(self.low_price) if self.low_price else Decimal("0")
-        except Exception:
-            return Decimal("0")
+        except Exception as e:
+            logger.error("decimal_conversion_failed", field="low_price", value=self.low_price, error=str(e), rate_id=self.id)
+            raise ValueError(f"Invalid low_price: {self.low_price}") from e
 
     def get_close(self) -> Decimal:
         try:
             return Decimal(self.close_price) if self.close_price else Decimal("0")
-        except Exception:
-            return Decimal("0")
+        except Exception as e:
+            logger.error("decimal_conversion_failed", field="close_price", value=self.close_price, error=str(e), rate_id=self.id)
+            raise ValueError(f"Invalid close_price: {self.close_price}") from e
 
     def get_volume(self) -> Decimal:
         try:
             return Decimal(self.volume) if self.volume else Decimal("0")
-        except Exception:
-            return Decimal("0")
+        except Exception as e:
+            logger.error("decimal_conversion_failed", field="volume", value=self.volume, error=str(e), rate_id=self.id)
+            raise ValueError(f"Invalid volume: {self.volume}") from e
 
 
 class Database:

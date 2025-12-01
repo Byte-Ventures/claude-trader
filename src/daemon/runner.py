@@ -1657,12 +1657,20 @@ class TradingDaemon:
         # For buy positions: check hard stop first, then trailing stop logic
         if ts.side == "buy":
             # CHECK HARD STOP FIRST (always active, never moves)
+            # This is emergency capital protection - triggers before trailing can activate
             if hard_stop is not None and current_price <= hard_stop:
-                logger.info(
+                # Determine if this was an emergency exit (trailing never activated)
+                # or if trailing was active but hard stop was hit anyway (shouldn't happen normally)
+                trailing_was_active = current_stop is not None
+                exit_type = "emergency_exit" if not trailing_was_active else "hard_stop_below_trailing"
+                logger.warning(
                     "hard_stop_triggered",
+                    exit_type=exit_type,
                     current_price=str(current_price),
                     hard_stop=str(hard_stop),
                     entry_price=str(entry_price),
+                    trailing_was_active=trailing_was_active,
+                    loss_percent=str(round((entry_price - current_price) / entry_price * 100, 2)),
                 )
                 self.db.deactivate_trailing_stop(
                     symbol=self.settings.trading_pair,
@@ -1695,12 +1703,17 @@ class TradingDaemon:
                     )
                     current_stop = potential_new_stop
 
-            # Check if stop is hit
+            # Check if stop is hit (profit protection - trailing only activates after profit)
             if current_stop is not None and current_price <= current_stop:
+                # Calculate profit locked in (trailing stop is profit protection)
+                profit_percent = (current_price - entry_price) / entry_price * 100
                 logger.info(
                     "trailing_stop_triggered",
+                    exit_type="profit_protection",
                     current_price=str(current_price),
                     stop_level=str(current_stop),
+                    entry_price=str(entry_price),
+                    profit_percent=str(round(profit_percent, 2)),
                 )
                 self.db.deactivate_trailing_stop(
                     symbol=self.settings.trading_pair,
