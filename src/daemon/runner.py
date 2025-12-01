@@ -1567,26 +1567,42 @@ class TradingDaemon:
     def _create_trailing_stop(
         self, entry_price: Decimal, candles, is_paper: bool = False
     ) -> None:
-        """Create a trailing stop for a new buy position."""
+        """Create or update trailing stop for a position.
+
+        Uses position's weighted average cost for hard stop calculation
+        to properly handle position averaging (DCA).
+        """
         from src.strategy.indicators.atr import calculate_atr
 
         try:
+            # Get current position's average cost for hard stop calculation
+            # This handles position averaging - hard stop should be based on
+            # weighted average cost, not just the latest entry price
+            position = self.db.get_current_position(
+                self.settings.trading_pair, is_paper=is_paper
+            )
+
+            if position and position.get_quantity() > Decimal("0"):
+                avg_cost = position.get_average_cost()
+            else:
+                avg_cost = entry_price
+
             # Calculate ATR for trailing stop distance
             atr_result = calculate_atr(candles, period=self.settings.atr_period)
             atr = atr_result.current
 
-            # Trailing activates at 1 ATR profit
-            activation = entry_price + atr
+            # Trailing activates at 1 ATR profit from average cost
+            activation = avg_cost + atr
             # Trailing distance is based on config multiplier
             distance = atr * Decimal(str(self.settings.trailing_stop_atr_multiplier))
 
-            # Hard stop: immediate protection using stop_loss_atr_multiplier
-            hard_stop = entry_price - (atr * Decimal(str(self.settings.stop_loss_atr_multiplier)))
+            # Hard stop: based on average cost, not latest entry
+            hard_stop = avg_cost - (atr * Decimal(str(self.settings.stop_loss_atr_multiplier)))
 
             self.db.create_trailing_stop(
                 symbol=self.settings.trading_pair,
                 side="buy",
-                entry_price=entry_price,
+                entry_price=avg_cost,  # Use avg_cost for consistency
                 trailing_activation=activation,
                 trailing_distance=distance,
                 is_paper=is_paper,
@@ -1596,6 +1612,7 @@ class TradingDaemon:
             logger.info(
                 "trailing_stop_set",
                 entry_price=str(entry_price),
+                avg_cost=str(avg_cost),
                 activation=str(activation),
                 distance=str(distance),
                 hard_stop=str(hard_stop),

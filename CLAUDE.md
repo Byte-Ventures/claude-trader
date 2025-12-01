@@ -37,6 +37,16 @@ All exchange clients implement `ExchangeClient` protocol (`src/api/exchange_prot
 ### Strategy
 `src/strategy/signal_scorer.py` combines RSI, MACD, Bollinger, EMA, Volume into -100 to +100 score. Trade when |score| ≥ threshold.
 
+## Database Operations
+
+All database operations MUST support both PAPER and ACTUAL (live) trading modes. They MUST be kept completely separate:
+
+- Every table with trading data has `is_paper` column
+- All queries MUST filter by `is_paper` parameter
+- Paper and live data must NEVER mix
+- Both modes must be independently functional
+- Test with paper trading before enabling live trading
+
 ## Versioning
 
 Always update `src/version.py` when making commits:
