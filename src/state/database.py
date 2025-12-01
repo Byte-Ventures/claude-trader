@@ -12,7 +12,7 @@ Tables:
 
 import json
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Generator, Optional
@@ -1105,8 +1105,23 @@ class Database:
         inserted = 0
         try:
             with self.session() as session:
+                # Normalize timestamps to naive UTC datetime (pandas Timestamp -> datetime)
+                def to_datetime(ts):
+                    if hasattr(ts, 'to_pydatetime'):
+                        dt = ts.to_pydatetime()
+                    else:
+                        dt = ts
+                    # Convert to UTC before removing tzinfo (SQLite stores naive datetimes)
+                    if hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
+                        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+                    else:
+                        # Naive datetime - assumed to be UTC, warn since this could hide bugs
+                        logger.warning("rate_history_naive_timestamp", timestamp=str(dt))
+                    return dt
+
+                candle_timestamps = [to_datetime(c["timestamp"]) for c in candles]
+
                 # Batch fetch existing timestamps in one query for performance
-                candle_timestamps = [c["timestamp"] for c in candles]
                 existing_timestamps = set(
                     row[0] for row in session.query(RateHistory.timestamp)
                     .filter(
@@ -1119,14 +1134,14 @@ class Database:
                     .all()
                 )
 
-                # Insert only new candles
-                for candle in candles:
-                    if candle["timestamp"] not in existing_timestamps:
+                # Insert only new candles (batch - flush happens at context exit)
+                for candle, normalized_ts in zip(candles, candle_timestamps):
+                    if normalized_ts not in existing_timestamps:
                         rate = RateHistory(
                             symbol=symbol,
                             exchange=exchange,
                             interval=interval,
-                            timestamp=candle["timestamp"],
+                            timestamp=normalized_ts,
                             open_price=str(candle["open"]),
                             high_price=str(candle["high"]),
                             low_price=str(candle["low"]),
