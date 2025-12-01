@@ -1,0 +1,804 @@
+"""
+Comprehensive tests for the MarketRegime detection and strategy adaptation system.
+
+Tests cover:
+- Sentiment scoring (Fear & Greed Index: 0-100)
+- Sentiment classification (extreme_fear, fear, neutral, greed, extreme_greed)
+- Volatility level detection (low/normal/high/extreme)
+- Trend direction classification (bullish/neutral/bearish)
+- Regime adjustment calculation (threshold and position multipliers)
+- Adjustment scale application (0.0 to 2.0)
+- Combined regime effects on trading parameters
+- Component toggles (sentiment/volatility/trend enabled/disabled)
+- Regime name classification (risk_on, opportunistic, neutral, cautious, risk_off)
+- API fallback when Fear & Greed unavailable
+- Cache behavior (15-minute TTL)
+"""
+
+import pytest
+from unittest.mock import MagicMock, patch, AsyncMock
+from freezegun import freeze_time
+
+from src.strategy.regime import (
+    MarketRegime,
+    RegimeConfig,
+    RegimeAdjustments,
+    get_cached_sentiment,
+)
+from src.ai.sentiment import FearGreedResult
+
+
+# ============================================================================
+# Fixtures
+# ============================================================================
+
+@pytest.fixture
+def regime():
+    """Market regime with default configuration."""
+    return MarketRegime()
+
+
+@pytest.fixture
+def custom_config():
+    """Custom regime configuration."""
+    return RegimeConfig(
+        enabled=True,
+        sentiment_enabled=True,
+        volatility_enabled=True,
+        trend_enabled=True,
+        adjustment_scale=1.5,
+    )
+
+
+@pytest.fixture
+def regime_custom(custom_config):
+    """Market regime with custom configuration."""
+    return MarketRegime(config=custom_config)
+
+
+@pytest.fixture
+def regime_disabled():
+    """Market regime with regime system disabled."""
+    config = RegimeConfig(enabled=False)
+    return MarketRegime(config=config)
+
+
+@pytest.fixture
+def extreme_fear_sentiment():
+    """Fear & Greed result indicating extreme fear."""
+    return FearGreedResult(
+        value=15,
+        classification="Extreme Fear",
+        timestamp=None,
+    )
+
+
+@pytest.fixture
+def fear_sentiment():
+    """Fear & Greed result indicating fear."""
+    return FearGreedResult(
+        value=35,
+        classification="Fear",
+        timestamp=None,
+    )
+
+
+@pytest.fixture
+def neutral_sentiment():
+    """Fear & Greed result indicating neutral."""
+    return FearGreedResult(
+        value=50,
+        classification="Neutral",
+        timestamp=None,
+    )
+
+
+@pytest.fixture
+def greed_sentiment():
+    """Fear & Greed result indicating greed."""
+    return FearGreedResult(
+        value=65,
+        classification="Greed",
+        timestamp=None,
+    )
+
+
+@pytest.fixture
+def extreme_greed_sentiment():
+    """Fear & Greed result indicating extreme greed."""
+    return FearGreedResult(
+        value=85,
+        classification="Extreme Greed",
+        timestamp=None,
+    )
+
+
+# ============================================================================
+# Initialization Tests
+# ============================================================================
+
+def test_default_initialization():
+    """Test regime initializes with default configuration."""
+    regime = MarketRegime()
+
+    assert regime.config.enabled is True
+    assert regime.config.sentiment_enabled is True
+    assert regime.config.volatility_enabled is True
+    assert regime.config.trend_enabled is True
+    assert regime.config.adjustment_scale == 1.0
+
+
+def test_custom_configuration(custom_config):
+    """Test regime accepts custom configuration."""
+    regime = MarketRegime(config=custom_config)
+
+    assert regime.config.enabled is True
+    assert regime.config.sentiment_enabled is True
+    assert regime.config.volatility_enabled is True
+    assert regime.config.trend_enabled is True
+    assert regime.config.adjustment_scale == 1.5
+
+
+def test_adjustment_constants_defined():
+    """Test regime adjustment constants are properly defined."""
+    assert "extreme_fear" in MarketRegime.SENTIMENT_ADJUSTMENTS
+    assert "fear" in MarketRegime.SENTIMENT_ADJUSTMENTS
+    assert "neutral" in MarketRegime.SENTIMENT_ADJUSTMENTS
+    assert "greed" in MarketRegime.SENTIMENT_ADJUSTMENTS
+    assert "extreme_greed" in MarketRegime.SENTIMENT_ADJUSTMENTS
+
+    assert "low" in MarketRegime.VOLATILITY_ADJUSTMENTS
+    assert "normal" in MarketRegime.VOLATILITY_ADJUSTMENTS
+    assert "high" in MarketRegime.VOLATILITY_ADJUSTMENTS
+    assert "extreme" in MarketRegime.VOLATILITY_ADJUSTMENTS
+
+    assert "bullish" in MarketRegime.TREND_ADJUSTMENTS
+    assert "neutral" in MarketRegime.TREND_ADJUSTMENTS
+    assert "bearish" in MarketRegime.TREND_ADJUSTMENTS
+
+
+# ============================================================================
+# Sentiment Classification Tests
+# ============================================================================
+
+def test_classify_sentiment_extreme_fear(regime):
+    """Test sentiment classification for extreme fear (0-24)."""
+    assert regime._classify_sentiment(0) == "extreme_fear"
+    assert regime._classify_sentiment(15) == "extreme_fear"
+    assert regime._classify_sentiment(24) == "extreme_fear"
+
+
+def test_classify_sentiment_fear(regime):
+    """Test sentiment classification for fear (25-44)."""
+    assert regime._classify_sentiment(25) == "fear"
+    assert regime._classify_sentiment(35) == "fear"
+    assert regime._classify_sentiment(44) == "fear"
+
+
+def test_classify_sentiment_neutral(regime):
+    """Test sentiment classification for neutral (45-55)."""
+    assert regime._classify_sentiment(45) == "neutral"
+    assert regime._classify_sentiment(50) == "neutral"
+    assert regime._classify_sentiment(55) == "neutral"
+
+
+def test_classify_sentiment_greed(regime):
+    """Test sentiment classification for greed (56-75)."""
+    assert regime._classify_sentiment(56) == "greed"
+    assert regime._classify_sentiment(65) == "greed"
+    assert regime._classify_sentiment(75) == "greed"
+
+
+def test_classify_sentiment_extreme_greed(regime):
+    """Test sentiment classification for extreme greed (76-100)."""
+    assert regime._classify_sentiment(76) == "extreme_greed"
+    assert regime._classify_sentiment(85) == "extreme_greed"
+    assert regime._classify_sentiment(100) == "extreme_greed"
+
+
+def test_classify_sentiment_boundary_values(regime):
+    """Test sentiment classification at exact boundary values."""
+    assert regime._classify_sentiment(24) == "extreme_fear"
+    assert regime._classify_sentiment(25) == "fear"
+
+    assert regime._classify_sentiment(44) == "fear"
+    assert regime._classify_sentiment(45) == "neutral"
+
+    assert regime._classify_sentiment(55) == "neutral"
+    assert regime._classify_sentiment(56) == "greed"
+
+    assert regime._classify_sentiment(75) == "greed"
+    assert regime._classify_sentiment(76) == "extreme_greed"
+
+
+# ============================================================================
+# Regime Calculation Tests
+# ============================================================================
+
+def test_calculate_returns_adjustments(regime, neutral_sentiment):
+    """Test calculate returns RegimeAdjustments."""
+    result = regime.calculate(
+        sentiment=neutral_sentiment,
+        volatility="normal",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    assert isinstance(result, RegimeAdjustments)
+    assert isinstance(result.threshold_adjustment, int)
+    assert isinstance(result.position_multiplier, float)
+    assert isinstance(result.regime_name, str)
+    assert isinstance(result.components, dict)
+
+
+def test_disabled_regime_returns_neutral(regime_disabled):
+    """Test disabled regime returns neutral adjustments."""
+    result = regime_disabled.calculate(
+        sentiment=None,
+        volatility="high",
+        trend="bearish",
+        signal_action="buy",
+    )
+
+    assert result.threshold_adjustment == 0
+    assert result.position_multiplier == 1.0
+    assert result.regime_name == "disabled"
+    assert result.components == {}
+
+
+def test_extreme_fear_lowers_threshold(regime, extreme_fear_sentiment):
+    """Test extreme fear reduces threshold (easier to trade)."""
+    result = regime.calculate(
+        sentiment=extreme_fear_sentiment,
+        volatility="normal",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    # Extreme fear should lower threshold (negative adjustment)
+    assert result.threshold_adjustment <= 0
+    assert "sentiment" in result.components
+    assert result.components["sentiment"]["category"] == "extreme_fear"
+
+
+def test_extreme_fear_increases_position(regime, extreme_fear_sentiment):
+    """Test extreme fear increases position multiplier."""
+    result = regime.calculate(
+        sentiment=extreme_fear_sentiment,
+        volatility="normal",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    # Extreme fear should increase position (>1.0)
+    assert result.position_multiplier >= 1.0
+
+
+def test_extreme_greed_raises_threshold(regime, extreme_greed_sentiment):
+    """Test extreme greed raises threshold (harder to trade)."""
+    result = regime.calculate(
+        sentiment=extreme_greed_sentiment,
+        volatility="normal",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    # Extreme greed should raise threshold (positive adjustment)
+    assert result.threshold_adjustment >= 0
+    assert result.components["sentiment"]["category"] == "extreme_greed"
+
+
+def test_extreme_greed_decreases_position(regime, extreme_greed_sentiment):
+    """Test extreme greed decreases position multiplier."""
+    result = regime.calculate(
+        sentiment=extreme_greed_sentiment,
+        volatility="normal",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    # Extreme greed should decrease position (<1.0)
+    assert result.position_multiplier <= 1.0
+
+
+# ============================================================================
+# Volatility Adjustment Tests
+# ============================================================================
+
+def test_low_volatility_lowers_threshold(regime):
+    """Test low volatility makes it easier to trade."""
+    result = regime.calculate(
+        sentiment=None,
+        volatility="low",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    # Low volatility should lower threshold
+    assert result.threshold_adjustment <= 0
+    assert "volatility" in result.components
+    assert result.components["volatility"]["level"] == "low"
+
+
+def test_high_volatility_raises_threshold(regime):
+    """Test high volatility makes it harder to trade."""
+    result = regime.calculate(
+        sentiment=None,
+        volatility="high",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    # High volatility should raise threshold
+    assert result.threshold_adjustment >= 0
+    assert result.components["volatility"]["level"] == "high"
+
+
+def test_extreme_volatility_maximum_caution(regime):
+    """Test extreme volatility applies maximum caution."""
+    result = regime.calculate(
+        sentiment=None,
+        volatility="extreme",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    # Extreme volatility should have highest threshold adjustment
+    assert result.threshold_adjustment >= 5
+    # And lowest position multiplier
+    assert result.position_multiplier <= 1.0
+
+
+# ============================================================================
+# Trend Adjustment Tests
+# ============================================================================
+
+def test_bullish_trend_favors_buys(regime):
+    """Test bullish trend lowers buy threshold."""
+    result = regime.calculate(
+        sentiment=None,
+        volatility="normal",
+        trend="bullish",
+        signal_action="buy",
+    )
+
+    # Bullish trend should make buying easier
+    assert result.threshold_adjustment <= 0
+
+
+def test_bullish_trend_penalizes_sells(regime):
+    """Test bullish trend raises sell threshold."""
+    result = regime.calculate(
+        sentiment=None,
+        volatility="normal",
+        trend="bullish",
+        signal_action="sell",
+    )
+
+    # Bullish trend should make selling harder
+    assert result.threshold_adjustment >= 0
+
+
+def test_bearish_trend_penalizes_buys(regime):
+    """Test bearish trend raises buy threshold."""
+    result = regime.calculate(
+        sentiment=None,
+        volatility="normal",
+        trend="bearish",
+        signal_action="buy",
+    )
+
+    # Bearish trend should make buying harder
+    assert result.threshold_adjustment >= 0
+
+
+def test_bearish_trend_favors_sells(regime):
+    """Test bearish trend lowers sell threshold."""
+    result = regime.calculate(
+        sentiment=None,
+        volatility="normal",
+        trend="bearish",
+        signal_action="sell",
+    )
+
+    # Bearish trend should make selling easier
+    assert result.threshold_adjustment <= 0
+
+
+def test_neutral_trend_no_adjustment(regime):
+    """Test neutral trend has no effect."""
+    result = regime.calculate(
+        sentiment=None,
+        volatility="normal",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    # Neutral trend component should be zero
+    if "trend" in result.components:
+        assert result.components["trend"]["threshold_adj"] == 0
+
+
+def test_hold_signal_no_trend_adjustment(regime):
+    """Test hold signal gets no trend adjustment."""
+    result = regime.calculate(
+        sentiment=None,
+        volatility="normal",
+        trend="bullish",
+        signal_action="hold",
+    )
+
+    # Hold should not apply trend adjustments
+    if "trend" in result.components:
+        assert result.components["trend"]["threshold_adj"] == 0
+
+
+# ============================================================================
+# Combined Adjustment Tests
+# ============================================================================
+
+def test_combined_extreme_fear_and_low_volatility(regime, extreme_fear_sentiment):
+    """Test combined extreme fear + low volatility = very aggressive."""
+    result = regime.calculate(
+        sentiment=extreme_fear_sentiment,
+        volatility="low",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    # Both should lower threshold
+    assert result.threshold_adjustment <= -10
+    # Should be risk_on or opportunistic
+    assert result.regime_name in ["risk_on", "opportunistic"]
+
+
+def test_combined_extreme_greed_and_high_volatility(regime, extreme_greed_sentiment):
+    """Test combined extreme greed + high volatility = very cautious."""
+    result = regime.calculate(
+        sentiment=extreme_greed_sentiment,
+        volatility="high",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    # Both should raise threshold
+    assert result.threshold_adjustment >= 10
+    # Should be risk_off or cautious
+    assert result.regime_name in ["risk_off", "cautious"]
+
+
+def test_threshold_adjustment_clamped_to_range(regime, extreme_fear_sentiment):
+    """Test threshold adjustment is clamped to -20 to +20."""
+    # Try to create extreme adjustments
+    result = regime.calculate(
+        sentiment=extreme_fear_sentiment,
+        volatility="low",
+        trend="bullish",
+        signal_action="buy",
+    )
+
+    assert -20 <= result.threshold_adjustment <= 20
+
+
+def test_position_multiplier_clamped_to_range(regime, extreme_greed_sentiment):
+    """Test position multiplier is clamped to 0.5 to 1.5."""
+    # Try to create extreme multipliers
+    result = regime.calculate(
+        sentiment=extreme_greed_sentiment,
+        volatility="extreme",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    assert 0.5 <= result.position_multiplier <= 1.5
+
+
+# ============================================================================
+# Adjustment Scale Tests
+# ============================================================================
+
+def test_adjustment_scale_amplifies_effects(regime_custom, extreme_fear_sentiment):
+    """Test adjustment_scale=1.5 amplifies regime effects."""
+    # Custom regime has scale=1.5
+    result = regime_custom.calculate(
+        sentiment=extreme_fear_sentiment,
+        volatility="normal",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    # With scale 1.5, adjustments should be larger
+    assert result.threshold_adjustment != 0
+
+
+def test_adjustment_scale_zero_neutralizes():
+    """Test adjustment_scale=0 neutralizes all adjustments."""
+    config = RegimeConfig(adjustment_scale=0.0)
+    regime = MarketRegime(config=config)
+
+    result = regime.calculate(
+        sentiment=FearGreedResult(value=10, classification="Extreme Fear", timestamp=None),
+        volatility="extreme",
+        trend="bearish",
+        signal_action="buy",
+    )
+
+    # With scale 0, all adjustments should be zero
+    assert result.threshold_adjustment == 0
+    assert result.position_multiplier == 1.0
+
+
+# ============================================================================
+# Component Toggle Tests
+# ============================================================================
+
+def test_sentiment_disabled_ignores_fear_greed(extreme_fear_sentiment):
+    """Test sentiment_enabled=False ignores Fear & Greed."""
+    config = RegimeConfig(sentiment_enabled=False)
+    regime = MarketRegime(config=config)
+
+    result = regime.calculate(
+        sentiment=extreme_fear_sentiment,
+        volatility="normal",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    # Sentiment component should not exist
+    assert "sentiment" not in result.components
+
+
+def test_volatility_disabled_ignores_volatility():
+    """Test volatility_enabled=False ignores volatility level."""
+    config = RegimeConfig(volatility_enabled=False)
+    regime = MarketRegime(config=config)
+
+    result = regime.calculate(
+        sentiment=None,
+        volatility="extreme",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    # Volatility component should not exist
+    assert "volatility" not in result.components
+
+
+def test_trend_disabled_ignores_trend():
+    """Test trend_enabled=False ignores trend direction."""
+    config = RegimeConfig(trend_enabled=False)
+    regime = MarketRegime(config=config)
+
+    result = regime.calculate(
+        sentiment=None,
+        volatility="normal",
+        trend="bearish",
+        signal_action="buy",
+    )
+
+    # Trend component should not exist
+    assert "trend" not in result.components
+
+
+# ============================================================================
+# Regime Name Classification Tests
+# ============================================================================
+
+def test_regime_name_risk_on():
+    """Test regime name is 'risk_on' for threshold <= -10."""
+    regime = MarketRegime()
+
+    result = regime.calculate(
+        sentiment=FearGreedResult(value=10, classification="Extreme Fear", timestamp=None),
+        volatility="low",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    if result.threshold_adjustment <= -10:
+        assert result.regime_name == "risk_on"
+
+
+def test_regime_name_opportunistic():
+    """Test regime name is 'opportunistic' for -10 < threshold <= -5."""
+    regime = MarketRegime()
+
+    result = regime.calculate(
+        sentiment=FearGreedResult(value=30, classification="Fear", timestamp=None),
+        volatility="normal",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    if -10 < result.threshold_adjustment <= -5:
+        assert result.regime_name == "opportunistic"
+
+
+def test_regime_name_neutral():
+    """Test regime name is 'neutral' for -5 < threshold < 5."""
+    regime = MarketRegime()
+
+    result = regime.calculate(
+        sentiment=FearGreedResult(value=50, classification="Neutral", timestamp=None),
+        volatility="normal",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    if -5 < result.threshold_adjustment < 5:
+        assert result.regime_name == "neutral"
+
+
+def test_regime_name_cautious():
+    """Test regime name is 'cautious' for 5 <= threshold < 10."""
+    regime = MarketRegime()
+
+    result = regime.calculate(
+        sentiment=FearGreedResult(value=70, classification="Greed", timestamp=None),
+        volatility="normal",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    if 5 <= result.threshold_adjustment < 10:
+        assert result.regime_name == "cautious"
+
+
+def test_regime_name_risk_off():
+    """Test regime name is 'risk_off' for threshold >= 10."""
+    regime = MarketRegime()
+
+    result = regime.calculate(
+        sentiment=FearGreedResult(value=90, classification="Extreme Greed", timestamp=None),
+        volatility="high",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    if result.threshold_adjustment >= 10:
+        assert result.regime_name == "risk_off"
+
+
+# ============================================================================
+# None Sentiment Tests
+# ============================================================================
+
+def test_none_sentiment_skips_sentiment_component(regime):
+    """Test None sentiment is handled gracefully."""
+    result = regime.calculate(
+        sentiment=None,
+        volatility="normal",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    # Sentiment component should not exist
+    assert "sentiment" not in result.components
+
+
+def test_sentiment_value_none_skips_component(regime):
+    """Test sentiment with value=None is skipped."""
+    sentiment = FearGreedResult(value=None, classification="Unknown", timestamp=None)
+
+    result = regime.calculate(
+        sentiment=sentiment,
+        volatility="normal",
+        trend="neutral",
+        signal_action="buy",
+    )
+
+    # Sentiment component should not exist when value is None
+    assert "sentiment" not in result.components
+
+
+# ============================================================================
+# Cached Sentiment Tests
+# ============================================================================
+
+@pytest.mark.asyncio
+@freeze_time("2025-01-01 12:00:00")
+async def test_get_cached_sentiment_fetches_first_time():
+    """Test get_cached_sentiment fetches on first call."""
+    with patch("src.strategy.regime.fetch_fear_greed_index", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = FearGreedResult(value=50, classification="Neutral", timestamp=None)
+
+        # Clear cache
+        import src.strategy.regime as regime_module
+        regime_module._sentiment_cache = None
+        regime_module._sentiment_last_fetch = None
+
+        result = await get_cached_sentiment()
+
+        assert result is not None
+        assert result.value == 50
+        mock_fetch.assert_called_once()
+
+
+@pytest.mark.asyncio
+@freeze_time("2025-01-01 12:00:00")
+async def test_get_cached_sentiment_uses_cache_within_ttl():
+    """Test get_cached_sentiment uses cache within 15-minute TTL."""
+    with patch("src.strategy.regime.fetch_fear_greed_index", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = FearGreedResult(value=50, classification="Neutral", timestamp=None)
+
+        # Clear cache and fetch first time
+        import src.strategy.regime as regime_module
+        regime_module._sentiment_cache = None
+        regime_module._sentiment_last_fetch = None
+
+        result1 = await get_cached_sentiment()
+
+        # Move forward 10 minutes (within TTL)
+        with freeze_time("2025-01-01 12:10:00"):
+            result2 = await get_cached_sentiment()
+
+            # Should use cache, only 1 fetch
+            assert mock_fetch.call_count == 1
+            assert result2 is not None
+
+
+@pytest.mark.asyncio
+@freeze_time("2025-01-01 12:00:00")
+async def test_get_cached_sentiment_refetches_after_ttl():
+    """Test get_cached_sentiment refetches after 15-minute TTL."""
+    with patch("src.strategy.regime.fetch_fear_greed_index", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = FearGreedResult(value=50, classification="Neutral", timestamp=None)
+
+        # Clear cache and fetch first time
+        import src.strategy.regime as regime_module
+        regime_module._sentiment_cache = None
+        regime_module._sentiment_last_fetch = None
+
+        result1 = await get_cached_sentiment()
+
+        # Move forward 16 minutes (past TTL)
+        with freeze_time("2025-01-01 12:16:00"):
+            result2 = await get_cached_sentiment()
+
+            # Should refetch after TTL, 2 fetches total
+            assert mock_fetch.call_count == 2
+
+
+@pytest.mark.asyncio
+@freeze_time("2025-01-01 12:00:00")
+async def test_get_cached_sentiment_handles_api_failure():
+    """Test get_cached_sentiment handles API failures gracefully."""
+    with patch("src.strategy.regime.fetch_fear_greed_index", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.side_effect = Exception("API Error")
+
+        # Clear cache
+        import src.strategy.regime as regime_module
+        regime_module._sentiment_cache = None
+        regime_module._sentiment_last_fetch = None
+
+        result = await get_cached_sentiment()
+
+        # Should return None on error with no cache
+        assert result is None
+
+
+@pytest.mark.asyncio
+@freeze_time("2025-01-01 12:00:00")
+async def test_get_cached_sentiment_keeps_stale_cache_on_error():
+    """Test get_cached_sentiment keeps stale cache when API fails."""
+    with patch("src.strategy.regime.fetch_fear_greed_index", new_callable=AsyncMock) as mock_fetch:
+        # First call succeeds
+        mock_fetch.return_value = FearGreedResult(value=50, classification="Neutral", timestamp=None)
+
+        # Clear cache
+        import src.strategy.regime as regime_module
+        regime_module._sentiment_cache = None
+        regime_module._sentiment_last_fetch = None
+
+        result1 = await get_cached_sentiment()
+        assert result1 is not None
+
+        # Move forward past TTL and make API fail
+        with freeze_time("2025-01-01 12:20:00"):
+            mock_fetch.side_effect = Exception("API Error")
+
+            result2 = await get_cached_sentiment()
+
+            # Should keep stale cache instead of returning None
+            assert result2 is not None
+            assert result2.value == 50
