@@ -196,6 +196,8 @@ class RateHistory(Base):
     - Backtesting and strategy replay
     - Historical analysis and reporting
     - Training data for ML models
+
+    Note: All timestamps are stored in UTC.
     """
 
     __tablename__ = "rate_history"
@@ -204,34 +206,50 @@ class RateHistory(Base):
     symbol = Column(String(20), nullable=False, default="BTC-USD")
     exchange = Column(String(20), nullable=False, default="kraken")
     interval = Column(String(10), nullable=False, default="1m")  # 1m, 5m, 15m, 1h, 1d
-    timestamp = Column(DateTime, nullable=False)  # Candle start time
+    timestamp = Column(DateTime, nullable=False)  # Candle start time (UTC)
     open_price = Column(String(50), nullable=False)
     high_price = Column(String(50), nullable=False)
     low_price = Column(String(50), nullable=False)
     close_price = Column(String(50), nullable=False)
     volume = Column(String(50), nullable=False)
+    is_paper = Column(Boolean, nullable=False, default=False)  # Paper vs live data
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    # Unique constraint: one candle per symbol/exchange/interval/timestamp
+    # Unique constraint: one candle per symbol/exchange/interval/timestamp/is_paper
     __table_args__ = (
-        UniqueConstraint('symbol', 'exchange', 'interval', 'timestamp', name='uq_rate_candle'),
-        Index('ix_rate_history_lookup', 'symbol', 'exchange', 'interval', 'timestamp'),
+        UniqueConstraint('symbol', 'exchange', 'interval', 'timestamp', 'is_paper', name='uq_rate_candle_v2'),
+        Index('ix_rate_history_lookup_v2', 'symbol', 'exchange', 'interval', 'is_paper', 'timestamp'),
     )
 
     def get_open(self) -> Decimal:
-        return Decimal(self.open_price)
+        try:
+            return Decimal(self.open_price) if self.open_price else Decimal("0")
+        except Exception:
+            return Decimal("0")
 
     def get_high(self) -> Decimal:
-        return Decimal(self.high_price)
+        try:
+            return Decimal(self.high_price) if self.high_price else Decimal("0")
+        except Exception:
+            return Decimal("0")
 
     def get_low(self) -> Decimal:
-        return Decimal(self.low_price)
+        try:
+            return Decimal(self.low_price) if self.low_price else Decimal("0")
+        except Exception:
+            return Decimal("0")
 
     def get_close(self) -> Decimal:
-        return Decimal(self.close_price)
+        try:
+            return Decimal(self.close_price) if self.close_price else Decimal("0")
+        except Exception:
+            return Decimal("0")
 
     def get_volume(self) -> Decimal:
-        return Decimal(self.volume)
+        try:
+            return Decimal(self.volume) if self.volume else Decimal("0")
+        except Exception:
+            return Decimal("0")
 
 
 class Database:
@@ -438,6 +456,19 @@ class Database:
                     conn.commit()
             except Exception as e:
                 logger.debug("trailing_stops_hard_stop_migration_skipped", reason=str(e))
+
+            # Add is_paper column to rate_history table
+            try:
+                result = conn.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type='table' AND name='rate_history'")
+                )
+                rh_schema = result.scalar()
+                if rh_schema and "is_paper" not in rh_schema:
+                    conn.execute(text("ALTER TABLE rate_history ADD COLUMN is_paper BOOLEAN DEFAULT 0"))
+                    logger.info("migrated_rate_history_added_is_paper")
+                    conn.commit()
+            except Exception as e:
+                logger.debug("rate_history_is_paper_migration_skipped", reason=str(e))
 
     @contextmanager
     def session(self) -> Generator[Session, None, None]:
@@ -925,11 +956,12 @@ class Database:
         symbol: str = "BTC-USD",
         exchange: str = "kraken",
         interval: str = "1m",
+        is_paper: bool = False,
     ) -> Optional[RateHistory]:
         """
         Record a single OHLCV candle.
 
-        Uses INSERT OR IGNORE to skip duplicates (same symbol/exchange/interval/timestamp).
+        Uses INSERT OR IGNORE to skip duplicates (same symbol/exchange/interval/timestamp/is_paper).
         """
         with self.session() as session:
             # Check if candle already exists
@@ -940,6 +972,7 @@ class Database:
                     RateHistory.exchange == exchange,
                     RateHistory.interval == interval,
                     RateHistory.timestamp == timestamp,
+                    RateHistory.is_paper == is_paper,
                 )
                 .first()
             )
@@ -957,9 +990,9 @@ class Database:
                 low_price=str(low_price),
                 close_price=str(close_price),
                 volume=str(volume),
+                is_paper=is_paper,
             )
             session.add(rate)
-            session.flush()
             return rate
 
     def record_rates_bulk(
@@ -968,32 +1001,40 @@ class Database:
         symbol: str = "BTC-USD",
         exchange: str = "kraken",
         interval: str = "1m",
+        is_paper: bool = False,
     ) -> int:
         """
         Record multiple OHLCV candles efficiently.
 
         Args:
             candles: List of dicts with keys: timestamp, open, high, low, close, volume
+            is_paper: Whether this is paper trading data
 
         Returns:
             Number of new candles inserted (skips duplicates)
         """
+        if not candles:
+            return 0
+
         inserted = 0
         with self.session() as session:
-            for candle in candles:
-                # Check if exists
-                existing = (
-                    session.query(RateHistory.id)
-                    .filter(
-                        RateHistory.symbol == symbol,
-                        RateHistory.exchange == exchange,
-                        RateHistory.interval == interval,
-                        RateHistory.timestamp == candle["timestamp"],
-                    )
-                    .first()
+            # Batch fetch existing timestamps in one query for performance
+            candle_timestamps = [c["timestamp"] for c in candles]
+            existing_timestamps = set(
+                row[0] for row in session.query(RateHistory.timestamp)
+                .filter(
+                    RateHistory.symbol == symbol,
+                    RateHistory.exchange == exchange,
+                    RateHistory.interval == interval,
+                    RateHistory.is_paper == is_paper,
+                    RateHistory.timestamp.in_(candle_timestamps),
                 )
+                .all()
+            )
 
-                if not existing:
+            # Insert only new candles
+            for candle in candles:
+                if candle["timestamp"] not in existing_timestamps:
                     rate = RateHistory(
                         symbol=symbol,
                         exchange=exchange,
@@ -1004,11 +1045,10 @@ class Database:
                         low_price=str(candle["low"]),
                         close_price=str(candle["close"]),
                         volume=str(candle["volume"]),
+                        is_paper=is_paper,
                     )
                     session.add(rate)
                     inserted += 1
-
-            session.flush()
 
         if inserted > 0:
             logger.info(
@@ -1028,6 +1068,7 @@ class Database:
         start: Optional[datetime] = None,
         end: Optional[datetime] = None,
         limit: int = 1000,
+        is_paper: bool = False,
     ) -> list[RateHistory]:
         """
         Get historical rate data for analysis or replay.
@@ -1036,9 +1077,10 @@ class Database:
             symbol: Trading pair
             exchange: Exchange name
             interval: Candle interval
-            start: Start timestamp (inclusive)
-            end: End timestamp (inclusive)
+            start: Start timestamp (inclusive, UTC)
+            end: End timestamp (inclusive, UTC)
             limit: Maximum records to return
+            is_paper: Whether to fetch paper trading data
 
         Returns:
             List of RateHistory records ordered by timestamp ASC
@@ -1048,6 +1090,7 @@ class Database:
                 RateHistory.symbol == symbol,
                 RateHistory.exchange == exchange,
                 RateHistory.interval == interval,
+                RateHistory.is_paper == is_paper,
             )
 
             if start:
@@ -1067,8 +1110,9 @@ class Database:
         symbol: str = "BTC-USD",
         exchange: str = "kraken",
         interval: str = "1m",
+        is_paper: bool = False,
     ) -> Optional[datetime]:
-        """Get the timestamp of the most recent stored candle."""
+        """Get the timestamp of the most recent stored candle (UTC)."""
         with self.session() as session:
             result = (
                 session.query(RateHistory.timestamp)
@@ -1076,6 +1120,7 @@ class Database:
                     RateHistory.symbol == symbol,
                     RateHistory.exchange == exchange,
                     RateHistory.interval == interval,
+                    RateHistory.is_paper == is_paper,
                 )
                 .order_by(RateHistory.timestamp.desc())
                 .first()
@@ -1087,6 +1132,7 @@ class Database:
         symbol: str = "BTC-USD",
         exchange: str = "kraken",
         interval: str = "1m",
+        is_paper: bool = False,
     ) -> int:
         """Get total number of stored candles for a symbol/exchange/interval."""
         with self.session() as session:
@@ -1096,6 +1142,7 @@ class Database:
                     RateHistory.symbol == symbol,
                     RateHistory.exchange == exchange,
                     RateHistory.interval == interval,
+                    RateHistory.is_paper == is_paper,
                 )
                 .scalar()
             )

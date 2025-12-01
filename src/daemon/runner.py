@@ -908,11 +908,11 @@ class TradingDaemon:
                 spot_rate=current_price,
             )
 
-            # Update position tracking for cost basis
-            self._update_position_after_buy(result.size, filled_price, result.fee, is_paper)
+            # Update position tracking for cost basis and get new avg_cost
+            new_avg_cost = self._update_position_after_buy(result.size, filled_price, result.fee, is_paper)
 
-            # Create trailing stop for the new position
-            self._create_trailing_stop(filled_price, candles, is_paper)
+            # Create trailing stop for the new position (pass avg_cost to avoid timing issues)
+            self._create_trailing_stop(filled_price, candles, is_paper, avg_cost=new_avg_cost)
 
             # Update loss limiter (fee is a realized loss on buy)
             self.loss_limiter.record_trade(
@@ -1058,7 +1058,7 @@ class TradingDaemon:
 
     def _update_position_after_buy(
         self, size: Decimal, price: Decimal, fee: Decimal, is_paper: bool = False
-    ) -> None:
+    ) -> Decimal:
         """
         Update position with new buy, recalculating weighted average cost.
 
@@ -1069,6 +1069,9 @@ class TradingDaemon:
             price: Price paid per unit
             fee: Trading fee paid (in quote currency)
             is_paper: Whether this is a paper trade
+
+        Returns:
+            The new weighted average cost for the position
         """
         current = self.db.get_current_position(self.settings.trading_pair, is_paper=is_paper)
 
@@ -1098,6 +1101,8 @@ class TradingDaemon:
             new_qty=str(new_qty),
             new_avg_cost=str(new_avg_cost),
         )
+
+        return new_avg_cost
 
     def _calculate_realized_pnl(
         self, size: Decimal, sell_price: Decimal, fee: Decimal, is_paper: bool = False
@@ -1565,27 +1570,34 @@ class TradingDaemon:
         self._last_hourly_analysis = now
 
     def _create_trailing_stop(
-        self, entry_price: Decimal, candles, is_paper: bool = False
+        self,
+        entry_price: Decimal,
+        candles,
+        is_paper: bool = False,
+        avg_cost: Optional[Decimal] = None,
     ) -> None:
         """Create or update trailing stop for a position.
 
-        Uses position's weighted average cost for hard stop calculation
-        to properly handle position averaging (DCA).
+        Args:
+            entry_price: The price at which the buy was executed
+            candles: Recent candles for ATR calculation
+            is_paper: Whether this is paper trading
+            avg_cost: Pre-calculated weighted average cost (avoids race condition
+                     if position update hasn't committed yet). If None, queries DB.
         """
         from src.strategy.indicators.atr import calculate_atr
 
         try:
-            # Get current position's average cost for hard stop calculation
-            # This handles position averaging - hard stop should be based on
-            # weighted average cost, not just the latest entry price
-            position = self.db.get_current_position(
-                self.settings.trading_pair, is_paper=is_paper
-            )
-
-            if position and position.get_quantity() > Decimal("0"):
-                avg_cost = position.get_average_cost()
-            else:
-                avg_cost = entry_price
+            # Use passed avg_cost if provided (preferred - avoids timing issues)
+            # Otherwise query DB (fallback for backwards compatibility)
+            if avg_cost is None:
+                position = self.db.get_current_position(
+                    self.settings.trading_pair, is_paper=is_paper
+                )
+                if position and position.get_quantity() > Decimal("0"):
+                    avg_cost = position.get_average_cost()
+                else:
+                    avg_cost = entry_price
 
             # Calculate ATR for trailing stop distance
             atr_result = calculate_atr(candles, period=self.settings.atr_period)
