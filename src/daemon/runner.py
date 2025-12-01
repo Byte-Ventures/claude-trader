@@ -1580,6 +1580,9 @@ class TradingDaemon:
             # Trailing distance is based on config multiplier
             distance = atr * Decimal(str(self.settings.trailing_stop_atr_multiplier))
 
+            # Hard stop: immediate protection using stop_loss_atr_multiplier
+            hard_stop = entry_price - (atr * Decimal(str(self.settings.stop_loss_atr_multiplier)))
+
             self.db.create_trailing_stop(
                 symbol=self.settings.trading_pair,
                 side="buy",
@@ -1587,6 +1590,7 @@ class TradingDaemon:
                 trailing_activation=activation,
                 trailing_distance=distance,
                 is_paper=is_paper,
+                hard_stop=hard_stop,
             )
 
             logger.info(
@@ -1594,6 +1598,7 @@ class TradingDaemon:
                 entry_price=str(entry_price),
                 activation=str(activation),
                 distance=str(distance),
+                hard_stop=str(hard_stop),
             )
         except Exception as e:
             logger.error("trailing_stop_creation_failed", error=str(e))
@@ -1603,7 +1608,7 @@ class TradingDaemon:
         Check and update trailing stop, return action if stop triggered.
 
         Returns:
-            "sell" if trailing stop triggered, None otherwise
+            "sell" if trailing stop or hard stop triggered, None otherwise
         """
         is_paper = self.settings.is_paper_trading
         ts = self.db.get_active_trailing_stop(
@@ -1618,9 +1623,24 @@ class TradingDaemon:
         activation = ts.get_trailing_activation()
         distance = ts.get_trailing_distance()
         current_stop = ts.get_trailing_stop()
+        hard_stop = ts.get_hard_stop()
 
-        # For buy positions: check if price activated trailing, then if stop hit
+        # For buy positions: check hard stop first, then trailing stop logic
         if ts.side == "buy":
+            # CHECK HARD STOP FIRST (always active, never moves)
+            if hard_stop is not None and current_price <= hard_stop:
+                logger.info(
+                    "hard_stop_triggered",
+                    current_price=str(current_price),
+                    hard_stop=str(hard_stop),
+                    entry_price=str(entry_price),
+                )
+                self.db.deactivate_trailing_stop(
+                    symbol=self.settings.trading_pair,
+                    is_paper=is_paper,
+                )
+                return "sell"
+
             # Check if trailing stop is now activated
             if current_stop is None and activation and current_price >= activation:
                 # Activate: set initial stop at entry + distance - distance = entry (breakeven roughly)
