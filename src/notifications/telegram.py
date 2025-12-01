@@ -376,7 +376,7 @@ class TelegramNotifier:
             # Hold notification with multi-agent summary
             title = "🔍 <b>Interesting Hold</b>" if review_type == "interesting_hold" else "📋 <b>Hold Analysis</b>"
 
-            # Build agent summary for holds (with reasoning)
+            # Build agent summary for holds
             # For holds: approved=True means "hold is correct", approved=False means "should act"
             stance_emoji = {"pro": "🟢", "neutral": "⚪", "opposing": "🔴"}
             agent_lines = []
@@ -389,10 +389,11 @@ class TelegramNotifier:
                     verdict = "❌ Act"
                 conf = f"({agent.confidence*100:.0f}%)"
                 stance_label = agent.stance.capitalize()
-                reasoning_short = agent.reasoning[:100] + "..." if len(agent.reasoning) > 100 else agent.reasoning
+                # Use summary field (short) for notification display
+                summary = getattr(agent, 'summary', None) or agent.reasoning[:80]
                 agent_lines.append(
                     f"{stance_emoji.get(agent.stance, '⚪')} <b>{model_short}</b> ({stance_label}): "
-                    f"{verdict} {conf}\n  <i>{reasoning_short}</i>"
+                    f"{verdict} {conf}\n  <i>{summary}</i>"
                 )
             agents_text = "\n\n".join(agent_lines) if agent_lines else "No reviews"
 
@@ -443,10 +444,11 @@ class TelegramNotifier:
                     verdict = "❌ Skip"
                 conf = f"({agent.confidence*100:.0f}%)"
                 stance_label = agent.stance.capitalize()
-                reasoning_short = agent.reasoning[:100] + "..." if len(agent.reasoning) > 100 else agent.reasoning
+                # Use summary field (short) for notification display
+                summary = getattr(agent, 'summary', None) or agent.reasoning[:80]
                 agent_lines.append(
                     f"{stance_emoji.get(agent.stance, '⚪')} <b>{model_short}</b> ({stance_label}): "
-                    f"{verdict} {conf}\n  <i>{reasoning_short}</i>"
+                    f"{verdict} {conf}\n  <i>{summary}</i>"
                 )
 
             agents_text = "\n\n".join(agent_lines) if agent_lines else "  No agent reviews"

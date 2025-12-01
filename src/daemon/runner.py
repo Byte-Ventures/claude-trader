@@ -682,7 +682,13 @@ class TradingDaemon:
 
                     # Log multi-agent review summary
                     agent_summary = [
-                        {"model": r.model.split("/")[-1], "stance": r.stance, "approved": r.approved, "confidence": f"{r.confidence:.2f}"}
+                        {
+                            "model": r.model.split("/")[-1],
+                            "stance": r.stance,
+                            "approved": r.approved,
+                            "confidence": f"{r.confidence:.2f}",
+                            "summary": getattr(r, 'summary', '')[:50],
+                        }
                         for r in review.reviews
                     ]
                     logger.info(
@@ -692,9 +698,18 @@ class TradingDaemon:
                         judge_decision="APPROVED" if review.judge_decision else "REJECTED",
                         judge_confidence=f"{review.judge_confidence:.2f}",
                         judge_recommendation=review.judge_recommendation,
-                        judge_reasoning=review.judge_reasoning[:100],
+                        judge_reasoning=review.judge_reasoning,
                         veto_action=review.final_veto_action or "none",
                     )
+
+                    # Log full reasoning for each agent (separate entries for readability)
+                    for r in review.reviews:
+                        logger.debug(
+                            "agent_full_reasoning",
+                            model=r.model.split("/")[-1],
+                            stance=r.stance,
+                            reasoning=r.reasoning,
+                        )
 
                     # Handle veto (only for actual trades, not interesting holds)
                     if review_type == "trade" and not review.judge_decision:

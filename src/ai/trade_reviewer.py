@@ -33,7 +33,8 @@ class AgentReview:
     model: str
     approved: bool
     confidence: float
-    reasoning: str
+    summary: str  # Short 1-sentence summary for notifications
+    reasoning: str  # Longer reasoning for judge and logs
     sentiment: str
 
 
@@ -85,7 +86,8 @@ Respond with JSON only:
   "approved": true/false,
   "confidence": 0.0-1.0,
   "sentiment": "bullish"/"bearish"/"neutral",
-  "reasoning": "2-3 sentences arguing FOR the trade"
+  "summary": "One short sentence (max 15 words) with your key argument",
+  "reasoning": "2-3 sentences with detailed analysis arguing FOR the trade"
 }"""
 
 SYSTEM_PROMPT_NEUTRAL = """You are a Bitcoin trading analyst with a NEUTRAL stance.
@@ -109,7 +111,8 @@ Respond with JSON only:
   "approved": true/false,
   "confidence": 0.0-1.0,
   "sentiment": "bullish"/"bearish"/"neutral",
-  "reasoning": "2-3 sentences with balanced analysis"
+  "summary": "One short sentence (max 15 words) with your key observation",
+  "reasoning": "2-3 sentences with detailed balanced analysis"
 }"""
 
 SYSTEM_PROMPT_OPPOSING = """You are a Bitcoin trading analyst with an OPPOSING stance on this trade.
@@ -133,7 +136,8 @@ Respond with JSON only:
   "approved": true/false,
   "confidence": 0.0-1.0,
   "sentiment": "bullish"/"bearish"/"neutral",
-  "reasoning": "2-3 sentences arguing AGAINST the trade"
+  "summary": "One short sentence (max 15 words) with your key concern",
+  "reasoning": "2-3 sentences with detailed analysis arguing AGAINST the trade"
 }"""
 
 SYSTEM_PROMPT_JUDGE = """You are the final decision maker for a Bitcoin trading system.
@@ -330,7 +334,8 @@ class TradeReviewer:
                         model=assignments[i][0],
                         approved=True,
                         confidence=0.0,
-                        reasoning=f"Review failed: {str(review)[:100]}",
+                        summary="Review unavailable",
+                        reasoning=f"Review failed: {str(review)[:200]}",
                         sentiment="neutral",
                     ))
                 else:
@@ -395,13 +400,15 @@ class TradeReviewer:
             response = await self._call_api(self.reviewer_models[0], SYSTEM_PROMPT_HOLD, prompt)
             data = self._extract_json(response)
 
+            reasoning = data.get("reasoning", "No analysis")
             return MultiAgentReviewResult(
                 reviews=[AgentReview(
                     stance="neutral",
                     model=self.reviewer_models[0],
                     approved=True,
                     confidence=float(data.get("confidence", 0.5)),
-                    reasoning=data.get("reasoning", "No analysis"),
+                    summary=reasoning.split('.')[0] + '.' if '.' in reasoning else reasoning[:80],
+                    reasoning=reasoning,
                     sentiment=data.get("sentiment", "neutral"),
                 )],
                 judge_decision=True,
@@ -444,12 +451,20 @@ class TradeReviewer:
         else:
             approved = bool(approved_raw)
 
+        summary = data.get("summary", "")
+        reasoning = data.get("reasoning", "No reasoning provided")
+
+        # Fallback: if no summary, use first sentence of reasoning
+        if not summary and reasoning:
+            summary = reasoning.split('.')[0] + '.' if '.' in reasoning else reasoning[:80]
+
         return AgentReview(
             stance=stance,
             model=model,
             approved=approved,
             confidence=max(0.0, min(1.0, float(data.get("confidence", 0.5)))),
-            reasoning=data.get("reasoning", "No reasoning provided"),
+            summary=summary,
+            reasoning=reasoning,
             sentiment=data.get("sentiment", "neutral"),
         )
 
