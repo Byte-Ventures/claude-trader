@@ -264,9 +264,15 @@ class TradingDaemon:
             Coroutine result or default value on timeout
         """
         async def _with_timeout():
+            task = asyncio.create_task(coro)
             try:
-                return await asyncio.wait_for(coro, timeout=timeout)
+                return await asyncio.wait_for(task, timeout=timeout)
             except asyncio.TimeoutError:
+                task.cancel()
+                try:
+                    await task  # Allow cleanup
+                except asyncio.CancelledError:
+                    pass
                 logger.warning("async_operation_timeout", timeout=timeout)
                 return default
 

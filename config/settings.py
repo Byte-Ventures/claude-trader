@@ -7,6 +7,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+import os
+import warnings
+
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -378,6 +381,41 @@ class Settings(BaseSettings):
                 # Disable Telegram if not configured
                 self.telegram_enabled = False
         return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_deprecated_claude_vars(cls, data: dict) -> dict:
+        """
+        Backward compatibility: support old CLAUDE_* environment variable names.
+
+        Maps deprecated names to new names with a deprecation warning.
+        """
+        # Mapping of old CLAUDE_* vars to new names
+        deprecated_mapping = {
+            "CLAUDE_VETO_ACTION": "VETO_ACTION",
+            "CLAUDE_VETO_THRESHOLD": "VETO_THRESHOLD",
+            "CLAUDE_POSITION_REDUCTION": "POSITION_REDUCTION",
+            "CLAUDE_DELAY_MINUTES": "DELAY_MINUTES",
+            "CLAUDE_INTERESTING_HOLD_MARGIN": "INTERESTING_HOLD_MARGIN",
+        }
+
+        for old_name, new_name in deprecated_mapping.items():
+            old_value = os.environ.get(old_name)
+            new_value = os.environ.get(new_name)
+
+            # If old var is set but new var is not, use old value and warn
+            if old_value is not None and new_value is None:
+                warnings.warn(
+                    f"Environment variable {old_name} is deprecated. Use {new_name} instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                # Set the new key in the data dict
+                key = new_name.lower()
+                if key not in data or data.get(key) is None:
+                    data[key] = old_value
+
+        return data
 
     @property
     def is_paper_trading(self) -> bool:

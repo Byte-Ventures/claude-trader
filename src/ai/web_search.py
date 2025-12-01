@@ -43,6 +43,15 @@ async def execute_web_search(query: str, max_results: int = 3) -> str:
     Returns:
         Formatted string with search results for AI consumption
     """
+    # Input validation
+    if not query or not isinstance(query, str):
+        return "Invalid search query: query is required"
+    query = query.strip()
+    if len(query) > 500:
+        return "Invalid search query: too long (max 500 characters)"
+    if len(query) < 2:
+        return "Invalid search query: too short (min 2 characters)"
+
     try:
         # Import here to handle missing dependency gracefully
         from ddgs import DDGS
@@ -89,7 +98,10 @@ async def execute_web_search(query: str, max_results: int = 3) -> str:
 
 def _sync_search(query: str, max_results: int) -> list[dict]:
     """Synchronous search wrapper."""
-    from ddgs import DDGS
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        return []  # Graceful degradation
 
     with DDGS() as ddgs:
         results = list(ddgs.text(
