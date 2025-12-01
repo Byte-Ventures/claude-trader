@@ -46,3 +46,10 @@ Always update `src/version.py` when making commits:
 - **PATCH**: Bug fixes, small improvements
 
 Update the version BEFORE committing.
+
+## Branching
+
+- `main`: Production branch
+- `develop`: Development branch
+
+All merges from `develop` to `main` must be done via pull requests.
