@@ -1597,7 +1597,14 @@ class TradingDaemon:
                 if position and position.get_quantity() > Decimal("0"):
                     avg_cost = position.get_average_cost()
                 else:
+                    # WARNING: Falling back to entry_price - this may result in
+                    # incorrect hard stop for DCA positions if position update raced
                     avg_cost = entry_price
+                    logger.warning(
+                        "hard_stop_fallback_to_entry",
+                        reason="no_position_found",
+                        entry_price=str(entry_price),
+                    )
 
             # Calculate ATR for trailing stop distance
             atr_result = calculate_atr(candles, period=self.settings.atr_period)
@@ -1630,11 +1637,24 @@ class TradingDaemon:
                 hard_stop=str(hard_stop),
             )
         except Exception as e:
+            # CRITICAL: Position opened without stop protection!
             logger.error("trailing_stop_creation_failed", error=str(e))
+            self.notifier.send_alert(
+                f"⚠️ CRITICAL: Position opened without stop protection: {e}"
+            )
 
     def _check_trailing_stop(self, current_price: Decimal) -> Optional[str]:
         """
         Check and update trailing stop, return action if stop triggered.
+
+        Priority order (for buy positions):
+        1. Hard stop (emergency capital protection, always active, never moves)
+        2. Trailing stop activation (activates at 1 ATR profit above avg cost)
+        3. Trailing stop update (follows price up, locks in gains)
+        4. Trailing stop trigger (price drops to stop level, locks profit)
+
+        The entry_price stored in trailing_stops is the weighted average cost,
+        not the individual entry price, ensuring correct calculations for DCA.
 
         Returns:
             "sell" if trailing stop or hard stop triggered, None otherwise

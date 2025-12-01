@@ -223,35 +223,50 @@ class RateHistory(Base):
 
     def get_open(self) -> Decimal:
         try:
-            return Decimal(self.open_price) if self.open_price else Decimal("0")
+            value = Decimal(self.open_price) if self.open_price else Decimal("0")
+            if value < Decimal("0"):
+                raise ValueError(f"Negative open price: {value}")
+            return value
         except Exception as e:
             logger.error("decimal_conversion_failed", field="open_price", value=self.open_price, error=str(e), rate_id=self.id)
             raise ValueError(f"Invalid open_price: {self.open_price}") from e
 
     def get_high(self) -> Decimal:
         try:
-            return Decimal(self.high_price) if self.high_price else Decimal("0")
+            value = Decimal(self.high_price) if self.high_price else Decimal("0")
+            if value < Decimal("0"):
+                raise ValueError(f"Negative high price: {value}")
+            return value
         except Exception as e:
             logger.error("decimal_conversion_failed", field="high_price", value=self.high_price, error=str(e), rate_id=self.id)
             raise ValueError(f"Invalid high_price: {self.high_price}") from e
 
     def get_low(self) -> Decimal:
         try:
-            return Decimal(self.low_price) if self.low_price else Decimal("0")
+            value = Decimal(self.low_price) if self.low_price else Decimal("0")
+            if value < Decimal("0"):
+                raise ValueError(f"Negative low price: {value}")
+            return value
         except Exception as e:
             logger.error("decimal_conversion_failed", field="low_price", value=self.low_price, error=str(e), rate_id=self.id)
             raise ValueError(f"Invalid low_price: {self.low_price}") from e
 
     def get_close(self) -> Decimal:
         try:
-            return Decimal(self.close_price) if self.close_price else Decimal("0")
+            value = Decimal(self.close_price) if self.close_price else Decimal("0")
+            if value < Decimal("0"):
+                raise ValueError(f"Negative close price: {value}")
+            return value
         except Exception as e:
             logger.error("decimal_conversion_failed", field="close_price", value=self.close_price, error=str(e), rate_id=self.id)
             raise ValueError(f"Invalid close_price: {self.close_price}") from e
 
     def get_volume(self) -> Decimal:
         try:
-            return Decimal(self.volume) if self.volume else Decimal("0")
+            value = Decimal(self.volume) if self.volume else Decimal("0")
+            if value < Decimal("0"):
+                raise ValueError(f"Negative volume: {value}")
+            return value
         except Exception as e:
             logger.error("decimal_conversion_failed", field="volume", value=self.volume, error=str(e), rate_id=self.id)
             raise ValueError(f"Invalid volume: {self.volume}") from e
@@ -1017,53 +1032,65 @@ class Database:
 
         Returns:
             Number of new candles inserted (skips duplicates)
+
+        Raises:
+            Exception: Re-raised if batch insert fails (partial data may be lost)
         """
         if not candles:
             return 0
 
         inserted = 0
-        with self.session() as session:
-            # Batch fetch existing timestamps in one query for performance
-            candle_timestamps = [c["timestamp"] for c in candles]
-            existing_timestamps = set(
-                row[0] for row in session.query(RateHistory.timestamp)
-                .filter(
-                    RateHistory.symbol == symbol,
-                    RateHistory.exchange == exchange,
-                    RateHistory.interval == interval,
-                    RateHistory.is_paper == is_paper,
-                    RateHistory.timestamp.in_(candle_timestamps),
-                )
-                .all()
-            )
-
-            # Insert only new candles
-            for candle in candles:
-                if candle["timestamp"] not in existing_timestamps:
-                    rate = RateHistory(
-                        symbol=symbol,
-                        exchange=exchange,
-                        interval=interval,
-                        timestamp=candle["timestamp"],
-                        open_price=str(candle["open"]),
-                        high_price=str(candle["high"]),
-                        low_price=str(candle["low"]),
-                        close_price=str(candle["close"]),
-                        volume=str(candle["volume"]),
-                        is_paper=is_paper,
+        try:
+            with self.session() as session:
+                # Batch fetch existing timestamps in one query for performance
+                candle_timestamps = [c["timestamp"] for c in candles]
+                existing_timestamps = set(
+                    row[0] for row in session.query(RateHistory.timestamp)
+                    .filter(
+                        RateHistory.symbol == symbol,
+                        RateHistory.exchange == exchange,
+                        RateHistory.interval == interval,
+                        RateHistory.is_paper == is_paper,
+                        RateHistory.timestamp.in_(candle_timestamps),
                     )
-                    session.add(rate)
-                    inserted += 1
+                    .all()
+                )
 
-        if inserted > 0:
-            logger.info(
-                "rates_recorded",
-                count=inserted,
-                symbol=symbol,
-                exchange=exchange,
-                interval=interval,
+                # Insert only new candles
+                for candle in candles:
+                    if candle["timestamp"] not in existing_timestamps:
+                        rate = RateHistory(
+                            symbol=symbol,
+                            exchange=exchange,
+                            interval=interval,
+                            timestamp=candle["timestamp"],
+                            open_price=str(candle["open"]),
+                            high_price=str(candle["high"]),
+                            low_price=str(candle["low"]),
+                            close_price=str(candle["close"]),
+                            volume=str(candle["volume"]),
+                            is_paper=is_paper,
+                        )
+                        session.add(rate)
+                        inserted += 1
+
+            if inserted > 0:
+                logger.info(
+                    "rates_recorded",
+                    count=inserted,
+                    symbol=symbol,
+                    exchange=exchange,
+                    interval=interval,
+                )
+            return inserted
+        except Exception as e:
+            logger.error(
+                "rate_bulk_insert_failed",
+                error=str(e),
+                count=len(candles),
+                inserted_before_error=inserted,
             )
-        return inserted
+            raise  # Re-raise to signal failure to caller
 
     def get_rates(
         self,
