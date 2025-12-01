@@ -97,13 +97,13 @@ gh pr view {PR_NUMBER} --comments
 
 ### Review Process
 
-1. **After creating a PR**, poll for review comments for at least 5 minutes:
+1. **After creating a PR**, poll for review comments for at least 10 minutes:
    ```bash
-   # Poll every 60 seconds for 5 minutes
-   for i in {1..5}; do
-     echo "Checking for reviews (attempt $i/5)..."
+   # Poll every 30 seconds for 10 minutes
+   for i in {1..20}; do
+     echo "Checking for reviews (attempt $i/20)..."
      gh api repos/Byte-Ventures/claude-trader/issues/{PR_NUMBER}/comments
-     sleep 60
+     sleep 30
    done
    ```
 2. **Before merging any PR**, fetch and read ALL review comments
