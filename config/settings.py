@@ -290,6 +290,22 @@ class Settings(BaseSettings):
         description="Enable hourly AI market analysis during volatile conditions (uses reviewer models)"
     )
 
+    # Market Research (for hourly analysis)
+    market_research_enabled: bool = Field(
+        default=True,
+        description="Fetch online research (news, on-chain data) for market analysis"
+    )
+    ai_web_search_enabled: bool = Field(
+        default=True,
+        description="Allow AI models to search web during market analysis"
+    )
+    market_research_cache_minutes: int = Field(
+        default=15,
+        ge=5,
+        le=60,
+        description="Cache duration for research data (minutes)"
+    )
+
     # Market Regime Adaptation
     regime_adaptation_enabled: bool = Field(
         default=True,

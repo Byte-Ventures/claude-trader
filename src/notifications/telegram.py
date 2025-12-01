@@ -614,6 +614,7 @@ class TelegramNotifier:
         fear_greed: int,
         fear_greed_class: str,
         current_price: Decimal,
+        analysis_reason: str = "hourly_volatile",
     ) -> None:
         """
         Send multi-agent hourly market analysis notification.
@@ -625,6 +626,7 @@ class TelegramNotifier:
             fear_greed: Fear & Greed index value
             fear_greed_class: Fear & Greed classification
             current_price: Current BTC price
+            analysis_reason: Why analysis was triggered (hourly_volatile or post_volatility)
         """
         # Stance emoji (for market analysis: bullish/neutral/bearish)
         stance_emoji = {"bullish": "🟢", "neutral": "⚪", "bearish": "🔴"}
@@ -683,8 +685,14 @@ class TelegramNotifier:
 
         recommendation = review.judge_recommendation
 
+        # Title based on analysis reason
+        if analysis_reason == "post_volatility":
+            title = "📊 <b>Post-Volatility Analysis</b> (Market Calmed)"
+        else:
+            title = "📊 <b>Hourly Market Analysis</b>"
+
         message = (
-            f"📊 <b>Hourly Market Analysis</b>\n\n"
+            f"{title}\n\n"
             f"<b>Volatility</b>: {vol_emoji.get(volatility, '☀️')} {volatility.title()}\n\n"
             f"<b>Current Indicators</b>:\n"
             f"  💰 Price: ${float(current_price):,.2f}\n"

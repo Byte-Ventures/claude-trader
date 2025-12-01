@@ -99,11 +99,18 @@ Uses 3 reviewer agents with different stances (Pro, Neutral, Opposing) plus a ju
 
 ### Hourly Market Analysis (Optional)
 
-AI-powered market analysis during volatile conditions (runs hourly when volatility is high/extreme). Uses the same multi-agent system as trade reviews (3 reviewers with bullish/neutral/bearish stances + judge).
+AI-powered market analysis with online research. Runs:
+- **Hourly** during high/extreme volatility
+- **Once** when volatility returns to normal (post-volatility analysis)
+
+Uses the same multi-agent system as trade reviews (3 reviewers with bullish/neutral/bearish stances + judge). Fetches real-time data from CryptoCompare (news) and Blockchain.info (on-chain metrics). AI models can also search the web for additional context.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HOURLY_ANALYSIS_ENABLED` | `true` | Enable hourly AI analysis (uses reviewer models) |
+| `MARKET_RESEARCH_ENABLED` | `true` | Fetch news and on-chain data from free APIs |
+| `AI_WEB_SEARCH_ENABLED` | `true` | Allow AI to search web during analysis |
+| `MARKET_RESEARCH_CACHE_MINUTES` | `15` | Cache duration for research data |
 
 ## Trading Strategy
 

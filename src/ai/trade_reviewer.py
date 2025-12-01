@@ -16,7 +16,9 @@ from typing import Optional
 import httpx
 import structlog
 
+from src.ai.market_research import fetch_market_research, format_research_for_prompt, set_cache_ttl
 from src.ai.sentiment import fetch_fear_greed_index, get_trade_summary, FearGreedResult, TradeSummary
+from src.ai.web_search import WEB_SEARCH_TOOL, handle_tool_calls, get_tools_for_model
 from src.strategy.signal_scorer import SignalResult
 
 logger = structlog.get_logger(__name__)
@@ -192,6 +194,8 @@ SYSTEM_PROMPT_MARKET_BULLISH = """You are a Bitcoin market analyst with a BULLIS
 Your role is to identify and emphasize positive signals, upside potential, and reasons for optimism.
 Be persuasive but honest - acknowledge risks briefly while focusing on opportunities.
 
+You may have access to a web_search tool. Use it if you need additional market news or data.
+
 Indicators explained:
 - RSI: 0-100 scale. <30 = oversold (bullish), >70 = overbought (bearish)
 - MACD histogram: Positive = bullish momentum, Negative = bearish momentum
@@ -204,6 +208,7 @@ Focus on:
 - Positive momentum signals
 - Contrarian opportunities in fear
 - Technical support levels
+- Recent positive news or developments
 
 Respond with JSON only:
 {
@@ -218,6 +223,8 @@ SYSTEM_PROMPT_MARKET_NEUTRAL = """You are a Bitcoin market analyst with a NEUTRA
 Your role is to provide balanced, unbiased analysis. Weigh both bullish and bearish factors equally.
 Present facts objectively without advocating for any direction.
 
+You may have access to a web_search tool. Use it if you need additional market news or data.
+
 Indicators explained:
 - RSI: 0-100 scale. <30 = oversold (bullish), >70 = overbought (bearish)
 - MACD histogram: Positive = bullish momentum, Negative = bearish momentum
@@ -230,6 +237,7 @@ Analyze:
 - Current market sentiment vs technical signals
 - Risk factors AND opportunities
 - Overall market conditions
+- Recent news impact on both sides
 
 Respond with JSON only:
 {
@@ -244,6 +252,8 @@ SYSTEM_PROMPT_MARKET_BEARISH = """You are a Bitcoin market analyst with a BEARIS
 Your role is to identify and emphasize warning signs, downside risks, and reasons for caution.
 Be critical but honest - acknowledge potential upside briefly while focusing on risks.
 
+You may have access to a web_search tool. Use it if you need additional market news or data.
+
 Indicators explained:
 - RSI: 0-100 scale. <30 = oversold (bullish), >70 = overbought (bearish)
 - MACD histogram: Positive = bullish momentum, Negative = bearish momentum
@@ -256,6 +266,7 @@ Focus on:
 - Negative momentum and trend weakness
 - Resistance levels and potential reversals
 - Risk factors in current conditions
+- Recent negative news or developments
 
 Respond with JSON only:
 {
@@ -318,6 +329,9 @@ class TradeReviewer:
         delay_minutes: int = 15,
         interesting_hold_margin: int = 15,
         review_all: bool = False,
+        market_research_enabled: bool = True,
+        ai_web_search_enabled: bool = True,
+        market_research_cache_minutes: int = 15,
     ):
         """
         Initialize multi-agent trade reviewer.
@@ -333,6 +347,9 @@ class TradeReviewer:
             delay_minutes: Minutes to delay for "delay" action
             interesting_hold_margin: Score margin from threshold for interesting holds
             review_all: Review ALL decisions (for debugging/testing)
+            market_research_enabled: Fetch online research for market analysis
+            ai_web_search_enabled: Allow AI models to search web during analysis
+            market_research_cache_minutes: Cache duration for research data
         """
         self.api_key = api_key
         self.db = db
@@ -344,6 +361,11 @@ class TradeReviewer:
         self.delay_minutes = delay_minutes
         self.interesting_hold_margin = interesting_hold_margin
         self.review_all = review_all
+        self.market_research_enabled = market_research_enabled
+        self.ai_web_search_enabled = ai_web_search_enabled
+
+        # Set cache TTL for market research
+        set_cache_ttl(market_research_cache_minutes)
 
         # Circuit breaker
         self._consecutive_failures = 0
@@ -697,7 +719,7 @@ Explain what the indicators are showing."""
         price_change_24h: Optional[float] = None,
     ) -> MultiAgentReviewResult:
         """
-        Multi-agent market analysis.
+        Multi-agent market analysis with online research.
 
         Uses 3 reviewers with bullish/neutral/bearish stances
         plus a judge for final synthesis.
@@ -717,6 +739,29 @@ Explain what the indicators are showing."""
         """
         self._check_circuit_breaker_reset()
 
+        # Fetch market research if enabled
+        research_text = ""
+        if self.market_research_enabled:
+            try:
+                research = await fetch_market_research()
+                research_text = format_research_for_prompt(research)
+                if research.errors:
+                    logger.warning("market_research_partial", errors=research.errors)
+                logger.info(
+                    "market_research_fetched",
+                    news_count=len(research.news),
+                    news_titles=[n.title[:50] for n in research.news[:3]],
+                    has_onchain=research.onchain is not None,
+                    onchain_summary={
+                        "hashrate_eh": research.onchain.hashrate_eh,
+                        "mempool_mb": research.onchain.mempool_size_mb,
+                        "avg_fee": research.onchain.avg_fee_sat_vb,
+                    } if research.onchain else None,
+                )
+            except Exception as e:
+                logger.error("market_research_failed", error=str(e))
+                research_text = "(Research data unavailable)"
+
         # Build market context
         context = {
             "review_type": "market_analysis",
@@ -728,6 +773,7 @@ Explain what the indicators are showing."""
             "price_change_1h": price_change_1h,
             "price_change_24h": price_change_24h,
             "indicators": indicators,
+            "research": research_text,
             "timestamp": datetime.utcnow().isoformat(),
         }
 
@@ -808,7 +854,7 @@ Explain what the indicators are showing."""
     async def _run_market_reviewer(
         self, model: str, stance: str, context: dict
     ) -> AgentReview:
-        """Run single market reviewer with assigned stance."""
+        """Run single market reviewer with assigned stance and optional web search."""
         system_prompts = {
             "bullish": SYSTEM_PROMPT_MARKET_BULLISH,
             "neutral": SYSTEM_PROMPT_MARKET_NEUTRAL,
@@ -816,7 +862,13 @@ Explain what the indicators are showing."""
         }
 
         prompt = self._build_market_prompt(context)
-        response = await self._call_api(model, system_prompts[stance], prompt)
+        logger.debug("market_prompt_built", model=model, stance=stance, prompt_preview=prompt[:500])
+        response = await self._call_api(
+            model,
+            system_prompts[stance],
+            prompt,
+            enable_tools=True,  # Enable web search for market analysis
+        )
         data = self._extract_json(response)
 
         summary = data.get("summary", "")
@@ -860,7 +912,7 @@ Explain what the indicators are showing."""
         }
 
     def _build_market_prompt(self, context: dict) -> str:
-        """Build prompt for market analysis reviewers."""
+        """Build prompt for market analysis reviewers with research data."""
         indicators = context.get("indicators", {})
 
         # Format indicator values
@@ -877,8 +929,23 @@ Explain what the indicators are showing."""
             price_changes.append(f"24h: {context['price_change_24h']:+.2f}%")
         price_change_str = ", ".join(price_changes) if price_changes else "N/A"
 
+        # Include research data if available
+        research_section = ""
+        research = context.get("research", "")
+        if research and research != "(Research data unavailable)":
+            research_section = f"""
+=== ONLINE RESEARCH ===
+{research}
+"""
+
+        # Web search hint
+        tool_hint = ""
+        if self.ai_web_search_enabled:
+            tool_hint = "\nYou have access to a web_search tool if you need additional information."
+
         return f"""Analyze current Bitcoin market conditions:
 
+=== MARKET DATA ===
 Price: ${context['price']:,.2f}
 Price Changes: {price_change_str}
 Volatility: {context['volatility'].upper()}
@@ -892,7 +959,8 @@ Technical Indicators:
 
 Sentiment:
 - Fear & Greed Index: {context['fear_greed']} ({context['fear_greed_class']})
-
+{research_section}
+=== YOUR ANALYSIS ==={tool_hint}
 Provide your market analysis from your assigned perspective."""
 
     def _build_market_judge_prompt(self, reviews: list[AgentReview], context: dict) -> str:
@@ -916,20 +984,48 @@ Analyst Reviews:
 
 Based on these three perspectives, provide the final market outlook."""
 
-    async def _call_api(self, model: str, system_prompt: str, user_prompt: str) -> str:
-        """Call OpenRouter API."""
+    async def _call_api(
+        self,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        enable_tools: bool = False,
+    ) -> str:
+        """
+        Call OpenRouter API with optional tool support.
+
+        Args:
+            model: Model identifier
+            system_prompt: System message
+            user_prompt: User message
+            enable_tools: Whether to enable web search tool
+
+        Returns:
+            Model response content as string
+        """
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
         request_body = {
             "model": model,
-            "max_tokens": 300,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            "max_tokens": 500,
+            "messages": messages,
         }
 
-        logger.debug("api_request", model=model, prompt_preview=user_prompt[:100])
+        # Add tools if enabled for this model
+        tools = None
+        if enable_tools and self.ai_web_search_enabled:
+            tools = get_tools_for_model(model, enabled=True)
+            if tools:
+                request_body["tools"] = tools
+                request_body["tool_choice"] = "required"  # Force web search
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        logger.debug("api_request", model=model, tools_enabled=tools is not None)
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # Initial request
             response = await client.post(
                 OPENROUTER_API_URL,
                 headers={
@@ -939,13 +1035,57 @@ Based on these three perspectives, provide the final market outlook."""
                 },
                 json=request_body,
             )
-
             response.raise_for_status()
             data = response.json()
 
             choices = data.get("choices", [])
-            if choices and choices[0].get("message", {}).get("content"):
-                return choices[0]["message"]["content"]
+            if not choices:
+                return "{}"
+
+            message = choices[0].get("message", {})
+
+            # Check for tool calls
+            tool_calls = message.get("tool_calls", [])
+            if tool_calls and tools:
+                logger.info(
+                    "tool_calls_received",
+                    model=model,
+                    num_calls=len(tool_calls),
+                )
+
+                # Execute tool calls
+                tool_results = await handle_tool_calls(tool_calls)
+
+                # Add assistant message with tool calls and tool results
+                messages.append(message)
+                messages.extend(tool_results)
+
+                # Continue conversation with tool results
+                request_body["messages"] = messages
+                del request_body["tools"]  # Don't allow more tool calls
+                if "tool_choice" in request_body:
+                    del request_body["tool_choice"]
+
+                response = await client.post(
+                    OPENROUTER_API_URL,
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://github.com/claude-trader",
+                    },
+                    json=request_body,
+                )
+                response.raise_for_status()
+                data = response.json()
+
+                choices = data.get("choices", [])
+                if choices:
+                    message = choices[0].get("message", {})
+
+            # Return content
+            content = message.get("content", "")
+            if content:
+                return content
 
             return "{}"
 
