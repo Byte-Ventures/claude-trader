@@ -278,7 +278,7 @@ class OrderValidator:
                 )
 
             warnings = []
-            if new_position_percent > self.config.max_position_percent * 0.9:
+            if new_position_percent >= self.config.max_position_percent * 0.9:
                 warnings.append(
                     f"Position nearing limit: {new_position_percent:.1f}%"
                 )
@@ -298,7 +298,7 @@ class OrderValidator:
             float((order.price - self._current_price) / self._current_price * 100)
         )
 
-        if deviation_percent > self.config.price_sanity_percent:
+        if deviation_percent >= self.config.price_sanity_percent:
             return ValidationResult(
                 valid=False,
                 reason=f"Limit price {order.price:.2f} deviates {deviation_percent:.1f}% from market price {self._current_price:.2f}",

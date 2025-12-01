@@ -202,8 +202,9 @@ class SignalScorer:
         current = recent.iloc[-1]
         min_in_window = recent.min()
 
-        # Stabilized if current price >= minimum in window (not making new lows)
-        return current >= min_in_window
+        # Stabilized if current price > minimum in window (not making new lows)
+        # Must be strictly greater - if current == min, we just made a new low
+        return current > min_in_window
 
     def calculate_score(
         self,

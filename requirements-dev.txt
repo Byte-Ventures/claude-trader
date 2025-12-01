@@ -1,0 +1,21 @@
+# Development dependencies for testing
+
+# Testing framework
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-asyncio>=0.21.0
+
+# Time mocking for circuit breaker cooldown tests
+freezegun>=1.2.0
+
+# Mock objects
+pytest-mock>=3.11.0
+
+# HTTP mocking for API clients
+respx>=0.20.0
+aioresponses>=0.7.0
+
+# Test utilities
+pytest-timeout>=2.1.0
+pytest-xdist>=3.3.0
+faker>=19.0.0

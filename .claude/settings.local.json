@@ -29,7 +29,8 @@
       "Bash(git commit:*)",
       "Bash(git push:*)",
       "Bash(pip3 install:*)",
-      "Bash(gh pr create:*)"
+      "Bash(gh pr create:*)",
+      "Bash(pytest:*)"
     ],
     "deny": [],
     "ask": []
