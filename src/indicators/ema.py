@@ -195,6 +195,30 @@ def get_ema_trend(ema_result: EMAResult) -> str:
     return "neutral"
 
 
+def get_ema_trend_from_values(ema_fast: float, ema_slow: float) -> str:
+    """
+    Determine current trend from raw EMA values.
+
+    Args:
+        ema_fast: Current fast EMA value
+        ema_slow: Current slow EMA value
+
+    Returns:
+        "bullish", "bearish", or "neutral"
+    """
+    if ema_slow == 0:
+        return "neutral"
+
+    diff_percent = (ema_fast - ema_slow) / ema_slow * 100
+
+    if diff_percent > 1.0:
+        return "bullish"
+    elif diff_percent < -1.0:
+        return "bearish"
+
+    return "neutral"
+
+
 def get_price_vs_ema_signal(
     price: float,
     ema_result: EMAResult,

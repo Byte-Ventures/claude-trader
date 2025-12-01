@@ -272,6 +272,30 @@ class Settings(BaseSettings):
         description="Review ALL decisions with AI (for debugging/testing)"
     )
 
+    # Market Regime Adaptation
+    regime_adaptation_enabled: bool = Field(
+        default=True,
+        description="Enable market regime-based strategy adjustments"
+    )
+    regime_sentiment_enabled: bool = Field(
+        default=True,
+        description="Use Fear & Greed Index for regime detection"
+    )
+    regime_volatility_enabled: bool = Field(
+        default=True,
+        description="Use volatility level for regime detection"
+    )
+    regime_trend_enabled: bool = Field(
+        default=True,
+        description="Use trend direction for regime detection"
+    )
+    regime_adjustment_scale: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=2.0,
+        description="Regime adjustment intensity (0=off, 1=normal, 2=aggressive)"
+    )
+
     # Database
     database_path: Path = Field(
         default=Path("data/trading.db"),

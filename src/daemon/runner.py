@@ -31,6 +31,8 @@ from src.safety.validator import OrderValidator, OrderRequest, ValidatorConfig
 from src.state.database import Database
 from src.strategy.signal_scorer import SignalScorer
 from src.strategy.position_sizer import PositionSizer, PositionSizeConfig
+from src.strategy.regime import MarketRegime, RegimeConfig, RegimeAdjustments, get_cached_sentiment
+from src.indicators.ema import get_ema_trend_from_values
 
 logger = structlog.get_logger(__name__)
 
@@ -194,6 +196,19 @@ class TradingDaemon:
             atr_period=settings.atr_period,
             take_profit_atr_multiplier=settings.take_profit_atr_multiplier,
         )
+
+        # Initialize market regime detector
+        self.market_regime = MarketRegime(
+            config=RegimeConfig(
+                enabled=settings.regime_adaptation_enabled,
+                sentiment_enabled=settings.regime_sentiment_enabled,
+                volatility_enabled=settings.regime_volatility_enabled,
+                trend_enabled=settings.regime_trend_enabled,
+                adjustment_scale=settings.regime_adjustment_scale,
+            )
+        )
+        if settings.regime_adaptation_enabled:
+            logger.info("market_regime_initialized", scale=settings.regime_adjustment_scale)
 
         # Register shutdown handlers
         signal.signal(signal.SIGTERM, self._handle_shutdown)
@@ -526,11 +541,35 @@ class TradingDaemon:
         if ind.volatility:
             self._last_volatility = ind.volatility
 
+        # Calculate market regime for strategy adaptation
+        sentiment = get_cached_sentiment() if self.settings.regime_sentiment_enabled else None
+        trend = get_ema_trend_from_values(ind.ema_fast, ind.ema_slow) if ind.ema_fast and ind.ema_slow else "neutral"
+
+        regime = self.market_regime.calculate(
+            sentiment=sentiment,
+            volatility=ind.volatility or "normal",
+            trend=trend,
+            signal_action=signal_result.action,
+        )
+
+        # Apply regime threshold adjustment to determine effective action
+        effective_threshold = self.settings.signal_threshold + regime.threshold_adjustment
+        if signal_result.score >= effective_threshold:
+            effective_action = "buy"
+        elif signal_result.score <= -effective_threshold:
+            effective_action = "sell"
+        else:
+            effective_action = "hold"
+
         logger.info(
             "trading_check",
             price=str(current_price),
             signal_score=signal_result.score,
-            signal_action=signal_result.action,
+            signal_action=effective_action,
+            effective_threshold=effective_threshold,
+            regime=regime.regime_name,
+            regime_adj=regime.threshold_adjustment,
+            regime_pos_mult=f"{regime.position_multiplier:.2f}",
             breakdown=signal_result.breakdown,
             base_balance=str(base_balance),
             quote_balance=str(quote_balance),
@@ -594,24 +633,27 @@ class TradingDaemon:
                     logger.error("claude_review_failed", error=str(e))
                     # Continue with trade on review failure (fail open)
 
-        # Execute trade if signal is strong enough
-        if signal_result.action == "hold":
+        # Execute trade if signal is strong enough (using regime-adjusted threshold)
+        if effective_action == "hold":
             logger.info(
                 "decision",
                 action="hold",
-                reason=f"|score|={abs(signal_result.score)} < threshold={self.settings.signal_threshold}",
+                reason=f"|score|={abs(signal_result.score)} < effective_threshold={effective_threshold}",
+                regime=regime.regime_name,
             )
             return
 
-        # Get safety multiplier (including Claude veto reduction if applicable)
-        safety_multiplier = self.validator.get_position_multiplier() * claude_veto_multiplier
+        # Get safety multiplier (including Claude veto and regime adjustments)
+        safety_multiplier = self.validator.get_position_multiplier() * claude_veto_multiplier * regime.position_multiplier
 
-        if signal_result.action == "buy":
+        if effective_action == "buy":
             if quote_balance > Decimal("10"):
                 logger.info(
                     "decision",
                     action="buy",
                     signal_score=signal_result.score,
+                    effective_threshold=effective_threshold,
+                    regime=regime.regime_name,
                     safety_multiplier=f"{safety_multiplier:.2f}",
                 )
                 self._execute_buy(
@@ -626,12 +668,14 @@ class TradingDaemon:
                     signal_score=signal_result.score,
                 )
 
-        elif signal_result.action == "sell":
+        elif effective_action == "sell":
             if base_balance > Decimal("0.0001"):
                 logger.info(
                     "decision",
                     action="sell",
                     signal_score=signal_result.score,
+                    effective_threshold=effective_threshold,
+                    regime=regime.regime_name,
                     safety_multiplier=f"{safety_multiplier:.2f}",
                 )
                 self._execute_sell(
