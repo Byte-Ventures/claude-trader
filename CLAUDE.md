@@ -49,7 +49,21 @@ Update the version BEFORE committing.
 
 ## Branching
 
-- `main`: Production branch
-- `develop`: Development branch
+- `main`: Production branch (deployed to server)
+- `develop`: Development/integration branch
+- `feature/*`: Feature branches (e.g., `feature/add-stop-loss`)
+- `fix/*`: Bug fix branches (e.g., `fix/telegram-timeout`)
 
-All merges from `develop` to `main` must be done via pull requests.
+### Workflow
+
+1. Create feature/fix branch from `develop`
+2. Make changes and commit with version bump
+3. Push and create PR to `develop`
+4. After review, merge to `develop`
+5. When ready for release, create PR from `develop` to `main`
+
+### Rules
+
+- All merges to `main` must be done via pull requests
+- Direct commits to `main` are not allowed
+- Tag releases on `main` with version (e.g., `v1.9.3`)
