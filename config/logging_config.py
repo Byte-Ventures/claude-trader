@@ -53,6 +53,9 @@ def setup_logging(
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.WARNING)
+    logging.getLogger("hpack").setLevel(logging.WARNING)
+    logging.getLogger("h2").setLevel(logging.WARNING)
+    logging.getLogger("primp").setLevel(logging.WARNING)
 
     # Configure structlog processors
     shared_processors = [

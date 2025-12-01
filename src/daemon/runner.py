@@ -36,6 +36,9 @@ from src.indicators.ema import get_ema_trend_from_values
 
 logger = structlog.get_logger(__name__)
 
+# Default timeout for async operations (AI reviews, sentiment fetch)
+ASYNC_TIMEOUT_SECONDS = 120
+
 
 class TradingDaemon:
     """
@@ -64,6 +67,7 @@ class TradingDaemon:
         self._last_volatility: str = "normal"  # For adaptive interval
         self._last_regime: str = "neutral"  # For regime change notifications
         self._last_hourly_analysis: Optional[datetime] = None  # For hourly market analysis
+        self._pending_post_volatility_analysis: bool = False  # Trigger analysis when volatility calms
 
         # Create persistent event loop for async operations (avoids repeated asyncio.run())
         self._loop = asyncio.new_event_loop()
@@ -142,6 +146,9 @@ class TradingDaemon:
                 delay_minutes=settings.delay_minutes,
                 interesting_hold_margin=settings.interesting_hold_margin,
                 review_all=settings.ai_review_all,
+                market_research_enabled=settings.market_research_enabled,
+                ai_web_search_enabled=settings.ai_web_search_enabled,
+                market_research_cache_minutes=settings.market_research_cache_minutes,
             )
             logger.info(
                 "multi_agent_trade_reviewer_initialized",
@@ -241,6 +248,29 @@ class TradingDaemon:
         # Register SIGUSR2 for config hot-reload
         signal.signal(signal.SIGUSR2, self._handle_reload_signal)
         logger.info("config_reload_signal_registered", signal="SIGUSR2")
+
+    def _run_async_with_timeout(self, coro, timeout: int = ASYNC_TIMEOUT_SECONDS, default=None):
+        """
+        Run an async coroutine with timeout protection.
+
+        Prevents daemon from hanging indefinitely if external APIs are slow.
+
+        Args:
+            coro: Async coroutine to execute
+            timeout: Timeout in seconds (default: 120)
+            default: Value to return on timeout (default: None)
+
+        Returns:
+            Coroutine result or default value on timeout
+        """
+        async def _with_timeout():
+            try:
+                return await asyncio.wait_for(coro, timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.warning("async_operation_timeout", timeout=timeout)
+                return default
+
+        return self._loop.run_until_complete(_with_timeout())
 
     def _validate_trading_pair(self, trading_pair: str) -> None:
         """
@@ -564,15 +594,25 @@ class TradingDaemon:
             volatility=ind.volatility,
         )
 
-        # Track volatility for adaptive interval
+        # Track volatility for adaptive interval and post-volatility analysis
         if ind.volatility:
+            old_volatility = self._last_volatility
             self._last_volatility = ind.volatility
+
+            # Detect transition from high/extreme to normal/low
+            if old_volatility in ("high", "extreme") and ind.volatility in ("normal", "low"):
+                self._pending_post_volatility_analysis = True
+                logger.info(
+                    "post_volatility_analysis_pending",
+                    from_volatility=old_volatility,
+                    to_volatility=ind.volatility,
+                )
 
         # Calculate market regime for strategy adaptation
         sentiment = None
         if self.settings.regime_sentiment_enabled:
             try:
-                sentiment = self._loop.run_until_complete(get_cached_sentiment())
+                sentiment = self._run_async_with_timeout(get_cached_sentiment(), timeout=30)
             except Exception as e:
                 logger.debug("sentiment_fetch_skipped", error=str(e))
         trend = get_ema_trend_from_values(ind.ema_fast, ind.ema_slow) if ind.ema_fast and ind.ema_slow else "neutral"
@@ -664,13 +704,20 @@ class TradingDaemon:
 
             if should_review:
                 try:
-                    # Run async multi-agent review using persistent event loop
-                    review = self._loop.run_until_complete(self.trade_reviewer.review_trade(
-                        signal_result=signal_result,
-                        current_price=current_price,
-                        trading_pair=self.settings.trading_pair,
-                        review_type=review_type,
-                    ))
+                    # Run async multi-agent review with timeout protection
+                    review = self._run_async_with_timeout(
+                        self.trade_reviewer.review_trade(
+                            signal_result=signal_result,
+                            current_price=current_price,
+                            trading_pair=self.settings.trading_pair,
+                            review_type=review_type,
+                        ),
+                        timeout=ASYNC_TIMEOUT_SECONDS,
+                    )
+                    if review is None:
+                        logger.warning("trade_review_timeout")
+                        # Continue with trade on timeout (fail open)
+                        raise TimeoutError("Trade review timed out")
 
                     # Always notify Telegram
                     self.notifier.notify_trade_review(review, review_type)
@@ -1356,21 +1403,35 @@ class TradingDaemon:
         self.notifier.send_message_sync(message)
 
     def _check_hourly_analysis(self) -> None:
-        """Run hourly market analysis during volatile conditions."""
+        """Run hourly market analysis during volatile conditions or post-volatility."""
         # Skip if hourly analysis not enabled
         if not self._hourly_analysis_enabled:
             return
 
         now = datetime.now()
+        is_post_volatility = self._pending_post_volatility_analysis
 
-        # Only run once per hour
-        if self._last_hourly_analysis:
-            elapsed = (now - self._last_hourly_analysis).total_seconds()
-            if elapsed < 3600:
-                return
+        # Check if we should run analysis
+        should_run = False
+        analysis_reason = ""
 
-        # Only run during high/extreme volatility
-        if self._last_volatility not in ("high", "extreme"):
+        if is_post_volatility:
+            # Post-volatility analysis: run immediately (don't wait for hourly cooldown)
+            should_run = True
+            analysis_reason = "post_volatility"
+            self._pending_post_volatility_analysis = False
+        elif self._last_volatility in ("high", "extreme"):
+            # During high/extreme volatility: run once per hour
+            if self._last_hourly_analysis:
+                elapsed = (now - self._last_hourly_analysis).total_seconds()
+                if elapsed >= 3600:
+                    should_run = True
+                    analysis_reason = "hourly_volatile"
+            else:
+                should_run = True
+                analysis_reason = "hourly_volatile"
+
+        if not should_run:
             return
 
         # Run analysis
@@ -1392,7 +1453,7 @@ class TradingDaemon:
             sentiment_class = "Unknown"
             if self.settings.regime_sentiment_enabled:
                 try:
-                    sentiment_result = self._loop.run_until_complete(get_cached_sentiment())
+                    sentiment_result = self._run_async_with_timeout(get_cached_sentiment(), timeout=30)
                     if sentiment_result and sentiment_result.value:
                         sentiment_value = sentiment_result.value
                         sentiment_class = sentiment_result.classification or "Unknown"
@@ -1433,8 +1494,8 @@ class TradingDaemon:
                     ((float(current_price) - indicators.ema_slow) / indicators.ema_slow) * 100, 2
                 )
 
-            # Run multi-agent market analysis
-            review = self._loop.run_until_complete(
+            # Run multi-agent market analysis with timeout protection
+            review = self._run_async_with_timeout(
                 self.trade_reviewer.analyze_market(
                     indicators=indicators_dict,
                     current_price=current_price,
@@ -1444,8 +1505,12 @@ class TradingDaemon:
                     volatility=self._last_volatility,
                     price_change_1h=price_change_1h,
                     price_change_24h=price_change_24h,
-                )
+                ),
+                timeout=ASYNC_TIMEOUT_SECONDS,
             )
+            if review is None:
+                logger.warning("market_analysis_timeout")
+                return  # Skip this analysis cycle
 
             # Log multi-agent analysis summary
             agent_summary = [
@@ -1460,6 +1525,7 @@ class TradingDaemon:
             ]
             logger.info(
                 "hourly_market_analysis",
+                reason=analysis_reason,
                 agents=agent_summary,
                 judge_confidence=f"{review.judge_confidence:.2f}",
                 judge_recommendation=review.judge_recommendation,
@@ -1483,6 +1549,7 @@ class TradingDaemon:
                 fear_greed=sentiment_value or 50,
                 fear_greed_class=sentiment_class,
                 current_price=current_price,
+                analysis_reason=analysis_reason,
             )
 
         except Exception as e:

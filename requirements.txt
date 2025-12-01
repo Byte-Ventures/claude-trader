@@ -32,3 +32,6 @@ schedule>=1.2.0
 
 # Date/Time
 arrow>=1.3.0
+
+# AI Web Search (for market analysis)
+ddgs>=6.0.0
