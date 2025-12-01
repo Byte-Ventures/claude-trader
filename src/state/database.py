@@ -7,6 +7,7 @@ Tables:
 - trades: Executed trades (fills)
 - daily_stats: Daily trading statistics
 - system_state: Key-value store for recovery state
+- rate_history: Historical OHLCV price data for analysis and replay
 """
 
 import json
@@ -21,9 +22,11 @@ from sqlalchemy import (
     Column,
     Date,
     DateTime,
+    Index,
     Integer,
     String,
     Text,
+    UniqueConstraint,
     create_engine,
     func,
     text,
@@ -184,6 +187,51 @@ class TrailingStop(Base):
 
     def get_hard_stop(self) -> Optional[Decimal]:
         return Decimal(self.hard_stop) if self.hard_stop else None
+
+
+class RateHistory(Base):
+    """Historical OHLCV price data for analysis and replay testing.
+
+    Stores candlestick data from exchanges for:
+    - Backtesting and strategy replay
+    - Historical analysis and reporting
+    - Training data for ML models
+    """
+
+    __tablename__ = "rate_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False, default="BTC-USD")
+    exchange = Column(String(20), nullable=False, default="kraken")
+    interval = Column(String(10), nullable=False, default="1m")  # 1m, 5m, 15m, 1h, 1d
+    timestamp = Column(DateTime, nullable=False)  # Candle start time
+    open_price = Column(String(50), nullable=False)
+    high_price = Column(String(50), nullable=False)
+    low_price = Column(String(50), nullable=False)
+    close_price = Column(String(50), nullable=False)
+    volume = Column(String(50), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Unique constraint: one candle per symbol/exchange/interval/timestamp
+    __table_args__ = (
+        UniqueConstraint('symbol', 'exchange', 'interval', 'timestamp', name='uq_rate_candle'),
+        Index('ix_rate_history_lookup', 'symbol', 'exchange', 'interval', 'timestamp'),
+    )
+
+    def get_open(self) -> Decimal:
+        return Decimal(self.open_price)
+
+    def get_high(self) -> Decimal:
+        return Decimal(self.high_price)
+
+    def get_low(self) -> Decimal:
+        return Decimal(self.low_price)
+
+    def get_close(self) -> Decimal:
+        return Decimal(self.close_price)
+
+    def get_volume(self) -> Decimal:
+        return Decimal(self.volume)
 
 
 class Database:
@@ -863,4 +911,191 @@ class Database:
                 )
                 .order_by(RegimeHistory.created_at.desc())
                 .all()
+            )
+
+    # Rate history methods
+    def record_rate(
+        self,
+        timestamp: datetime,
+        open_price: Decimal,
+        high_price: Decimal,
+        low_price: Decimal,
+        close_price: Decimal,
+        volume: Decimal,
+        symbol: str = "BTC-USD",
+        exchange: str = "kraken",
+        interval: str = "1m",
+    ) -> Optional[RateHistory]:
+        """
+        Record a single OHLCV candle.
+
+        Uses INSERT OR IGNORE to skip duplicates (same symbol/exchange/interval/timestamp).
+        """
+        with self.session() as session:
+            # Check if candle already exists
+            existing = (
+                session.query(RateHistory)
+                .filter(
+                    RateHistory.symbol == symbol,
+                    RateHistory.exchange == exchange,
+                    RateHistory.interval == interval,
+                    RateHistory.timestamp == timestamp,
+                )
+                .first()
+            )
+
+            if existing:
+                return None  # Skip duplicate
+
+            rate = RateHistory(
+                symbol=symbol,
+                exchange=exchange,
+                interval=interval,
+                timestamp=timestamp,
+                open_price=str(open_price),
+                high_price=str(high_price),
+                low_price=str(low_price),
+                close_price=str(close_price),
+                volume=str(volume),
+            )
+            session.add(rate)
+            session.flush()
+            return rate
+
+    def record_rates_bulk(
+        self,
+        candles: list[dict],
+        symbol: str = "BTC-USD",
+        exchange: str = "kraken",
+        interval: str = "1m",
+    ) -> int:
+        """
+        Record multiple OHLCV candles efficiently.
+
+        Args:
+            candles: List of dicts with keys: timestamp, open, high, low, close, volume
+
+        Returns:
+            Number of new candles inserted (skips duplicates)
+        """
+        inserted = 0
+        with self.session() as session:
+            for candle in candles:
+                # Check if exists
+                existing = (
+                    session.query(RateHistory.id)
+                    .filter(
+                        RateHistory.symbol == symbol,
+                        RateHistory.exchange == exchange,
+                        RateHistory.interval == interval,
+                        RateHistory.timestamp == candle["timestamp"],
+                    )
+                    .first()
+                )
+
+                if not existing:
+                    rate = RateHistory(
+                        symbol=symbol,
+                        exchange=exchange,
+                        interval=interval,
+                        timestamp=candle["timestamp"],
+                        open_price=str(candle["open"]),
+                        high_price=str(candle["high"]),
+                        low_price=str(candle["low"]),
+                        close_price=str(candle["close"]),
+                        volume=str(candle["volume"]),
+                    )
+                    session.add(rate)
+                    inserted += 1
+
+            session.flush()
+
+        if inserted > 0:
+            logger.info(
+                "rates_recorded",
+                count=inserted,
+                symbol=symbol,
+                exchange=exchange,
+                interval=interval,
+            )
+        return inserted
+
+    def get_rates(
+        self,
+        symbol: str = "BTC-USD",
+        exchange: str = "kraken",
+        interval: str = "1m",
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+        limit: int = 1000,
+    ) -> list[RateHistory]:
+        """
+        Get historical rate data for analysis or replay.
+
+        Args:
+            symbol: Trading pair
+            exchange: Exchange name
+            interval: Candle interval
+            start: Start timestamp (inclusive)
+            end: End timestamp (inclusive)
+            limit: Maximum records to return
+
+        Returns:
+            List of RateHistory records ordered by timestamp ASC
+        """
+        with self.session() as session:
+            query = session.query(RateHistory).filter(
+                RateHistory.symbol == symbol,
+                RateHistory.exchange == exchange,
+                RateHistory.interval == interval,
+            )
+
+            if start:
+                query = query.filter(RateHistory.timestamp >= start)
+            if end:
+                query = query.filter(RateHistory.timestamp <= end)
+
+            return (
+                query
+                .order_by(RateHistory.timestamp.asc())
+                .limit(limit)
+                .all()
+            )
+
+    def get_latest_rate_timestamp(
+        self,
+        symbol: str = "BTC-USD",
+        exchange: str = "kraken",
+        interval: str = "1m",
+    ) -> Optional[datetime]:
+        """Get the timestamp of the most recent stored candle."""
+        with self.session() as session:
+            result = (
+                session.query(RateHistory.timestamp)
+                .filter(
+                    RateHistory.symbol == symbol,
+                    RateHistory.exchange == exchange,
+                    RateHistory.interval == interval,
+                )
+                .order_by(RateHistory.timestamp.desc())
+                .first()
+            )
+            return result[0] if result else None
+
+    def get_rate_count(
+        self,
+        symbol: str = "BTC-USD",
+        exchange: str = "kraken",
+        interval: str = "1m",
+    ) -> int:
+        """Get total number of stored candles for a symbol/exchange/interval."""
+        with self.session() as session:
+            return (
+                session.query(func.count(RateHistory.id))
+                .filter(
+                    RateHistory.symbol == symbol,
+                    RateHistory.exchange == exchange,
+                    RateHistory.interval == interval,
+                )
+                .scalar()
             )
