@@ -1574,38 +1574,22 @@ class TradingDaemon:
         entry_price: Decimal,
         candles,
         is_paper: bool = False,
-        avg_cost: Optional[Decimal] = None,
+        *,  # Force keyword-only for avg_cost
+        avg_cost: Decimal,
     ) -> None:
         """Create or update trailing stop for a position.
 
         Args:
-            entry_price: The price at which the buy was executed
+            entry_price: The price at which the buy was executed (for logging)
             candles: Recent candles for ATR calculation
             is_paper: Whether this is paper trading
-            avg_cost: Pre-calculated weighted average cost (avoids race condition
-                     if position update hasn't committed yet). If None, queries DB.
+            avg_cost: REQUIRED - Weighted average cost for hard stop calculation.
+                     Must be passed from caller to avoid race conditions.
+                     Do NOT query DB here - caller has the authoritative value.
         """
         from src.strategy.indicators.atr import calculate_atr
 
         try:
-            # Use passed avg_cost if provided (preferred - avoids timing issues)
-            # Otherwise query DB (fallback for backwards compatibility)
-            if avg_cost is None:
-                position = self.db.get_current_position(
-                    self.settings.trading_pair, is_paper=is_paper
-                )
-                if position and position.get_quantity() > Decimal("0"):
-                    avg_cost = position.get_average_cost()
-                else:
-                    # WARNING: Falling back to entry_price - this may result in
-                    # incorrect hard stop for DCA positions if position update raced
-                    avg_cost = entry_price
-                    logger.warning(
-                        "hard_stop_fallback_to_entry",
-                        reason="no_position_found",
-                        entry_price=str(entry_price),
-                    )
-
             # Calculate ATR for trailing stop distance
             atr_result = calculate_atr(candles, period=self.settings.atr_period)
             atr = atr_result.current
@@ -1683,6 +1667,8 @@ class TradingDaemon:
                 # or if trailing was active but hard stop was hit anyway (shouldn't happen normally)
                 trailing_was_active = current_stop is not None
                 exit_type = "emergency_exit" if not trailing_was_active else "hard_stop_below_trailing"
+                # Defensive: avoid division by zero (entry_price should never be 0, but be safe)
+                loss_pct = round((entry_price - current_price) / entry_price * 100, 2) if entry_price > 0 else Decimal("0")
                 logger.warning(
                     "hard_stop_triggered",
                     exit_type=exit_type,
@@ -1690,7 +1676,7 @@ class TradingDaemon:
                     hard_stop=str(hard_stop),
                     entry_price=str(entry_price),
                     trailing_was_active=trailing_was_active,
-                    loss_percent=str(round((entry_price - current_price) / entry_price * 100, 2)),
+                    loss_percent=str(loss_pct),
                 )
                 self.db.deactivate_trailing_stop(
                     symbol=self.settings.trading_pair,
@@ -1726,14 +1712,15 @@ class TradingDaemon:
             # Check if stop is hit (profit protection - trailing only activates after profit)
             if current_stop is not None and current_price <= current_stop:
                 # Calculate profit locked in (trailing stop is profit protection)
-                profit_percent = (current_price - entry_price) / entry_price * 100
+                # Defensive: avoid division by zero
+                profit_pct = round((current_price - entry_price) / entry_price * 100, 2) if entry_price > 0 else Decimal("0")
                 logger.info(
                     "trailing_stop_triggered",
                     exit_type="profit_protection",
                     current_price=str(current_price),
                     stop_level=str(current_stop),
                     entry_price=str(entry_price),
-                    profit_percent=str(round(profit_percent, 2)),
+                    profit_percent=str(profit_pct),
                 )
                 self.db.deactivate_trailing_stop(
                     symbol=self.settings.trading_pair,

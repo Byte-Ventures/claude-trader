@@ -478,6 +478,10 @@ class Database:
                 logger.debug("trailing_stops_hard_stop_migration_skipped", reason=str(e))
 
             # Add is_paper column to rate_history table
+            # NOTE: SQLite doesn't support ALTER CONSTRAINT, so the unique constraint
+            # (uq_rate_candle_v2) that includes is_paper won't be created on existing DBs.
+            # For existing databases: either recreate the table or accept the limitation.
+            # New databases created after this version will have correct constraints.
             try:
                 result = conn.execute(
                     text("SELECT sql FROM sqlite_master WHERE type='table' AND name='rate_history'")
@@ -486,6 +490,12 @@ class Database:
                 if rh_schema and "is_paper" not in rh_schema:
                     conn.execute(text("ALTER TABLE rate_history ADD COLUMN is_paper BOOLEAN DEFAULT 0"))
                     logger.info("migrated_rate_history_added_is_paper")
+                    logger.warning(
+                        "rate_history_constraint_limitation",
+                        message="Unique constraint uq_rate_candle_v2 not updated on existing DB. "
+                                "Paper/live data separation relies on application logic. "
+                                "For full constraint support, recreate rate_history table."
+                    )
                     conn.commit()
             except Exception as e:
                 logger.debug("rate_history_is_paper_migration_skipped", reason=str(e))
@@ -1034,7 +1044,10 @@ class Database:
             Number of new candles inserted (skips duplicates)
 
         Raises:
-            Exception: Re-raised if batch insert fails (partial data may be lost)
+            Exception: Re-raised if batch insert fails. The session context manager
+                      automatically handles rollback on exception, so if an error
+                      occurs, NO candles from this batch will be committed.
+                      This ensures atomic operation - all or nothing.
         """
         if not candles:
             return 0
