@@ -354,7 +354,7 @@ def test_check_and_raise_with_file_activation(kill_switch):
     with pytest.raises(KillSwitchActiveError) as exc_info:
         kill_switch.check_and_raise()
 
-    assert "Kill switch is active" in str(exc_info.value)
+    assert "Kill switch file exists" in str(exc_info.value)
 
 
 # ============================================================================

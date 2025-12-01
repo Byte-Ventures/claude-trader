@@ -229,7 +229,10 @@ class LossLimiter:
                     max_allowed=self.config.max_daily_loss_percent,
                 )
                 if self._on_limit_hit:
-                    self._on_limit_hit("daily", daily_loss_percent)
+                    try:
+                        self._on_limit_hit("daily", daily_loss_percent)
+                    except Exception as e:
+                        logger.error("loss_limiter_callback_failed", error=str(e))
 
         # Check hourly limit
         if hourly_loss_percent >= self.config.max_hourly_loss_percent:
@@ -245,7 +248,10 @@ class LossLimiter:
                     cooldown_until=self._cooldown_until.isoformat(),
                 )
                 if self._on_limit_hit:
-                    self._on_limit_hit("hourly", hourly_loss_percent)
+                    try:
+                        self._on_limit_hit("hourly", hourly_loss_percent)
+                    except Exception as e:
+                        logger.error("loss_limiter_callback_failed", error=str(e))
 
         # Calculate position multiplier
         position_multiplier = self._calculate_position_multiplier(

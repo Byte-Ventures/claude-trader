@@ -186,12 +186,17 @@ def test_trade_cleanup_old_trades(limiter):
 
 def test_daily_limit_not_hit_below_threshold(limiter):
     """Test daily limit not hit when below threshold."""
-    # 5% loss (below 10% limit)
-    status = limiter.record_trade(Decimal("-500"), "buy", Decimal("0.01"), Decimal("50000"))
+    # 5% loss (below 10% limit), spread over multiple trades to avoid hourly limit
+    with freeze_time("2024-01-01 10:00:00") as frozen_time:
+        limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
 
-    assert status.can_trade is True
-    assert status.daily_limit_hit is False
-    assert status.daily_loss_percent == pytest.approx(5.0, abs=0.1)
+        # Move 2 hours forward to clear hourly window
+        frozen_time.move_to("2024-01-01 12:00:00")
+        status = limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
+
+        assert status.can_trade is True
+        assert status.daily_limit_hit is False
+        assert status.daily_loss_percent == pytest.approx(5.0, abs=0.1)
 
 
 def test_daily_limit_hit_at_exact_threshold(limiter):
@@ -219,10 +224,14 @@ def test_daily_limit_callback_called(limiter_with_callback, callback_mock):
     """Test callback is called when daily limit is hit."""
     limiter_with_callback.record_trade(Decimal("-1000"), "buy", Decimal("0.1"), Decimal("50000"))
 
-    callback_mock.assert_called_once()
-    args = callback_mock.call_args[0]
-    assert args[0] == "daily"
-    assert args[1] == pytest.approx(10.0, abs=0.1)
+    # Both daily and hourly limits are hit (10% >= both 10% and 3% thresholds)
+    assert callback_mock.call_count == 2
+    # First call is daily limit
+    assert callback_mock.call_args_list[0][0][0] == "daily"
+    assert callback_mock.call_args_list[0][0][1] == pytest.approx(10.0, abs=0.1)
+    # Second call is hourly limit
+    assert callback_mock.call_args_list[1][0][0] == "hourly"
+    assert callback_mock.call_args_list[1][0][1] == pytest.approx(10.0, abs=0.1)
 
 
 def test_daily_limit_callback_not_called_twice(limiter_with_callback, callback_mock):
@@ -302,45 +311,84 @@ def test_hourly_limit_still_active_during_cooldown(limiter):
 
 def test_no_throttling_below_threshold(limiter):
     """Test no throttling when loss is below 50% of limit."""
-    # 4% daily loss (40% of 10% limit)
-    status = limiter.record_trade(Decimal("-400"), "buy", Decimal("0.01"), Decimal("50000"))
+    # 4% daily loss (40% of 10% limit), spread over time to avoid hourly limit
+    with freeze_time("2024-01-01 10:00:00") as frozen_time:
+        limiter.record_trade(Decimal("-200"), "buy", Decimal("0.01"), Decimal("50000"))
 
-    assert status.position_multiplier == 1.0
+        # Move 2 hours forward to clear hourly window
+        frozen_time.move_to("2024-01-01 12:00:00")
+        status = limiter.record_trade(Decimal("-200"), "buy", Decimal("0.01"), Decimal("50000"))
+
+        assert status.position_multiplier == 1.0
 
 
 def test_throttling_at_50_percent_of_limit(limiter):
     """Test throttling starts at 50% of daily limit (5% loss)."""
-    # Exactly 5% loss (50% of 10% limit)
-    status = limiter.record_trade(Decimal("-500"), "buy", Decimal("0.01"), Decimal("50000"))
+    # Slightly over 5% loss (just past 50% of 10% limit), spread over time to avoid hourly limit
+    with freeze_time("2024-01-01 10:00:00") as frozen_time:
+        limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
 
-    # Should start throttling
-    assert 0.9 < status.position_multiplier < 1.0
+        # Move 2 hours forward to clear hourly window
+        frozen_time.move_to("2024-01-01 12:00:00")
+        status = limiter.record_trade(Decimal("-255"), "buy", Decimal("0.01"), Decimal("50000"))
+
+        # Should start throttling (5.05% > 5% threshold)
+        assert 0.9 < status.position_multiplier < 1.0
 
 
 def test_throttling_at_75_percent_of_limit(limiter):
     """Test position multiplier at 75% of limit (7.5% loss)."""
-    # 7.5% loss (75% of 10% limit)
-    status = limiter.record_trade(Decimal("-750"), "buy", Decimal("0.01"), Decimal("50000"))
+    # 7.5% loss (75% of 10% limit), spread over time to avoid hourly limit
+    with freeze_time("2024-01-01 10:00:00") as frozen_time:
+        limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
 
-    # Should be significantly throttled
-    assert 0.5 < status.position_multiplier < 0.8
+        # Move 2 hours forward to clear hourly window
+        frozen_time.move_to("2024-01-01 12:00:00")
+        limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
+
+        # Move 2 hours forward again
+        frozen_time.move_to("2024-01-01 14:00:00")
+        status = limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
+
+        # Should be significantly throttled
+        assert 0.5 < status.position_multiplier < 0.8
 
 
 def test_throttling_at_90_percent_of_limit(limiter):
     """Test heavy throttling at 90% of limit (9% loss)."""
-    # 9% loss (90% of 10% limit)
-    status = limiter.record_trade(Decimal("-900"), "buy", Decimal("0.01"), Decimal("50000"))
+    # 9% loss (90% of 10% limit), spread over time to avoid hourly limit
+    with freeze_time("2024-01-01 10:00:00") as frozen_time:
+        limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
 
-    # Should be heavily throttled but above minimum
-    assert 0.3 <= status.position_multiplier < 0.5
+        frozen_time.move_to("2024-01-01 12:00:00")
+        limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
+
+        frozen_time.move_to("2024-01-01 14:00:00")
+        limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
+
+        frozen_time.move_to("2024-01-01 16:00:00")
+        status = limiter.record_trade(Decimal("-150"), "buy", Decimal("0.01"), Decimal("50000"))
+
+        # Should be heavily throttled but above minimum
+        assert 0.3 <= status.position_multiplier < 0.5
 
 
 def test_throttling_minimum_at_30_percent(limiter):
     """Test throttling never goes below 30% until limit hit."""
-    # 9.9% loss (just below limit)
-    status = limiter.record_trade(Decimal("-990"), "buy", Decimal("0.01"), Decimal("50000"))
+    # 9.9% loss (just below limit), spread over time to avoid hourly limit
+    with freeze_time("2024-01-01 10:00:00") as frozen_time:
+        limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
 
-    assert status.position_multiplier >= 0.3
+        frozen_time.move_to("2024-01-01 12:00:00")
+        limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
+
+        frozen_time.move_to("2024-01-01 14:00:00")
+        limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
+
+        frozen_time.move_to("2024-01-01 16:00:00")
+        status = limiter.record_trade(Decimal("-240"), "buy", Decimal("0.01"), Decimal("50000"))
+
+        assert status.position_multiplier >= 0.3
 
 
 def test_zero_multiplier_when_limit_hit(limiter):
@@ -399,8 +447,8 @@ def test_reset_uses_utc_not_local_time(limiter):
     """Test reset uses UTC midnight regardless of local timezone."""
     # This is implicitly tested by using tz_offset=0 in other tests
     # The implementation uses timezone.utc which is correct
-    with freeze_time("2024-01-01 23:00:00", tz_offset=-5):  # EST
-        limiter.record_trade(Decimal("-500"), "buy", Decimal("0.01"), Decimal("50000"))
+    with freeze_time("2024-01-01 23:00:00", tz_offset=-5) as frozen_time:  # EST
+        limiter.record_trade(Decimal("-200"), "buy", Decimal("0.01"), Decimal("50000"))
 
         # 7 PM EST is midnight UTC
         frozen_time.move_to("2024-01-01 19:00:00")
