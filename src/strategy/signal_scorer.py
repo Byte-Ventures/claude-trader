@@ -93,6 +93,10 @@ class SignalScorer:
         ema_fast: int = 9,
         ema_slow: int = 21,
         atr_period: int = 14,
+        momentum_rsi_threshold: float = 60.0,
+        momentum_rsi_candles: int = 3,
+        momentum_price_candles: int = 12,
+        momentum_penalty_reduction: float = 0.5,
     ):
         """
         Initialize signal scorer.
@@ -100,7 +104,11 @@ class SignalScorer:
         Args:
             weights: Weights for each indicator
             threshold: Minimum score to trigger trade
-            *: Indicator parameters
+            momentum_rsi_threshold: RSI must stay above this for momentum mode (default: 60)
+            momentum_rsi_candles: Number of candles RSI must stay elevated (default: 3)
+            momentum_price_candles: Number of candles to check for higher lows (default: 12)
+            momentum_penalty_reduction: Factor to reduce overbought penalties (default: 0.5 = 50%)
+            *: Other indicator parameters
         """
         self.weights = weights or SignalWeights()
         self.threshold = threshold
@@ -120,6 +128,12 @@ class SignalScorer:
         self.ema_fast = ema_fast
         self.ema_slow_period = ema_slow
         self.atr_period = atr_period
+
+        # Momentum mode parameters
+        self.momentum_rsi_threshold = momentum_rsi_threshold
+        self.momentum_rsi_candles = momentum_rsi_candles
+        self.momentum_price_candles = momentum_price_candles
+        self.momentum_penalty_reduction = momentum_penalty_reduction
 
     def update_settings(
         self,
@@ -183,20 +197,35 @@ class SignalScorer:
         Returns:
             Tuple of (is_momentum_active, reason_string)
         """
-        if len(rsi) < 3 or len(df) < 12:
+        min_rsi_candles = self.momentum_rsi_candles
+        min_price_candles = self.momentum_price_candles
+
+        if len(rsi) < min_rsi_candles or len(df) < min_price_candles:
             return False, ""
 
-        # Condition 1: RSI sustained above 60 for 3+ candles
-        recent_rsi = rsi.tail(3)
-        rsi_sustained = bool((recent_rsi > 60).all())
+        # Condition 1: RSI sustained above threshold for N candles
+        # Use dropna() to handle any NaN values in the RSI series
+        recent_rsi = rsi.tail(min_rsi_candles).dropna()
+        if len(recent_rsi) < min_rsi_candles:
+            # Not enough valid RSI values after dropping NaN
+            return False, ""
+        rsi_sustained = bool((recent_rsi > self.momentum_rsi_threshold).all())
 
         # Condition 2: Price making higher lows (bullish structure)
+        # This checks if recent prices are staying above their local minimums,
+        # indicating buyers are stepping in at progressively higher levels.
         close = df["close"].astype(float)
-        recent_close = close.tail(12)
+        recent_close = close.tail(min_price_candles)
         higher_lows = True
 
+        # Iterate through recent candles (starting at index 3 to have a lookback window)
+        # For each candle at position i, compare its price to the minimum of the
+        # previous 3 candles. If current price <= that minimum, we're making lower lows.
         for i in range(3, len(recent_close)):
-            window_min = recent_close.iloc[max(0, i - 3):i].min()
+            # Get minimum of the 3 candles before position i
+            lookback_start = max(0, i - 3)
+            window_min = recent_close.iloc[lookback_start:i].min()
+            # Current candle must be above the local minimum
             if recent_close.iloc[i] <= window_min:
                 higher_lows = False
                 break
@@ -324,11 +353,13 @@ class SignalScorer:
         if momentum_active:
             original_rsi = rsi_score
             original_bb = bb_score
-            # Reduce overbought penalties by 50% (only negative scores)
+            # Reduce overbought penalties by configured factor (only negative scores)
+            # Use int() instead of // for symmetric rounding behavior
+            reduction = self.momentum_penalty_reduction
             if rsi_score < 0:
-                rsi_score = rsi_score // 2
+                rsi_score = int(rsi_score * reduction)
             if bb_score < 0:
-                bb_score = bb_score // 2
+                bb_score = int(bb_score * reduction)
             logger.info(
                 "momentum_mode_active",
                 reason=momentum_reason,
@@ -337,7 +368,7 @@ class SignalScorer:
                 bb_original=original_bb,
                 bb_adjusted=bb_score,
             )
-        breakdown["momentum"] = 1 if momentum_active else 0
+        breakdown["_momentum_active"] = 1 if momentum_active else 0
 
         breakdown["rsi"] = rsi_score
         total_score += rsi_score
@@ -437,10 +468,10 @@ class SignalScorer:
         # Calculate confidence with confluence factor
         # Combines magnitude with how many indicators agree
         if action != "hold":
-            # Count agreeing indicators (non-zero contributions, excluding momentum flag)
+            # Count agreeing indicators (non-zero contributions, excluding metadata keys)
             confluence_count = sum(
                 1 for key, score in breakdown.items()
-                if score != 0 and key != "momentum"
+                if score != 0 and not key.startswith("_")
             )
             confluence_factor = confluence_count / 6  # 6 components including trend_filter
 

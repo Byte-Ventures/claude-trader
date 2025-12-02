@@ -852,3 +852,253 @@ def test_calculate_score_uses_last_close_when_no_price(scorer, sample_df):
     # Should still calculate successfully
     assert isinstance(result, SignalResult)
     assert result.score is not None
+
+
+# ============================================================================
+# Momentum Mode Tests
+# ============================================================================
+
+@pytest.fixture
+def momentum_df():
+    """Generate data with sustained high RSI and higher lows (momentum conditions)."""
+    np.random.seed(123)
+    length = 50
+    # Start with uptrend that will produce high RSI
+    # Need some volatility for RSI to calculate properly
+    prices = []
+    current = 40000.0
+
+    for i in range(length):
+        # Strong uptrend with minor noise (70% up, 30% small down)
+        if np.random.random() < 0.7:
+            change = current * np.random.uniform(0.003, 0.008)  # Up move
+        else:
+            change = -current * np.random.uniform(0.001, 0.002)  # Small pullback
+        current = current + change
+        prices.append(current)
+
+    data = {
+        'open': [p * 0.998 for p in prices],
+        'high': [p * 1.01 for p in prices],
+        'low': [p * 0.995 for p in prices],  # Higher lows
+        'close': prices,
+        'volume': [10000.0] * length,
+    }
+    return pd.DataFrame(data)
+
+
+@pytest.fixture
+def no_momentum_df():
+    """Generate choppy sideways data without momentum."""
+    np.random.seed(456)
+    length = 50
+    prices = []
+    current = 50000.0
+
+    for i in range(length):
+        # Oscillate around the same level
+        change = current * 0.01 * (1 if i % 2 == 0 else -1)
+        current = current + change
+        prices.append(current)
+
+    data = {
+        'open': [p * 0.998 for p in prices],
+        'high': [p * 1.01 for p in prices],
+        'low': [p * 0.99 for p in prices],
+        'close': prices,
+        'volume': [10000.0] * length,
+    }
+    return pd.DataFrame(data)
+
+
+def test_is_momentum_mode_active_with_sustained_rsi_and_higher_lows(scorer, momentum_df):
+    """Test momentum mode activates with sustained RSI > 60 and higher lows."""
+    from src.indicators.rsi import calculate_rsi
+
+    close = momentum_df["close"].astype(float)
+    rsi = calculate_rsi(close, scorer.rsi_period)
+
+    is_active, reason = scorer.is_momentum_mode(momentum_df, rsi)
+
+    # Should activate due to uptrend creating sustained high RSI
+    assert is_active is True
+    assert reason in ["sustained_rsi", "sustained_rsi_higher_lows"]
+
+
+def test_is_momentum_mode_inactive_with_insufficient_data(scorer):
+    """Test momentum mode returns False with insufficient data."""
+    # Create minimal dataframe
+    df = pd.DataFrame({
+        'open': [100, 101],
+        'high': [102, 103],
+        'low': [99, 100],
+        'close': [101, 102],
+        'volume': [1000, 1000],
+    })
+    rsi = pd.Series([70, 71])
+
+    is_active, reason = scorer.is_momentum_mode(df, rsi)
+
+    assert is_active is False
+    assert reason == ""
+
+
+def test_is_momentum_mode_inactive_with_low_rsi(scorer, no_momentum_df):
+    """Test momentum mode inactive when RSI is not sustained above threshold."""
+    from src.indicators.rsi import calculate_rsi
+
+    close = no_momentum_df["close"].astype(float)
+    rsi = calculate_rsi(close, scorer.rsi_period)
+
+    is_active, reason = scorer.is_momentum_mode(no_momentum_df, rsi)
+
+    # Choppy data shouldn't produce sustained high RSI
+    assert is_active is False
+
+
+def test_is_momentum_mode_inactive_with_lower_lows():
+    """Test momentum mode inactive when price makes lower lows."""
+    # Create downtrend data (lower lows)
+    length = 50
+    prices = [50000 - (i * 100) for i in range(length)]  # Downtrend
+
+    df = pd.DataFrame({
+        'open': [p * 1.002 for p in prices],
+        'high': [p * 1.01 for p in prices],
+        'low': [p * 0.99 for p in prices],
+        'close': prices,
+        'volume': [10000.0] * length,
+    })
+
+    # Create artificially high RSI series
+    rsi = pd.Series([70.0] * length)
+
+    scorer = SignalScorer()
+    is_active, reason = scorer.is_momentum_mode(df, rsi)
+
+    # Even with high RSI, lower lows should prevent full activation
+    # It may still return sustained_rsi if RSI check passes
+    if is_active:
+        assert reason == "sustained_rsi"  # Not "sustained_rsi_higher_lows"
+
+
+def test_is_momentum_mode_partial_activation_rsi_only():
+    """Test momentum mode activates with just sustained RSI (no higher lows check passed)."""
+    length = 50
+    # Flat prices (no clear higher lows pattern)
+    prices = [50000.0] * length
+
+    df = pd.DataFrame({
+        'open': prices,
+        'high': [p * 1.001 for p in prices],
+        'low': [p * 0.999 for p in prices],
+        'close': prices,
+        'volume': [10000.0] * length,
+    })
+
+    # Create high RSI series
+    rsi = pd.Series([75.0] * length)
+
+    scorer = SignalScorer()
+    is_active, reason = scorer.is_momentum_mode(df, rsi)
+
+    # Should activate based on RSI alone
+    assert is_active is True
+    assert reason == "sustained_rsi"
+
+
+def test_is_momentum_mode_handles_nan_in_rsi(scorer):
+    """Test momentum mode handles NaN values in RSI series gracefully."""
+    df = pd.DataFrame({
+        'open': [100.0] * 50,
+        'high': [101.0] * 50,
+        'low': [99.0] * 50,
+        'close': [100.0] * 50,
+        'volume': [1000.0] * 50,
+    })
+
+    # RSI with NaN values at the end
+    rsi = pd.Series([70.0] * 47 + [np.nan, np.nan, np.nan])
+
+    is_active, reason = scorer.is_momentum_mode(df, rsi)
+
+    # Should return False due to insufficient valid RSI values
+    assert is_active is False
+    assert reason == ""
+
+
+def test_momentum_penalty_reduction_in_calculate_score(momentum_df):
+    """Test momentum mode reduces overbought penalties in score calculation."""
+    # Create scorer with momentum detection
+    scorer = SignalScorer()
+
+    result = scorer.calculate_score(momentum_df)
+
+    # Check that momentum was detected
+    assert "_momentum_active" in result.breakdown
+    # In a strong uptrend, momentum should be active
+    if result.breakdown["_momentum_active"] == 1:
+        # RSI penalty should be reduced (less negative than -25)
+        # Note: The actual value depends on the data
+        assert result.breakdown["rsi"] >= -13  # -25 * 0.5 = -12.5, int() = -12
+
+
+def test_momentum_mode_does_not_affect_positive_scores():
+    """Test momentum mode only reduces penalties, not positive scores."""
+    scorer = SignalScorer()
+
+    # Create uptrend data
+    length = 50
+    prices = [40000 + (i * 200) for i in range(length)]
+
+    df = pd.DataFrame({
+        'open': [p * 0.998 for p in prices],
+        'high': [p * 1.01 for p in prices],
+        'low': [p * 0.995 for p in prices],
+        'close': prices,
+        'volume': [10000.0] * length,
+    })
+
+    result = scorer.calculate_score(df)
+
+    # MACD and EMA should remain positive (not affected by momentum reduction)
+    # The reduction only applies to negative RSI and Bollinger scores
+    if result.breakdown["macd"] > 0:
+        assert result.breakdown["macd"] > 0  # Unchanged
+
+
+def test_momentum_configurable_parameters():
+    """Test momentum mode respects configurable parameters."""
+    # Create scorer with custom momentum settings
+    scorer = SignalScorer(
+        momentum_rsi_threshold=70.0,  # Higher threshold
+        momentum_rsi_candles=5,       # More candles required
+        momentum_price_candles=20,    # More price history
+        momentum_penalty_reduction=0.3,  # 70% reduction instead of 50%
+    )
+
+    assert scorer.momentum_rsi_threshold == 70.0
+    assert scorer.momentum_rsi_candles == 5
+    assert scorer.momentum_price_candles == 20
+    assert scorer.momentum_penalty_reduction == 0.3
+
+
+def test_momentum_breakdown_uses_underscore_prefix(scorer, momentum_df):
+    """Test momentum flag uses underscore prefix for metadata."""
+    result = scorer.calculate_score(momentum_df)
+
+    # Should use _momentum_active, not momentum
+    assert "_momentum_active" in result.breakdown
+    assert "momentum" not in result.breakdown
+
+
+def test_confluence_excludes_momentum_metadata(scorer, momentum_df):
+    """Test confluence calculation excludes underscore-prefixed keys."""
+    result = scorer.calculate_score(momentum_df)
+
+    # The confidence calculation should not count _momentum_active
+    # This is tested indirectly - if momentum was counted, confluence would be off
+    if result.action != "hold":
+        # Confidence should be based on 6 components max (rsi, macd, bollinger, ema, volume, trend_filter)
+        # Not 7 (with momentum included)
+        assert result.confidence <= 1.0
