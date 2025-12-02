@@ -226,6 +226,7 @@ class SignalScorer:
         # Iterate through recent candles (starting at index 3 to have a lookback window)
         # For each candle at position i, compare its price to the minimum of the
         # previous 3 candles. If current price <= that minimum, we're making lower lows.
+        # Note: i is relative to recent_close (last N candles), not the full DataFrame.
         for i in range(3, len(recent_close)):
             # Get minimum of the 3 candles before position i
             lookback_start = max(0, i - 3)
