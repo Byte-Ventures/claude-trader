@@ -168,6 +168,45 @@ class SignalScorer:
 
         logger.info("signal_scorer_settings_updated")
 
+    def is_momentum_mode(self, df: pd.DataFrame, rsi: pd.Series) -> tuple[bool, str]:
+        """
+        Detect if market is in sustained momentum mode.
+
+        Momentum mode is active when RSI has been elevated for multiple candles
+        and price structure shows higher lows (bullish continuation pattern).
+        When active, overbought penalties are reduced to allow riding trends.
+
+        Args:
+            df: DataFrame with OHLCV data
+            rsi: RSI series
+
+        Returns:
+            Tuple of (is_momentum_active, reason_string)
+        """
+        if len(rsi) < 6 or len(df) < 12:
+            return False, ""
+
+        # Condition 1: RSI sustained above 60 for 6+ candles
+        recent_rsi = rsi.tail(6)
+        rsi_sustained = bool((recent_rsi > 60).all())
+
+        # Condition 2: Price making higher lows (bullish structure)
+        close = df["close"].astype(float)
+        recent_close = close.tail(12)
+        higher_lows = True
+
+        for i in range(3, len(recent_close)):
+            window_min = recent_close.iloc[max(0, i - 3):i].min()
+            if recent_close.iloc[i] <= window_min:
+                higher_lows = False
+                break
+
+        if rsi_sustained and higher_lows:
+            return True, "sustained_rsi_higher_lows"
+        elif rsi_sustained:
+            return True, "sustained_rsi"
+        return False, ""
+
     def record_oversold_buy(self) -> None:
         """Record an oversold buy for rate limiting during crashes."""
         now = datetime.now()
@@ -267,24 +306,45 @@ class SignalScorer:
         # RSI component (graduated: returns -1.0 to +1.0)
         rsi_signal = get_rsi_signal_graduated(indicators.rsi, self.rsi_oversold, self.rsi_overbought)
         rsi_score = int(rsi_signal * self.weights.rsi)
-        breakdown["rsi"] = rsi_score
-        total_score += rsi_score
 
         # MACD component (graduated: returns -1.0 to +1.0)
         macd_signal = get_macd_signal_graduated(macd_result, price)
         macd_score = int(macd_signal * self.weights.macd)
-        breakdown["macd"] = macd_score
-        total_score += macd_score
 
         # Bollinger Bands component (graduated: returns -1.0 to +1.0)
         bb_signal = get_bollinger_signal_graduated(price, bollinger)
         bb_score = int(bb_signal * self.weights.bollinger)
-        breakdown["bollinger"] = bb_score
-        total_score += bb_score
 
         # EMA component (graduated: returns -1.0 to +1.0)
         ema_signal = get_ema_signal_graduated(ema_result)
         ema_score = int(ema_signal * self.weights.ema)
+
+        # Momentum mode: reduce overbought penalties during sustained uptrends
+        momentum_active, momentum_reason = self.is_momentum_mode(df, rsi)
+        if momentum_active:
+            original_rsi = rsi_score
+            original_bb = bb_score
+            # Reduce overbought penalties by 50% (only negative scores)
+            if rsi_score < 0:
+                rsi_score = rsi_score // 2
+            if bb_score < 0:
+                bb_score = bb_score // 2
+            logger.info(
+                "momentum_mode_active",
+                reason=momentum_reason,
+                rsi_original=original_rsi,
+                rsi_adjusted=rsi_score,
+                bb_original=original_bb,
+                bb_adjusted=bb_score,
+            )
+        breakdown["momentum"] = 1 if momentum_active else 0
+
+        breakdown["rsi"] = rsi_score
+        total_score += rsi_score
+        breakdown["macd"] = macd_score
+        total_score += macd_score
+        breakdown["bollinger"] = bb_score
+        total_score += bb_score
         breakdown["ema"] = ema_score
         total_score += ema_score
 
@@ -377,8 +437,11 @@ class SignalScorer:
         # Calculate confidence with confluence factor
         # Combines magnitude with how many indicators agree
         if action != "hold":
-            # Count agreeing indicators (non-zero contributions)
-            confluence_count = sum(1 for score in breakdown.values() if score != 0)
+            # Count agreeing indicators (non-zero contributions, excluding momentum flag)
+            confluence_count = sum(
+                1 for key, score in breakdown.items()
+                if score != 0 and key != "momentum"
+            )
             confluence_factor = confluence_count / 6  # 6 components including trend_filter
 
             # Combine magnitude and confluence (equally weighted)
