@@ -216,6 +216,11 @@ class SignalScorer:
         # indicating buyers are stepping in at progressively higher levels.
         close = df["close"].astype(float)
         recent_close = close.tail(min_price_candles)
+
+        # Check for NaN in price data
+        if recent_close.isna().any():
+            return False, ""
+
         higher_lows = True
 
         # Iterate through recent candles (starting at index 3 to have a lookback window)

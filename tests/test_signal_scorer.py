@@ -957,7 +957,7 @@ def test_is_momentum_mode_inactive_with_low_rsi(scorer, no_momentum_df):
 
 
 def test_is_momentum_mode_inactive_with_lower_lows():
-    """Test momentum mode inactive when price makes lower lows."""
+    """Test momentum mode with lower lows only returns sustained_rsi, not higher_lows."""
     # Create downtrend data (lower lows)
     length = 50
     prices = [50000 - (i * 100) for i in range(length)]  # Downtrend
@@ -976,10 +976,10 @@ def test_is_momentum_mode_inactive_with_lower_lows():
     scorer = SignalScorer()
     is_active, reason = scorer.is_momentum_mode(df, rsi)
 
-    # Even with high RSI, lower lows should prevent full activation
-    # It may still return sustained_rsi if RSI check passes
-    if is_active:
-        assert reason == "sustained_rsi"  # Not "sustained_rsi_higher_lows"
+    # With high RSI but lower lows, momentum activates but only for sustained_rsi
+    # The higher_lows check should fail due to downtrend
+    assert is_active is True, "Should activate due to sustained RSI"
+    assert reason == "sustained_rsi", "Should NOT be 'sustained_rsi_higher_lows' with downtrend"
 
 
 def test_is_momentum_mode_partial_activation_rsi_only():
