@@ -1,17 +1,56 @@
 """
-Exponential Moving Average (EMA) indicator.
+Exponential Moving Average (EMA) crossover indicator.
 
 EMA gives more weight to recent prices, making it more responsive than SMA.
+This implementation uses a dual EMA system for trend detection and signals.
 
-Trading signals:
-- Fast EMA crosses above slow EMA: Buy (bullish crossover)
-- Fast EMA crosses below slow EMA: Sell (bearish crossover)
-- Price above both EMAs: Bullish trend
-- Price below both EMAs: Bearish trend
+Algorithm:
+    EMA = price * alpha + EMA_prev * (1 - alpha)
+    where alpha = 2 / (period + 1)
+
+    This is the standard EMA calculation used in most trading platforms.
+    Unlike Wilder's smoothing (used in RSI/ATR), standard EMA gives more
+    weight to recent prices.
+
+Signal Generation:
+    The graduated signal function combines crossovers with gap momentum:
+
+    1. Fresh crossover: +/- 1.0 (strongest signal)
+       - Fast EMA just crossed above slow EMA: +1.0
+       - Fast EMA just crossed below slow EMA: -1.0
+
+    2. Gap-based signal: Uses percentage difference between fast and slow EMA
+       - Gap > 0.3% and widening: +/- 0.4 to 0.8 (trend strengthening)
+       - Gap > 0.3% but narrowing: +/- 0.2 to 0.4 (trend weakening)
+       - Gap < 0.3%: 0.0 (dead zone - EMAs too close)
+
+    The gap momentum factor reduces the signal when the trend is weakening
+    (gap narrowing), which helps avoid late entries in exhausted trends.
+
+Trend Classification:
+    Based on percentage gap between fast and slow EMA:
+    - > 1.0%: Bullish trend
+    - < -1.0%: Bearish trend
+    - -1.0% to 1.0%: Neutral (no strong trend)
+
+Parameters:
+    - fast_period: 9 (more responsive to price changes)
+    - slow_period: 21 (smoother, represents medium-term trend)
+
+Integration:
+    Used by SignalScorer with 15% weight. Also used for trend filtering
+    to penalize counter-trend trades.
 """
 
 from dataclasses import dataclass
 import pandas as pd
+import numpy as np
+
+# Signal generation constants
+_GAP_DEAD_ZONE_PERCENT = 0.3  # Minimum gap % for signal
+_TREND_THRESHOLD_PERCENT = 1.0  # Gap % for bullish/bearish trend classification
+_MAX_GAP_SIGNAL = 0.8  # Maximum signal from gap (before momentum adjustment)
+_GAP_WEAKENING_FACTOR = 0.5  # Signal reduction when gap is narrowing
 
 
 @dataclass
@@ -31,6 +70,8 @@ def calculate_ema(
     """
     Calculate single EMA.
 
+    Uses standard EMA formula: alpha = 2 / (period + 1)
+
     Args:
         prices: Series of closing prices
         period: EMA period
@@ -49,6 +90,9 @@ def calculate_ema_crossover(
     """
     Calculate EMA crossover system.
 
+    Computes both EMAs and detects crossover points where the fast EMA
+    crosses above or below the slow EMA.
+
     Args:
         prices: Series of closing prices
         fast_period: Fast EMA period (default: 9)
@@ -61,7 +105,6 @@ def calculate_ema_crossover(
     ema_slow = calculate_ema(prices, slow_period)
 
     # Detect crossovers using numpy to avoid pandas dtype issues
-    import numpy as np
     fast_above_slow = (ema_fast > ema_slow).to_numpy().astype(bool)
     fast_above_slow_prev = np.concatenate([[False], fast_above_slow[:-1]])
 
@@ -79,42 +122,22 @@ def calculate_ema_crossover(
     )
 
 
-def get_ema_signal(ema_result: EMAResult) -> int:
-    """
-    Get trading signal from EMA crossover (binary version).
-
-    Args:
-        ema_result: EMA calculation result
-
-    Returns:
-        +1 for buy signal, -1 for sell signal, 0 for neutral
-    """
-    if len(ema_result.ema_fast) == 0:
-        return 0
-
-    # Check for crossover in most recent candle
-    if ema_result.crossover_up.iloc[-1]:
-        return 1
-
-    if ema_result.crossover_down.iloc[-1]:
-        return -1
-
-    return 0
-
-
 def get_ema_signal_graduated(ema_result: EMAResult) -> float:
     """
     Get graduated trading signal from EMA position and momentum.
 
     Returns continuous signal based on:
-    1. Fresh crossover: +/- 1.0 (strongest)
-    2. Position + momentum: scaled by gap size and whether gap is widening
+    1. Fresh crossover: +/- 1.0 (strongest signal)
+    2. Position + momentum: scaled by gap size and trend direction
 
     Zones:
     - Fresh crossover: +/- 1.0
-    - Gap > 0.3% and widening: +/- 0.4 to 0.8
-    - Gap > 0.3% but narrowing: +/- 0.2 to 0.4
+    - Gap > 0.3% and widening: +/- 0.4 to 0.8 (scaled by gap)
+    - Gap > 0.3% but narrowing: +/- 0.2 to 0.4 (reduced for weakening)
     - Gap < 0.3%: 0.0 (dead zone)
+
+    The momentum factor (gap widening vs narrowing) helps distinguish
+    between strengthening and weakening trends.
 
     Args:
         ema_result: EMA calculation result
@@ -148,19 +171,19 @@ def get_ema_signal_graduated(ema_result: EMAResult) -> float:
     prev_gap = (fast_prev - slow_prev) / slow_prev * 100
     gap_widening = abs(current_gap) > abs(prev_gap)
 
-    # Dead zone: gap < 0.3%
-    if abs(current_gap) < 0.3:
+    # Dead zone: gap below threshold
+    if abs(current_gap) < _GAP_DEAD_ZONE_PERCENT:
         return 0.0
 
     # Bullish: fast > slow
     if current_gap > 0:
-        base = min(0.8, current_gap / 2)  # scale by gap size, max 0.8
-        return base if gap_widening else base * 0.5  # reduce if momentum fading
+        base = min(_MAX_GAP_SIGNAL, current_gap / 2)  # scale by gap size
+        return base if gap_widening else base * _GAP_WEAKENING_FACTOR
 
     # Bearish: fast < slow
     if current_gap < 0:
-        base = max(-0.8, current_gap / 2)
-        return base if gap_widening else base * 0.5
+        base = max(-_MAX_GAP_SIGNAL, current_gap / 2)
+        return base if gap_widening else base * _GAP_WEAKENING_FACTOR
 
     return 0.0
 
@@ -168,6 +191,11 @@ def get_ema_signal_graduated(ema_result: EMAResult) -> float:
 def get_ema_trend(ema_result: EMAResult) -> str:
     """
     Determine current trend based on EMA positions.
+
+    Uses the percentage gap between fast and slow EMA to classify trend:
+    - > 1.0%: Bullish
+    - < -1.0%: Bearish
+    - Otherwise: Neutral
 
     Args:
         ema_result: EMA calculation result
@@ -181,15 +209,14 @@ def get_ema_trend(ema_result: EMAResult) -> str:
     fast = ema_result.ema_fast.iloc[-1]
     slow = ema_result.ema_slow.iloc[-1]
 
-    if pd.isna(fast) or pd.isna(slow):
+    if pd.isna(fast) or pd.isna(slow) or slow == 0:
         return "neutral"
 
-    # Strong bullish: fast significantly above slow
     diff_percent = (fast - slow) / slow * 100
 
-    if diff_percent > 1.0:
+    if diff_percent > _TREND_THRESHOLD_PERCENT:
         return "bullish"
-    elif diff_percent < -1.0:
+    elif diff_percent < -_TREND_THRESHOLD_PERCENT:
         return "bearish"
 
     return "neutral"
@@ -198,6 +225,9 @@ def get_ema_trend(ema_result: EMAResult) -> str:
 def get_ema_trend_from_values(ema_fast: float, ema_slow: float) -> str:
     """
     Determine current trend from raw EMA values.
+
+    Convenience function when you already have the EMA values and don't
+    need to work with the full EMAResult object.
 
     Args:
         ema_fast: Current fast EMA value
@@ -211,43 +241,9 @@ def get_ema_trend_from_values(ema_fast: float, ema_slow: float) -> str:
 
     diff_percent = (ema_fast - ema_slow) / ema_slow * 100
 
-    if diff_percent > 1.0:
+    if diff_percent > _TREND_THRESHOLD_PERCENT:
         return "bullish"
-    elif diff_percent < -1.0:
+    elif diff_percent < -_TREND_THRESHOLD_PERCENT:
         return "bearish"
 
     return "neutral"
-
-
-def get_price_vs_ema_signal(
-    price: float,
-    ema_result: EMAResult,
-) -> int:
-    """
-    Get signal based on price position relative to EMAs.
-
-    Args:
-        price: Current price
-        ema_result: EMA calculation result
-
-    Returns:
-        +1 if bullish, -1 if bearish, 0 if neutral
-    """
-    if len(ema_result.ema_fast) == 0:
-        return 0
-
-    fast = ema_result.ema_fast.iloc[-1]
-    slow = ema_result.ema_slow.iloc[-1]
-
-    if pd.isna(fast) or pd.isna(slow):
-        return 0
-
-    # Price above both EMAs: bullish
-    if price > fast and price > slow:
-        return 1
-
-    # Price below both EMAs: bearish
-    if price < fast and price < slow:
-        return -1
-
-    return 0

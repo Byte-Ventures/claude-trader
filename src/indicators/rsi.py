@@ -6,13 +6,42 @@ Values range from 0 to 100:
 - < 30: Oversold (potential buy signal)
 - > 70: Overbought (potential sell signal)
 
-For aggressive trading, we use tighter thresholds:
-- < 35: Oversold
-- > 65: Overbought
+Algorithm:
+    This implementation uses Wilder's Smoothed Moving Average (SMMA), which is
+    the standard RSI calculation method. Wilder's smoothing uses alpha = 1/period
+    rather than the standard EMA formula of alpha = 2/(period+1).
+
+    Wilder's SMMA formula:
+        SMMA(i) = ((SMMA(i-1) * (period - 1)) + current_value) / period
+
+    This is equivalent to EWM with alpha = 1/period, which provides a smoother
+    result than standard EMA and is the original formula from Welles Wilder's
+    1978 book "New Concepts in Technical Trading Systems".
+
+Signal Generation:
+    The graduated signal function divides RSI into zones:
+    - RSI <= oversold (35): Strong buy signal (+1.0)
+    - RSI 35-45: Moderate buy signal (+0.3 to +0.7, linearly scaled)
+    - RSI 45-55: Dead zone (0.0) - no signal to avoid noise
+    - RSI 55-65: Moderate sell signal (-0.3 to -0.7, linearly scaled)
+    - RSI >= overbought (65): Strong sell signal (-1.0)
+
+Parameters:
+    - period: 14 (Wilder's original recommendation, good for swing trading)
+    - oversold: 35 (more aggressive than standard 30)
+    - overbought: 65 (more aggressive than standard 70)
+
+Integration:
+    Used by SignalScorer with 25% weight. Combined with MACD, Bollinger Bands,
+    EMA crossover, and volume for confluence-based trading signals.
 """
 
 import pandas as pd
 import numpy as np
+
+# Dead zone thresholds for graduated signal
+_RSI_DEAD_ZONE_LOW = 45
+_RSI_DEAD_ZONE_HIGH = 55
 
 
 def calculate_rsi(
@@ -20,11 +49,14 @@ def calculate_rsi(
     period: int = 14,
 ) -> pd.Series:
     """
-    Calculate RSI (Relative Strength Index).
+    Calculate RSI using Wilder's Smoothed Moving Average.
+
+    Uses Wilder's original smoothing method (alpha = 1/period) rather than
+    standard EMA (alpha = 2/(period+1)) for more stable signals.
 
     Args:
         prices: Series of closing prices
-        period: RSI calculation period (default: 14)
+        period: RSI calculation period (default: 14, Wilder's recommendation)
 
     Returns:
         Series of RSI values (0-100)
@@ -36,9 +68,11 @@ def calculate_rsi(
     gains = delta.where(delta > 0, 0.0)
     losses = (-delta.where(delta < 0, 0.0))
 
-    # Calculate average gains and losses using exponential moving average
-    avg_gains = gains.ewm(span=period, adjust=False).mean()
-    avg_losses = losses.ewm(span=period, adjust=False).mean()
+    # Use Wilder's smoothing: alpha = 1/period
+    # This is equivalent to: SMMA(i) = ((SMMA(i-1) * (period-1)) + current) / period
+    alpha = 1.0 / period
+    avg_gains = gains.ewm(alpha=alpha, adjust=False).mean()
+    avg_losses = losses.ewm(alpha=alpha, adjust=False).mean()
 
     # Calculate relative strength
     rs = avg_gains / avg_losses.replace(0, np.inf)
@@ -88,9 +122,9 @@ def get_rsi_signal_graduated(
 
     Zones:
     - RSI <= oversold (35): +1.0 (strong buy)
-    - RSI 35-45: +0.3 to +0.7 (moderate buy)
+    - RSI 35-45: +0.3 to +0.7 (moderate buy, linearly scaled)
     - RSI 45-55: 0.0 (dead zone)
-    - RSI 55-65: -0.3 to -0.7 (moderate sell)
+    - RSI 55-65: -0.3 to -0.7 (moderate sell, linearly scaled)
     - RSI >= overbought (65): -1.0 (strong sell)
 
     Args:
@@ -105,70 +139,21 @@ def get_rsi_signal_graduated(
         return 0.0
 
     # Dead zone: 45-55 returns 0
-    if 45 <= rsi_value <= 55:
+    if _RSI_DEAD_ZONE_LOW <= rsi_value <= _RSI_DEAD_ZONE_HIGH:
         return 0.0
 
-    # Bullish zones (below 45)
-    if rsi_value < 45:
+    # Bullish zones (below dead zone)
+    if rsi_value < _RSI_DEAD_ZONE_LOW:
         if rsi_value <= oversold:  # <= 35: strong buy
             return 1.0
         else:  # 35-45: scaled buy (0.3 to 0.7)
-            return 0.3 + 0.4 * (45 - rsi_value) / (45 - oversold)
+            return 0.3 + 0.4 * (_RSI_DEAD_ZONE_LOW - rsi_value) / (_RSI_DEAD_ZONE_LOW - oversold)
 
-    # Bearish zones (above 55)
-    if rsi_value > 55:
+    # Bearish zones (above dead zone)
+    if rsi_value > _RSI_DEAD_ZONE_HIGH:
         if rsi_value >= overbought:  # >= 65: strong sell
             return -1.0
         else:  # 55-65: scaled sell (-0.3 to -0.7)
-            return -0.3 - 0.4 * (rsi_value - 55) / (overbought - 55)
+            return -0.3 - 0.4 * (rsi_value - _RSI_DEAD_ZONE_HIGH) / (overbought - _RSI_DEAD_ZONE_HIGH)
 
     return 0.0
-
-
-def is_rsi_divergence(
-    prices: pd.Series,
-    rsi: pd.Series,
-    lookback: int = 10,
-) -> tuple[bool, bool]:
-    """
-    Detect RSI divergence (price and RSI moving in opposite directions).
-
-    Bullish divergence: Price makes lower low, RSI makes higher low
-    Bearish divergence: Price makes higher high, RSI makes lower high
-
-    Args:
-        prices: Series of closing prices
-        rsi: Series of RSI values
-        lookback: Number of periods to look back
-
-    Returns:
-        Tuple of (bullish_divergence, bearish_divergence)
-    """
-    if len(prices) < lookback or len(rsi) < lookback:
-        return False, False
-
-    recent_prices = prices.tail(lookback)
-    recent_rsi = rsi.tail(lookback)
-
-    # Find local minima and maxima
-    price_min_idx = recent_prices.idxmin()
-    price_max_idx = recent_prices.idxmax()
-    rsi_min_idx = recent_rsi.idxmin()
-    rsi_max_idx = recent_rsi.idxmax()
-
-    current_price = prices.iloc[-1]
-    current_rsi = rsi.iloc[-1]
-
-    # Bullish divergence: lower price low, higher RSI low
-    bullish = (
-        current_price < recent_prices.min() and
-        current_rsi > recent_rsi.min()
-    )
-
-    # Bearish divergence: higher price high, lower RSI high
-    bearish = (
-        current_price > recent_prices.max() and
-        current_rsi < recent_rsi.max()
-    )
-
-    return bullish, bearish

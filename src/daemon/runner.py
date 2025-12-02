@@ -10,6 +10,7 @@ Orchestrates all components:
 """
 
 import asyncio
+import math
 import signal
 import time
 from datetime import date, datetime
@@ -1669,8 +1670,18 @@ class TradingDaemon:
 
         try:
             # Calculate ATR for trailing stop distance
-            atr_result = calculate_atr(candles, period=self.settings.atr_period)
-            atr = atr_result.current
+            high = candles["high"].astype(float)
+            low = candles["low"].astype(float)
+            close = candles["close"].astype(float)
+            atr_result = calculate_atr(high, low, close, period=self.settings.atr_period)
+            atr_value = atr_result.atr.iloc[-1]
+
+            # Validate ATR before using
+            if math.isnan(atr_value) or atr_value <= 0:
+                logger.error("trailing_stop_atr_invalid", atr_value=atr_value)
+                return
+
+            atr = Decimal(str(atr_value))
 
             # Trailing activates at 1 ATR profit from average cost
             activation = avg_cost + atr
