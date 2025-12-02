@@ -183,11 +183,11 @@ class SignalScorer:
         Returns:
             Tuple of (is_momentum_active, reason_string)
         """
-        if len(rsi) < 6 or len(df) < 12:
+        if len(rsi) < 3 or len(df) < 12:
             return False, ""
 
-        # Condition 1: RSI sustained above 60 for 6+ candles
-        recent_rsi = rsi.tail(6)
+        # Condition 1: RSI sustained above 60 for 3+ candles
+        recent_rsi = rsi.tail(3)
         rsi_sustained = bool((recent_rsi > 60).all())
 
         # Condition 2: Price making higher lows (bullish structure)
