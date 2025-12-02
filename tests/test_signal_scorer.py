@@ -1083,6 +1083,45 @@ def test_momentum_configurable_parameters():
     assert scorer.momentum_penalty_reduction == 0.3
 
 
+def test_update_settings_momentum_parameters():
+    """Test update_settings can modify momentum parameters at runtime."""
+    scorer = SignalScorer()
+
+    # Verify defaults
+    assert scorer.momentum_rsi_threshold == 60.0
+    assert scorer.momentum_rsi_candles == 3
+    assert scorer.momentum_price_candles == 12
+    assert scorer.momentum_penalty_reduction == 0.5
+
+    # Update momentum settings
+    scorer.update_settings(
+        momentum_rsi_threshold=70.0,
+        momentum_rsi_candles=5,
+        momentum_price_candles=20,
+        momentum_penalty_reduction=0.3,
+    )
+
+    # Verify updates
+    assert scorer.momentum_rsi_threshold == 70.0
+    assert scorer.momentum_rsi_candles == 5
+    assert scorer.momentum_price_candles == 20
+    assert scorer.momentum_penalty_reduction == 0.3
+
+
+def test_update_settings_momentum_partial_update():
+    """Test update_settings only modifies provided momentum parameters."""
+    scorer = SignalScorer()
+
+    # Update only one momentum parameter
+    scorer.update_settings(momentum_rsi_threshold=75.0)
+
+    # Only the updated parameter should change
+    assert scorer.momentum_rsi_threshold == 75.0
+    assert scorer.momentum_rsi_candles == 3  # Unchanged
+    assert scorer.momentum_price_candles == 12  # Unchanged
+    assert scorer.momentum_penalty_reduction == 0.5  # Unchanged
+
+
 def test_momentum_breakdown_uses_underscore_prefix(scorer, momentum_df):
     """Test momentum flag uses underscore prefix for metadata."""
     result = scorer.calculate_score(momentum_df)

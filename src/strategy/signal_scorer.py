@@ -149,6 +149,10 @@ class SignalScorer:
         ema_fast: Optional[int] = None,
         ema_slow: Optional[int] = None,
         atr_period: Optional[int] = None,
+        momentum_rsi_threshold: Optional[float] = None,
+        momentum_rsi_candles: Optional[int] = None,
+        momentum_price_candles: Optional[int] = None,
+        momentum_penalty_reduction: Optional[float] = None,
     ) -> None:
         """
         Update scorer settings at runtime.
@@ -179,6 +183,14 @@ class SignalScorer:
             self.ema_slow_period = ema_slow
         if atr_period is not None:
             self.atr_period = atr_period
+        if momentum_rsi_threshold is not None:
+            self.momentum_rsi_threshold = momentum_rsi_threshold
+        if momentum_rsi_candles is not None:
+            self.momentum_rsi_candles = momentum_rsi_candles
+        if momentum_price_candles is not None:
+            self.momentum_price_candles = momentum_price_candles
+        if momentum_penalty_reduction is not None:
+            self.momentum_penalty_reduction = momentum_penalty_reduction
 
         logger.info("signal_scorer_settings_updated")
 
