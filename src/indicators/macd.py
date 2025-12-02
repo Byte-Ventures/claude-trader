@@ -1,21 +1,52 @@
 """
 Moving Average Convergence Divergence (MACD) indicator.
 
-MACD shows the relationship between two exponential moving averages:
-- MACD Line: Fast EMA - Slow EMA
-- Signal Line: EMA of MACD Line
-- Histogram: MACD Line - Signal Line
+MACD shows the relationship between two exponential moving averages and is used
+to identify momentum, trend direction, and potential reversal points.
 
-Trading signals:
-- MACD crosses above signal: Buy
-- MACD crosses below signal: Sell
-- Histogram turning positive: Bullish momentum
-- Histogram turning negative: Bearish momentum
+Algorithm:
+    MACD Line = Fast EMA - Slow EMA
+    Signal Line = EMA of MACD Line
+    Histogram = MACD Line - Signal Line
+
+    This implementation uses standard EMA (alpha = 2/(period+1)) which is
+    the conventional method for MACD calculation, as opposed to Wilder's
+    smoothing used in RSI and ATR.
+
+Signal Generation:
+    The graduated signal function uses the histogram normalized by price:
+    - Positive histogram = bullish signal (0 to +1.0)
+    - Negative histogram = bearish signal (0 to -1.0)
+    - MACD above/below signal line adds ±0.2 boost
+
+    Normalization formula:
+        signal = (histogram / price) * HISTOGRAM_SCALE_FACTOR
+
+    This scaling means that a histogram of 0.5% of price produces a
+    full ±1.0 signal, appropriate for typical crypto volatility.
+
+    Dead zone: Very small histogram values (< 0.1 normalized) return 0
+    to avoid noise in the signal.
+
+Parameters:
+    - fast_period: 12 (standard)
+    - slow_period: 26 (standard)
+    - signal_period: 9 (standard)
+
+Integration:
+    Used by SignalScorer with 25% weight. Combined with RSI, Bollinger Bands,
+    EMA crossover, and volume for confluence-based trading signals.
 """
 
 from dataclasses import dataclass
 import pandas as pd
 import numpy as np
+
+# Signal generation constants
+_HISTOGRAM_SCALE_FACTOR = 200  # Scales histogram to 0.5% of price = full signal
+_HISTOGRAM_DEAD_ZONE = 0.1  # Minimum normalized histogram for signal
+_BASE_SIGNAL_CLAMP = 0.8  # Max base signal before relationship boost
+_RELATIONSHIP_BOOST = 0.2  # Boost for MACD/signal line relationship
 
 
 @dataclass
@@ -35,6 +66,9 @@ def calculate_macd(
 ) -> MACDResult:
     """
     Calculate MACD indicator.
+
+    Uses standard EMA calculation (alpha = 2/(period+1)) which is the
+    conventional method for MACD.
 
     Args:
         prices: Series of closing prices
@@ -65,98 +99,6 @@ def calculate_macd(
     )
 
 
-def get_macd_signal(macd_result: MACDResult) -> int:
-    """
-    Get trading signal from MACD.
-
-    Args:
-        macd_result: MACD calculation result
-
-    Returns:
-        +1 for buy signal, -1 for sell signal, 0 for neutral
-    """
-    if len(macd_result.macd_line) < 2:
-        return 0
-
-    # Get current and previous values
-    macd_current = macd_result.macd_line.iloc[-1]
-    macd_prev = macd_result.macd_line.iloc[-2]
-    signal_current = macd_result.signal_line.iloc[-1]
-    signal_prev = macd_result.signal_line.iloc[-2]
-
-    if pd.isna(macd_current) or pd.isna(signal_current):
-        return 0
-
-    # Check for crossover
-    # Buy: MACD crosses above signal
-    if macd_prev <= signal_prev and macd_current > signal_current:
-        return 1
-
-    # Sell: MACD crosses below signal
-    if macd_prev >= signal_prev and macd_current < signal_current:
-        return -1
-
-    return 0
-
-
-def get_macd_histogram_signal(macd_result: MACDResult) -> int:
-    """
-    Get trading signal from MACD histogram.
-
-    Args:
-        macd_result: MACD calculation result
-
-    Returns:
-        +1 for bullish, -1 for bearish, 0 for neutral
-    """
-    if len(macd_result.histogram) < 2:
-        return 0
-
-    hist_current = macd_result.histogram.iloc[-1]
-    hist_prev = macd_result.histogram.iloc[-2]
-
-    if pd.isna(hist_current) or pd.isna(hist_prev):
-        return 0
-
-    # Histogram crosses above zero
-    if hist_prev <= 0 and hist_current > 0:
-        return 1
-
-    # Histogram crosses below zero
-    if hist_prev >= 0 and hist_current < 0:
-        return -1
-
-    # Histogram increasing (bullish momentum)
-    if hist_current > 0 and hist_current > hist_prev:
-        return 1
-
-    # Histogram decreasing (bearish momentum)
-    if hist_current < 0 and hist_current < hist_prev:
-        return -1
-
-    return 0
-
-
-def is_macd_converging(macd_result: MACDResult, lookback: int = 5) -> bool:
-    """
-    Check if MACD and signal lines are converging.
-
-    Args:
-        macd_result: MACD calculation result
-        lookback: Number of periods to analyze
-
-    Returns:
-        True if lines are converging
-    """
-    if len(macd_result.histogram) < lookback:
-        return False
-
-    recent_hist = macd_result.histogram.tail(lookback).abs()
-
-    # Lines are converging if histogram is getting smaller
-    return recent_hist.iloc[-1] < recent_hist.iloc[0]
-
-
 def get_macd_signal_graduated(macd_result: MACDResult, price: float) -> float:
     """
     Get graduated trading signal from MACD (-1.0 to +1.0).
@@ -164,8 +106,11 @@ def get_macd_signal_graduated(macd_result: MACDResult, price: float) -> float:
     Uses histogram normalized by price to determine signal strength:
     - Positive histogram = bullish (0 to +1.0)
     - Negative histogram = bearish (0 to -1.0)
-    - MACD above signal line adds bullish boost
-    - MACD below signal line adds bearish boost
+    - MACD above signal line adds +0.2 boost
+    - MACD below signal line adds -0.2 boost
+
+    The histogram is scaled so that 0.5% of price produces a full ±1.0 signal.
+    A dead zone filters out noise when histogram is very small.
 
     Args:
         macd_result: MACD calculation result
@@ -184,22 +129,21 @@ def get_macd_signal_graduated(macd_result: MACDResult, price: float) -> float:
     if pd.isna(histogram) or pd.isna(macd_line) or pd.isna(signal_line):
         return 0.0
 
-    # Normalize histogram by price (typical range: -0.5% to +0.5% of price)
-    # Multiply by 200 so that 0.5% of price = 1.0 signal
-    hist_normalized = (histogram / price) * 200
+    # Normalize histogram by price (0.5% of price = 1.0 signal)
+    hist_normalized = (histogram / price) * _HISTOGRAM_SCALE_FACTOR
 
     # Dead zone: very small histogram relative to price
-    if abs(hist_normalized) < 0.1:
+    if abs(hist_normalized) < _HISTOGRAM_DEAD_ZONE:
         return 0.0
 
-    # Base signal from histogram (clamp to -0.8 to +0.8)
-    base_signal = max(-0.8, min(0.8, hist_normalized))
+    # Base signal from histogram (clamped to ±0.8)
+    base_signal = max(-_BASE_SIGNAL_CLAMP, min(_BASE_SIGNAL_CLAMP, hist_normalized))
 
     # Boost based on MACD/signal relationship (±0.2)
     if macd_line > signal_line:
-        relationship_boost = 0.2
+        relationship_boost = _RELATIONSHIP_BOOST
     elif macd_line < signal_line:
-        relationship_boost = -0.2
+        relationship_boost = -_RELATIONSHIP_BOOST
     else:
         relationship_boost = 0.0
 

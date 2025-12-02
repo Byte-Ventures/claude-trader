@@ -1,20 +1,54 @@
 """
 Bollinger Bands indicator.
 
-Bollinger Bands consist of:
-- Middle Band: Simple Moving Average (SMA)
-- Upper Band: SMA + (std_dev * multiplier)
-- Lower Band: SMA - (std_dev * multiplier)
+Bollinger Bands are a volatility indicator that consists of three bands:
+- Middle Band: Simple Moving Average (SMA) of price
+- Upper Band: Middle Band + (standard deviation * multiplier)
+- Lower Band: Middle Band - (standard deviation * multiplier)
 
-Trading signals:
-- Price touches lower band: Potential buy (oversold)
-- Price touches upper band: Potential sell (overbought)
-- Bandwidth squeeze: Volatility compression, breakout expected
+Algorithm:
+    Middle Band = SMA(price, period)
+    Standard Deviation = STD(price, period)
+    Upper Band = Middle + (StdDev * multiplier)
+    Lower Band = Middle - (StdDev * multiplier)
+
+    Derived metrics:
+    - Bandwidth = (Upper - Lower) / Middle
+      Measures band width relative to price, useful for detecting squeezes.
+
+    - %B (Percent B) = (Price - Lower) / (Upper - Lower)
+      Shows where price is within the bands:
+      - %B = 0: Price at lower band
+      - %B = 0.5: Price at middle band
+      - %B = 1: Price at upper band
+      - %B < 0 or > 1: Price outside bands
+
+Signal Generation:
+    The graduated signal function uses %B to generate continuous signals:
+    - %B <= 0 (below lower band): +1.0 (strong buy - extreme oversold)
+    - %B 0-0.35: +0.3 to +0.8 (moderate buy, linearly scaled)
+    - %B 0.35-0.65: 0.0 (dead zone - near middle band)
+    - %B 0.65-1.0: -0.3 to -0.8 (moderate sell, linearly scaled)
+    - %B >= 1 (above upper band): -1.0 (strong sell - extreme overbought)
+
+Parameters:
+    - period: 20 (standard, ~1 month of trading days)
+    - std_dev: 2.0 (standard, captures ~95% of price action)
+
+Integration:
+    Used by SignalScorer with 20% weight. Combined with RSI, MACD,
+    EMA crossover, and volume for confluence-based trading signals.
 """
 
 from dataclasses import dataclass
 import pandas as pd
 import numpy as np
+
+# Signal generation constants
+_DEAD_ZONE_LOW = 0.35  # %B below this is bullish zone
+_DEAD_ZONE_HIGH = 0.65  # %B above this is bearish zone
+_MIN_SIGNAL_STRENGTH = 0.3  # Minimum signal in transition zones
+_SIGNAL_RANGE = 0.5  # Signal range in transition zones (0.3 + 0.5 = 0.8 max)
 
 
 @dataclass
@@ -36,13 +70,16 @@ def calculate_bollinger_bands(
     """
     Calculate Bollinger Bands.
 
+    Uses Simple Moving Average (SMA) for the middle band, which is the
+    standard Bollinger Bands calculation method.
+
     Args:
         prices: Series of closing prices
         period: SMA period (default: 20)
         std_dev: Standard deviation multiplier (default: 2.0)
 
     Returns:
-        BollingerResult with all band values
+        BollingerResult with all band values and derived metrics
     """
     # Middle band (SMA)
     middle_band = prices.rolling(window=period).mean()
@@ -58,8 +95,17 @@ def calculate_bollinger_bands(
     bandwidth = (upper_band - lower_band) / middle_band
 
     # %B: where price is within the bands (0 = lower, 1 = upper)
+    # Handle division by zero when bands converge (bandwidth = 0)
     band_width = upper_band - lower_band
-    percent_b = (prices - lower_band) / band_width.replace(0, np.inf)
+    # When bandwidth is 0, set %B to 0.5 (middle) to avoid inf/nan
+    percent_b = pd.Series(
+        np.where(
+            band_width.abs() < 1e-10,
+            0.5,  # Default to middle when bands converge
+            (prices - lower_band) / band_width
+        ),
+        index=prices.index
+    )
 
     return BollingerResult(
         upper_band=upper_band,
@@ -70,40 +116,6 @@ def calculate_bollinger_bands(
     )
 
 
-def get_bollinger_signal(
-    price: float,
-    bollinger: BollingerResult,
-) -> int:
-    """
-    Get trading signal from Bollinger Bands (binary version).
-
-    Args:
-        price: Current price
-        bollinger: Bollinger Bands result
-
-    Returns:
-        +1 for buy signal, -1 for sell signal, 0 for neutral
-    """
-    if len(bollinger.upper_band) == 0:
-        return 0
-
-    upper = bollinger.upper_band.iloc[-1]
-    lower = bollinger.lower_band.iloc[-1]
-
-    if pd.isna(upper) or pd.isna(lower):
-        return 0
-
-    # Price at or below lower band: oversold
-    if price <= lower:
-        return 1
-
-    # Price at or above upper band: overbought
-    if price >= upper:
-        return -1
-
-    return 0
-
-
 def get_bollinger_signal_graduated(
     price: float,
     bollinger: BollingerResult,
@@ -112,16 +124,17 @@ def get_bollinger_signal_graduated(
     Get graduated trading signal based on %B position within bands.
 
     Returns continuous signal based on where price sits within the bands.
+    Uses %B indicator which shows price position relative to the bands.
 
     Zones:
     - %B <= 0 (below lower band): +1.0 (strong buy)
-    - %B 0-0.35: +0.3 to +0.8 (moderate buy)
-    - %B 0.35-0.65: 0.0 (dead zone)
-    - %B 0.65-1.0: -0.3 to -0.8 (moderate sell)
+    - %B 0-0.35: +0.3 to +0.8 (moderate buy, linearly scaled)
+    - %B 0.35-0.65: 0.0 (dead zone - near middle band)
+    - %B 0.65-1.0: -0.3 to -0.8 (moderate sell, linearly scaled)
     - %B >= 1 (above upper band): -1.0 (strong sell)
 
     Args:
-        price: Current price
+        price: Current price (unused but kept for API consistency)
         bollinger: Bollinger Bands result
 
     Returns:
@@ -140,86 +153,18 @@ def get_bollinger_signal_graduated(
     if pct_b >= 1:
         return -1.0  # Above upper band: strong sell
 
-    # Dead zone: 35-65% of band width
-    if 0.35 <= pct_b <= 0.65:
+    # Dead zone: middle portion of band width
+    if _DEAD_ZONE_LOW <= pct_b <= _DEAD_ZONE_HIGH:
         return 0.0
 
-    # Lower zone (0-35%): bullish
-    if pct_b < 0.35:
-        return 0.3 + 0.5 * (0.35 - pct_b) / 0.35  # 0.3 to 0.8
+    # Lower zone (0 to dead zone low): bullish
+    if pct_b < _DEAD_ZONE_LOW:
+        # Scale from 0.3 at dead zone edge to 0.8 near lower band
+        return _MIN_SIGNAL_STRENGTH + _SIGNAL_RANGE * (_DEAD_ZONE_LOW - pct_b) / _DEAD_ZONE_LOW
 
-    # Upper zone (65-100%): bearish
-    if pct_b > 0.65:
-        return -0.3 - 0.5 * (pct_b - 0.65) / 0.35  # -0.3 to -0.8
+    # Upper zone (dead zone high to 1): bearish
+    if pct_b > _DEAD_ZONE_HIGH:
+        # Scale from -0.3 at dead zone edge to -0.8 near upper band
+        return -_MIN_SIGNAL_STRENGTH - _SIGNAL_RANGE * (pct_b - _DEAD_ZONE_HIGH) / (1.0 - _DEAD_ZONE_HIGH)
 
     return 0.0
-
-
-def is_bollinger_squeeze(
-    bollinger: BollingerResult,
-    threshold_percentile: float = 20.0,
-    lookback: int = 50,
-) -> bool:
-    """
-    Detect Bollinger Band squeeze (low volatility).
-
-    A squeeze often precedes a significant price movement.
-
-    Args:
-        bollinger: Bollinger Bands result
-        threshold_percentile: Bandwidth percentile threshold
-        lookback: Number of periods for percentile calculation
-
-    Returns:
-        True if bandwidth is in squeeze territory
-    """
-    if len(bollinger.bandwidth) < lookback:
-        return False
-
-    recent_bandwidth = bollinger.bandwidth.tail(lookback)
-    current_bandwidth = bollinger.bandwidth.iloc[-1]
-
-    if pd.isna(current_bandwidth):
-        return False
-
-    # Calculate percentile of current bandwidth
-    percentile = (recent_bandwidth < current_bandwidth).sum() / len(recent_bandwidth) * 100
-
-    return percentile < threshold_percentile
-
-
-def get_percent_b_signal(bollinger: BollingerResult) -> int:
-    """
-    Get signal based on %B indicator.
-
-    Args:
-        bollinger: Bollinger Bands result
-
-    Returns:
-        +1 for buy, -1 for sell, 0 for neutral
-    """
-    if len(bollinger.percent_b) == 0:
-        return 0
-
-    percent_b = bollinger.percent_b.iloc[-1]
-
-    if pd.isna(percent_b):
-        return 0
-
-    # %B < 0: Price below lower band (very oversold)
-    if percent_b < 0:
-        return 1
-
-    # %B > 1: Price above upper band (very overbought)
-    if percent_b > 1:
-        return -1
-
-    # %B < 0.2: Near lower band (oversold)
-    if percent_b < 0.2:
-        return 1
-
-    # %B > 0.8: Near upper band (overbought)
-    if percent_b > 0.8:
-        return -1
-
-    return 0
