@@ -30,7 +30,7 @@
       "Bash(git push:*)",
       "Bash(pip3 install:*)",
       "Bash(gh pr create:*)",
-      "Bash(pytest:*)"
+      "Bash(git log:*)"
     ],
     "deny": [],
     "ask": []

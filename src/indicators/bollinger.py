@@ -50,6 +50,9 @@ _DEAD_ZONE_HIGH = 0.65  # %B above this is bearish zone
 _MIN_SIGNAL_STRENGTH = 0.3  # Minimum signal in transition zones
 _SIGNAL_RANGE = 0.5  # Signal range in transition zones (0.3 + 0.5 = 0.8 max)
 
+# Epsilon for floating point comparison (band convergence detection)
+_BANDWIDTH_EPSILON = 1e-10
+
 
 @dataclass
 class BollingerResult:
@@ -100,7 +103,7 @@ def calculate_bollinger_bands(
     # When bandwidth is 0, set %B to 0.5 (middle) to avoid inf/nan
     percent_b = pd.Series(
         np.where(
-            band_width.abs() < 1e-10,
+            band_width.abs() < _BANDWIDTH_EPSILON,
             0.5,  # Default to middle when bands converge
             (prices - lower_band) / band_width
         ),

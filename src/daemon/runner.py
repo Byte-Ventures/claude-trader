@@ -10,6 +10,7 @@ Orchestrates all components:
 """
 
 import asyncio
+import math
 import signal
 import time
 from datetime import date, datetime
@@ -1676,7 +1677,6 @@ class TradingDaemon:
             atr_value = atr_result.atr.iloc[-1]
 
             # Validate ATR before using
-            import math
             if math.isnan(atr_value) or atr_value <= 0:
                 logger.error("trailing_stop_atr_invalid", atr_value=atr_value)
                 return
