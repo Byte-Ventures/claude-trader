@@ -93,6 +93,10 @@ class SignalScorer:
         ema_fast: int = 9,
         ema_slow: int = 21,
         atr_period: int = 14,
+        momentum_rsi_threshold: float = 60.0,
+        momentum_rsi_candles: int = 3,
+        momentum_price_candles: int = 12,
+        momentum_penalty_reduction: float = 0.5,
     ):
         """
         Initialize signal scorer.
@@ -100,7 +104,11 @@ class SignalScorer:
         Args:
             weights: Weights for each indicator
             threshold: Minimum score to trigger trade
-            *: Indicator parameters
+            momentum_rsi_threshold: RSI must stay above this for momentum mode (default: 60)
+            momentum_rsi_candles: Number of candles RSI must stay elevated (default: 3)
+            momentum_price_candles: Number of candles to check for higher lows (default: 12)
+            momentum_penalty_reduction: Factor to reduce overbought penalties (default: 0.5 = 50%)
+            *: Other indicator parameters
         """
         self.weights = weights or SignalWeights()
         self.threshold = threshold
@@ -121,6 +129,12 @@ class SignalScorer:
         self.ema_slow_period = ema_slow
         self.atr_period = atr_period
 
+        # Momentum mode parameters
+        self.momentum_rsi_threshold = momentum_rsi_threshold
+        self.momentum_rsi_candles = momentum_rsi_candles
+        self.momentum_price_candles = momentum_price_candles
+        self.momentum_penalty_reduction = momentum_penalty_reduction
+
     def update_settings(
         self,
         threshold: Optional[int] = None,
@@ -135,6 +149,10 @@ class SignalScorer:
         ema_fast: Optional[int] = None,
         ema_slow: Optional[int] = None,
         atr_period: Optional[int] = None,
+        momentum_rsi_threshold: Optional[float] = None,
+        momentum_rsi_candles: Optional[int] = None,
+        momentum_price_candles: Optional[int] = None,
+        momentum_penalty_reduction: Optional[float] = None,
     ) -> None:
         """
         Update scorer settings at runtime.
@@ -165,8 +183,76 @@ class SignalScorer:
             self.ema_slow_period = ema_slow
         if atr_period is not None:
             self.atr_period = atr_period
+        if momentum_rsi_threshold is not None:
+            self.momentum_rsi_threshold = momentum_rsi_threshold
+        if momentum_rsi_candles is not None:
+            self.momentum_rsi_candles = momentum_rsi_candles
+        if momentum_price_candles is not None:
+            self.momentum_price_candles = momentum_price_candles
+        if momentum_penalty_reduction is not None:
+            self.momentum_penalty_reduction = momentum_penalty_reduction
 
         logger.info("signal_scorer_settings_updated")
+
+    def is_momentum_mode(self, df: pd.DataFrame, rsi: pd.Series) -> tuple[bool, str]:
+        """
+        Detect if market is in sustained momentum mode.
+
+        Momentum mode is active when RSI has been elevated for multiple candles
+        and price structure shows higher lows (bullish continuation pattern).
+        When active, overbought penalties are reduced to allow riding trends.
+
+        Args:
+            df: DataFrame with OHLCV data
+            rsi: RSI series
+
+        Returns:
+            Tuple of (is_momentum_active, reason_string)
+        """
+        min_rsi_candles = self.momentum_rsi_candles
+        min_price_candles = self.momentum_price_candles
+
+        if len(rsi) < min_rsi_candles or len(df) < min_price_candles:
+            return False, ""
+
+        # Condition 1: RSI sustained above threshold for N candles
+        # Use dropna() to handle any NaN values in the RSI series
+        recent_rsi = rsi.tail(min_rsi_candles).dropna()
+        if len(recent_rsi) < min_rsi_candles:
+            # Not enough valid RSI values after dropping NaN
+            return False, ""
+        rsi_sustained = bool((recent_rsi > self.momentum_rsi_threshold).all())
+
+        # Condition 2: Price making higher lows (bullish structure)
+        # This checks if recent prices are staying above their local minimums,
+        # indicating buyers are stepping in at progressively higher levels.
+        close = df["close"].astype(float)
+        recent_close = close.tail(min_price_candles)
+
+        # Check for NaN in price data
+        if recent_close.isna().any():
+            return False, ""
+
+        higher_lows = True
+
+        # Iterate through recent candles (starting at index 3 to have a lookback window)
+        # For each candle at position i, compare its price to the minimum of the
+        # previous 3 candles. If current price <= that minimum, we're making lower lows.
+        # Note: i is relative to recent_close (last N candles), not the full DataFrame.
+        for i in range(3, len(recent_close)):
+            # Get minimum of the 3 candles before position i
+            lookback_start = max(0, i - 3)
+            window_min = recent_close.iloc[lookback_start:i].min()
+            # Current candle must be above the local minimum
+            if recent_close.iloc[i] <= window_min:
+                higher_lows = False
+                break
+
+        if rsi_sustained and higher_lows:
+            return True, "sustained_rsi_higher_lows"
+        elif rsi_sustained:
+            return True, "sustained_rsi"
+        return False, ""
 
     def record_oversold_buy(self) -> None:
         """Record an oversold buy for rate limiting during crashes."""
@@ -267,24 +353,47 @@ class SignalScorer:
         # RSI component (graduated: returns -1.0 to +1.0)
         rsi_signal = get_rsi_signal_graduated(indicators.rsi, self.rsi_oversold, self.rsi_overbought)
         rsi_score = int(rsi_signal * self.weights.rsi)
-        breakdown["rsi"] = rsi_score
-        total_score += rsi_score
 
         # MACD component (graduated: returns -1.0 to +1.0)
         macd_signal = get_macd_signal_graduated(macd_result, price)
         macd_score = int(macd_signal * self.weights.macd)
-        breakdown["macd"] = macd_score
-        total_score += macd_score
 
         # Bollinger Bands component (graduated: returns -1.0 to +1.0)
         bb_signal = get_bollinger_signal_graduated(price, bollinger)
         bb_score = int(bb_signal * self.weights.bollinger)
-        breakdown["bollinger"] = bb_score
-        total_score += bb_score
 
         # EMA component (graduated: returns -1.0 to +1.0)
         ema_signal = get_ema_signal_graduated(ema_result)
         ema_score = int(ema_signal * self.weights.ema)
+
+        # Momentum mode: reduce overbought penalties during sustained uptrends
+        momentum_active, momentum_reason = self.is_momentum_mode(df, rsi)
+        if momentum_active:
+            original_rsi = rsi_score
+            original_bb = bb_score
+            # Reduce overbought penalties by configured factor (only negative scores)
+            # Use int() instead of // for symmetric rounding behavior
+            reduction = self.momentum_penalty_reduction
+            if rsi_score < 0:
+                rsi_score = int(rsi_score * reduction)
+            if bb_score < 0:
+                bb_score = int(bb_score * reduction)
+            logger.info(
+                "momentum_mode_active",
+                reason=momentum_reason,
+                rsi_original=original_rsi,
+                rsi_adjusted=rsi_score,
+                bb_original=original_bb,
+                bb_adjusted=bb_score,
+            )
+        breakdown["_momentum_active"] = 1 if momentum_active else 0
+
+        breakdown["rsi"] = rsi_score
+        total_score += rsi_score
+        breakdown["macd"] = macd_score
+        total_score += macd_score
+        breakdown["bollinger"] = bb_score
+        total_score += bb_score
         breakdown["ema"] = ema_score
         total_score += ema_score
 
@@ -377,8 +486,11 @@ class SignalScorer:
         # Calculate confidence with confluence factor
         # Combines magnitude with how many indicators agree
         if action != "hold":
-            # Count agreeing indicators (non-zero contributions)
-            confluence_count = sum(1 for score in breakdown.values() if score != 0)
+            # Count agreeing indicators (non-zero contributions, excluding metadata keys)
+            confluence_count = sum(
+                1 for key, score in breakdown.items()
+                if score != 0 and not key.startswith("_")
+            )
             confluence_factor = confluence_count / 6  # 6 components including trend_filter
 
             # Combine magnitude and confluence (equally weighted)
