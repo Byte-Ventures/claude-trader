@@ -168,16 +168,21 @@ class PositionSizer:
         # Step 6: Apply safety system multiplier
         size_base *= Decimal(str(safety_multiplier))
 
-        # Step 7: Apply maximum position limit
+        # Step 7: Apply maximum position limit (accounting for existing position)
         max_position_base = (total_value * Decimal(str(self.config.max_position_percent / 100))) / current_price
 
         if side == "buy":
-            # For buys, also cap at available quote currency
+            # Calculate how much more we can buy before hitting the position limit
+            max_additional_base = max_position_base - base_balance
+            if max_additional_base <= 0:
+                # Already at or above position limit
+                return self._zero_result(current_price, side)
+            # Also cap at available quote currency
             max_from_balance = quote_balance / current_price
-            size_base = min(size_base, max_position_base, max_from_balance)
+            size_base = min(size_base, max_additional_base, max_from_balance)
         else:  # sell
-            # For sells, cap at available base currency
-            size_base = min(size_base, base_balance, max_position_base)
+            # For sells, only cap at available base currency (no position limit for exits)
+            size_base = min(size_base, base_balance)
 
         # Step 8: Ensure minimum trade size
         size_quote = size_base * current_price

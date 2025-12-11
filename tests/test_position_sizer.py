@@ -233,6 +233,67 @@ def test_position_size_respects_max_position_percent(sizer, sample_df):
     assert result.size_quote <= max_position_quote
 
 
+def test_buy_accounts_for_existing_position(sizer, sample_df):
+    """Test buy size is reduced by existing position to stay within limit."""
+    current_price = Decimal("50000.00")
+    quote_balance = Decimal("100000.00")  # Large balance
+    base_balance = Decimal("0.5")  # Already holding 0.5 BTC = 25000 quote
+    signal_strength = 100
+
+    # Total portfolio = 100000 + (0.5 * 50000) = 125000
+    # Max position (40%) = 50000 quote = 1.0 BTC
+    # Already holding 0.5 BTC, so max additional = 0.5 BTC
+
+    result = sizer.calculate_size(
+        sample_df,
+        current_price,
+        quote_balance,
+        base_balance,
+        signal_strength,
+        side="buy",
+        safety_multiplier=1.0,
+    )
+
+    # Total position after buy should not exceed max_position_percent
+    total_value = quote_balance + (base_balance * current_price)
+    max_position_base = (total_value * Decimal("0.40")) / current_price  # 40%
+    max_additional = max_position_base - base_balance
+
+    assert result.size_base <= max_additional
+
+
+def test_buy_returns_zero_when_at_position_limit(sizer, sample_df):
+    """Test buy returns zero when already at position limit."""
+    current_price = Decimal("50000.00")
+    quote_balance = Decimal("50000.00")
+    base_balance = Decimal("0.5")  # 0.5 BTC = 25000, total = 75000
+    signal_strength = 100
+
+    # Total portfolio = 75000
+    # Current position = 25000 / 75000 = 33.3%
+    # Max position = 40%
+    # Max additional = (75000 * 0.4 / 50000) - 0.5 = 0.6 - 0.5 = 0.1 BTC
+
+    # Now test with a larger existing position
+    base_balance_large = Decimal("1.0")  # 1 BTC = 50000
+    quote_balance_small = Decimal("10000.00")
+    # Total = 60000, current position = 50000/60000 = 83.3% > 40%
+
+    result = sizer.calculate_size(
+        sample_df,
+        current_price,
+        quote_balance_small,
+        base_balance_large,
+        signal_strength,
+        side="buy",
+        safety_multiplier=1.0,
+    )
+
+    # Should return zero since already over position limit
+    assert result.size_base == Decimal("0")
+    assert result.size_quote == Decimal("0")
+
+
 def test_position_size_respects_available_quote_balance(sizer, sample_df):
     """Test buy position size limited by available quote currency."""
     current_price = Decimal("50000.00")
