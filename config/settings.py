@@ -110,6 +110,19 @@ class Settings(BaseSettings):
         description="Seconds between trading checks (fallback when adaptive disabled)"
     )
 
+    # Candle Settings for Technical Analysis
+    candle_interval: str = Field(
+        default="ONE_HOUR",
+        pattern="^(ONE_MINUTE|FIVE_MINUTE|FIFTEEN_MINUTE|THIRTY_MINUTE|ONE_HOUR|TWO_HOUR|SIX_HOUR|ONE_DAY)$",
+        description="Candlestick granularity for technical analysis"
+    )
+    candle_limit: int = Field(
+        default=100,
+        ge=50,
+        le=500,
+        description="Number of candles to fetch for indicator calculation"
+    )
+
     # Adaptive Interval Settings
     adaptive_interval_enabled: bool = Field(
         default=True,

@@ -535,8 +535,8 @@ class TradingDaemon:
             current_price = self.client.get_current_price(self.settings.trading_pair)
             candles = self.client.get_candles(
                 self.settings.trading_pair,
-                granularity="ONE_HOUR",
-                limit=100,
+                granularity=self.settings.candle_interval,
+                limit=self.settings.candle_limit,
             )
 
             # Persist candles to rate_history (separate try/except - don't affect trading)
@@ -547,7 +547,7 @@ class TradingDaemon:
                         candles=candle_dicts,
                         symbol=self.settings.trading_pair,
                         exchange=self.exchange_name,
-                        interval="1h",
+                        interval=self.settings.candle_interval,
                         is_paper=self.settings.is_paper_trading,
                     )
                     if inserted > 0:
@@ -1530,8 +1530,8 @@ class TradingDaemon:
             current_price = self.client.get_current_price(self.settings.trading_pair)
             candles = self.client.get_candles(
                 self.settings.trading_pair,
-                granularity="ONE_HOUR",
-                limit=100,
+                granularity=self.settings.candle_interval,
+                limit=self.settings.candle_limit,
             )
 
             # Calculate indicators
@@ -1934,7 +1934,7 @@ class TradingDaemon:
             candles = self.client.get_candles(
                 self.settings.trading_pair,
                 self.settings.candle_interval,
-                limit=100,
+                limit=self.settings.candle_limit,
             )
             self._create_trailing_stop(
                 entry_price=avg_cost,
