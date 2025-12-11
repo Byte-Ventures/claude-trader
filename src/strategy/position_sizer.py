@@ -173,9 +173,16 @@ class PositionSizer:
 
         if side == "buy":
             # Calculate how much more we can buy before hitting the position limit
+            # Note: This uses position_sizer's max (40% default) as the target.
+            # The validator has a separate hard limit (80% default) as a safety net.
             max_additional_base = max_position_base - base_balance
             if max_additional_base <= 0:
                 # Already at or above position limit
+                logger.debug(
+                    "buy_size_zero_at_position_limit",
+                    base_balance=str(base_balance),
+                    max_position_base=str(max_position_base),
+                )
                 return self._zero_result(current_price, side)
             # Also cap at available quote currency
             max_from_balance = quote_balance / current_price

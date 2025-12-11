@@ -259,7 +259,10 @@ def test_buy_accounts_for_existing_position(sizer, sample_df):
     max_position_base = (total_value * Decimal("0.40")) / current_price  # 40%
     max_additional = max_position_base - base_balance
 
-    assert result.size_base <= max_additional
+    # Should allow some buy since under position limit
+    assert result.size_base > Decimal("0"), "Should allow buying when under position limit"
+    # But should not exceed the remaining room
+    assert result.size_base <= max_additional, "Should not exceed position limit"
 
 
 def test_buy_returns_zero_when_at_position_limit(sizer, sample_df):
