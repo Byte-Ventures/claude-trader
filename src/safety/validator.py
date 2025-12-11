@@ -45,7 +45,7 @@ class ValidationResult:
 class ValidatorConfig:
     """Configuration for order validator."""
 
-    min_trade_quote: float = 10.0  # Minimum trade size in quote currency
+    min_trade_quote: float = 100.0  # Minimum trade size in quote currency
     max_position_percent: float = 80.0  # Maximum position as % of portfolio
     price_sanity_percent: float = 5.0  # Max deviation from market price
 

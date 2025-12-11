@@ -28,7 +28,7 @@ class PositionSizeConfig:
     max_position_percent: float = 40.0  # Maximum 40% of portfolio (conservative)
     risk_per_trade_percent: float = 0.5  # Risk 0.5% per trade (conservative)
     stop_loss_atr_multiplier: float = 1.5  # Stop at 1.5x ATR
-    min_trade_quote: float = 10.0  # Minimum trade size in quote currency
+    min_trade_quote: float = 100.0  # Minimum trade size in quote currency
 
 
 @dataclass

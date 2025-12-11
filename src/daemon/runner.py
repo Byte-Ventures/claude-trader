@@ -195,7 +195,7 @@ class TradingDaemon:
         # Initialize order validator
         self.validator = OrderValidator(
             config=ValidatorConfig(
-                min_trade_quote=10.0,
+                min_trade_quote=100.0,
                 max_position_percent=settings.max_position_percent,
             ),
             kill_switch=self.kill_switch,
