@@ -122,7 +122,7 @@ def validator_with_safety(config, kill_switch_mock, circuit_breaker_mock, loss_l
 def test_initialization_default_config():
     """Test validator initializes with default config."""
     validator = OrderValidator()
-    assert validator.config.min_trade_quote == 10.0
+    assert validator.config.min_trade_quote == 100.0
     assert validator.config.max_position_percent == 80.0
     assert validator.config.price_sanity_percent == 5.0
 

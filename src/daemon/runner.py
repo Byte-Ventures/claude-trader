@@ -154,6 +154,7 @@ class TradingDaemon:
                 market_research_enabled=settings.market_research_enabled,
                 ai_web_search_enabled=settings.ai_web_search_enabled,
                 market_research_cache_minutes=settings.market_research_cache_minutes,
+                candle_interval=settings.candle_interval,
             )
             logger.info(
                 "multi_agent_trade_reviewer_initialized",
@@ -405,6 +406,7 @@ class TradingDaemon:
                 self.trade_reviewer.position_reduction = new_settings.position_reduction
                 self.trade_reviewer.delay_minutes = new_settings.delay_minutes
                 self.trade_reviewer.interesting_hold_margin = new_settings.interesting_hold_margin
+                self.trade_reviewer.candle_interval = new_settings.candle_interval
 
             logger.info(
                 "config_reload_complete",

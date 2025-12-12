@@ -164,7 +164,7 @@ def test_default_initialization():
     assert sizer.config.max_position_percent == 40.0
     assert sizer.config.risk_per_trade_percent == 0.5
     assert sizer.config.stop_loss_atr_multiplier == 1.5
-    assert sizer.config.min_trade_quote == 10.0
+    assert sizer.config.min_trade_quote == 100.0
     assert sizer.atr_period == 14
     assert sizer.take_profit_multiplier == 2.0
 
