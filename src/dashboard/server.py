@@ -6,14 +6,24 @@ from pathlib import Path
 
 import structlog
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from slowapi.errors import RateLimitExceeded
 
 from config.settings import get_settings
 from src.state.database import Database
 
-from .routes import router, get_db
+from .routes import router, get_db, limiter
 from .websocket import manager
+
+
+def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
+    """Handle rate limit exceeded errors."""
+    return JSONResponse(
+        status_code=429,
+        content={"detail": f"Rate limit exceeded: {exc.detail}"},
+    )
 
 logger = structlog.get_logger(__name__)
 
@@ -25,7 +35,8 @@ _db = None
 async def state_broadcaster(db: Database):
     """Background task to poll DB and broadcast state updates."""
     settings = get_settings()
-    last_notification_id = 0
+    seen_notification_ids: set[int] = set()
+    max_seen_ids = 500  # Prevent unbounded growth
     error_count = 0
     max_backoff = 30  # Max backoff in seconds
 
@@ -44,7 +55,7 @@ async def state_broadcaster(db: Database):
                     new_notifications = []
                     if notifications:
                         for n in notifications:
-                            if n.id > last_notification_id:
+                            if n.id not in seen_notification_ids:
                                 new_notifications.append({
                                     "id": n.id,
                                     "type": n.type,
@@ -52,8 +63,12 @@ async def state_broadcaster(db: Database):
                                     "message": n.message,
                                     "created_at": n.created_at.isoformat() if n.created_at else "",
                                 })
-                        if notifications:
-                            last_notification_id = max(n.id for n in notifications)
+                                seen_notification_ids.add(n.id)
+
+                        # Prevent unbounded growth - keep only recent IDs
+                        if len(seen_notification_ids) > max_seen_ids:
+                            seen_notification_ids.clear()
+                            seen_notification_ids.update(n.id for n in notifications)
 
                     # Include new notifications in broadcast
                     state["new_notifications"] = new_notifications
@@ -100,6 +115,10 @@ app = FastAPI(
     description="Live trading dashboard with real-time updates",
     lifespan=lifespan,
 )
+
+# Add rate limiter
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
 # Mount static files
 static_dir = Path(__file__).parent.parent / "static"
