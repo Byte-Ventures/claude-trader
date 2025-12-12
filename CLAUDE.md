@@ -119,3 +119,18 @@ The `claude[bot]` automatically reviews PRs. Its comments appear under `/issues/
 - Security vulnerabilities
 - Missing error handling
 - API compatibility issues
+
+### Handling Identified Issues
+
+**All issues identified in PR reviews MUST be handled.**
+
+First, **verify the issue** - Check if the issue actually exists in the code (bot reviews can be wrong).
+
+Then, do ONE of the following:
+
+1. **Fix it** - Commit a fix addressing the issue
+2. **Document why it's not an issue** - Add a code comment explaining why the concern doesn't apply
+3. **Plan to fix later** - Create a TODO comment or issue tracking the fix for a future PR
+4. **Explicitly decline** - Document in PR comments why the suggestion won't be implemented
+
+No issue should be left unacknowledged. When summarizing PR reviews, create a checklist showing how each issue was handled.
