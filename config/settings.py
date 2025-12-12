@@ -368,6 +368,18 @@ class Settings(BaseSettings):
         description="Path to log file"
     )
 
+    # Dashboard
+    dashboard_host: str = Field(
+        default="0.0.0.0",
+        description="Dashboard web server bind address"
+    )
+    dashboard_port: int = Field(
+        default=8081,
+        ge=1024,
+        le=65535,
+        description="Dashboard web server port"
+    )
+
     @field_validator("ema_slow")
     @classmethod
     def validate_ema_slow(cls, v: int, info) -> int:

@@ -60,6 +60,15 @@ if ! cmp -s "$SOURCE_DIR/scripts/claude-trader.service" "/etc/systemd/system/$SE
     systemctl daemon-reload
 fi
 
+# Update dashboard service file if it exists
+if [ -f "$SOURCE_DIR/scripts/claude-trader-dashboard.service" ]; then
+    if ! cmp -s "$SOURCE_DIR/scripts/claude-trader-dashboard.service" "/etc/systemd/system/claude-trader-dashboard.service" 2>/dev/null; then
+        echo "Updating dashboard service file..."
+        cp "$SOURCE_DIR/scripts/claude-trader-dashboard.service" "/etc/systemd/system/claude-trader-dashboard.service"
+        systemctl daemon-reload
+    fi
+fi
+
 # Clear Python bytecode cache to ensure fresh code runs
 echo "Clearing bytecode cache..."
 find "$INSTALL_DIR" -name "*.pyc" -delete 2>/dev/null || true
@@ -77,9 +86,15 @@ echo "Updating dependencies..."
 # Fix ownership
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
-# Restart service
-echo "Starting service..."
+# Restart services
+echo "Starting services..."
 systemctl start "$SERVICE_NAME"
+
+# Restart dashboard if enabled
+if systemctl is-enabled claude-trader-dashboard &>/dev/null; then
+    echo "Restarting dashboard..."
+    systemctl restart claude-trader-dashboard
+fi
 
 echo ""
 echo "=== Update Complete ==="
