@@ -12,19 +12,19 @@ from fastapi.staticfiles import StaticFiles
 from config.settings import get_settings
 from src.state.database import Database
 
-from .routes import router
+from .routes import router, get_db
 from .websocket import manager
 
 logger = structlog.get_logger(__name__)
 
 # Background task handle
 _broadcaster_task = None
+_db = None
 
 
-async def state_broadcaster():
+async def state_broadcaster(db: Database):
     """Background task to poll DB and broadcast state updates."""
     settings = get_settings()
-    db = Database(settings.database_path)
     last_notification_id = 0
     error_count = 0
     max_backoff = 30  # Max backoff in seconds
@@ -73,11 +73,12 @@ async def state_broadcaster():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle."""
-    global _broadcaster_task
+    global _broadcaster_task, _db
 
     # Startup
     logger.info("dashboard_starting")
-    _broadcaster_task = asyncio.create_task(state_broadcaster())
+    _db = get_db()  # Use singleton from routes
+    _broadcaster_task = asyncio.create_task(state_broadcaster(_db))
 
     yield
 
@@ -89,6 +90,9 @@ async def lifespan(app: FastAPI):
             await _broadcaster_task
         except asyncio.CancelledError:
             pass
+    if _db and hasattr(_db, 'engine'):
+        _db.engine.dispose()
+        logger.info("database_connections_closed")
 
 
 app = FastAPI(
@@ -117,7 +121,12 @@ async def websocket_endpoint(websocket: WebSocket):
             # Could handle client commands here if needed
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-    except Exception:
+    except (RuntimeError, asyncio.CancelledError) as e:
+        # Expected errors during shutdown or connection issues
+        logger.debug("websocket_closed", reason=str(e))
+        manager.disconnect(websocket)
+    except Exception as e:
+        logger.error("unexpected_websocket_error", error=str(e), exc_info=True)
         manager.disconnect(websocket)
 
 

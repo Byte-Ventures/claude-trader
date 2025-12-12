@@ -415,8 +415,9 @@ function addNewNotifications(notifications) {
 
             // Prevent memory leak: clear oldest entries if Set gets too large
             if (seenNotificationIds.size > MAX_SEEN_NOTIFICATIONS) {
-                const idsArray = Array.from(seenNotificationIds);
-                seenNotificationIds = new Set(idsArray.slice(-MAX_SEEN_NOTIFICATIONS / 2));
+                const idsToKeep = Array.from(seenNotificationIds).slice(-MAX_SEEN_NOTIFICATIONS / 2);
+                seenNotificationIds.clear();
+                idsToKeep.forEach(id => seenNotificationIds.add(id));
             }
 
             const html = createNotificationHTML(n, true);
