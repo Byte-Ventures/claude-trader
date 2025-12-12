@@ -225,7 +225,7 @@ class TelegramNotifier:
         is_paper: bool = False,
     ) -> None:
         """Send notification for trade execution."""
-        mode = "[SIMULATION] " if is_paper else ""
+        mode = "[PAPER] " if is_paper else ""
         emoji = "🟢" if side == "buy" else "🔴"
 
         message = (
@@ -327,7 +327,7 @@ class TelegramNotifier:
         is_paper: bool = False,
     ) -> None:
         """Send daily trading summary."""
-        mode = "[SIMULATION] " if is_paper else ""
+        mode = "[PAPER] " if is_paper else ""
         pnl_percent = (realized_pnl / starting_balance * 100) if starting_balance > 0 else Decimal("0")
         pnl_emoji = "📈" if realized_pnl >= 0 else "📉"
 
@@ -344,7 +344,7 @@ class TelegramNotifier:
 
     def notify_startup(self, mode: str, balance: Decimal, exchange: str = "Coinbase") -> None:
         """Send notification on bot startup."""
-        display_mode = "SIMULATION" if mode.lower() == "paper" else mode.upper()
+        display_mode = "PAPER" if mode.lower() == "paper" else mode.upper()
         message = (
             f"🤖 <b>Trading Bot Started</b>\n\n"
             f"Exchange: {exchange}\n"
