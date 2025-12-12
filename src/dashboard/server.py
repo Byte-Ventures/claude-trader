@@ -26,6 +26,8 @@ async def state_broadcaster():
     settings = get_settings()
     db = Database(settings.database_path)
     last_notification_id = 0
+    error_count = 0
+    max_backoff = 30  # Max backoff in seconds
 
     logger.info("state_broadcaster_started")
 
@@ -56,10 +58,16 @@ async def state_broadcaster():
                     # Include new notifications in broadcast
                     state["new_notifications"] = new_notifications
                     await manager.broadcast(state)
-        except Exception as e:
-            logger.error("broadcast_error", error=str(e))
 
-        await asyncio.sleep(1.5)  # Poll interval
+            # Reset error count on success
+            error_count = 0
+            await asyncio.sleep(1.5)  # Normal poll interval
+
+        except Exception as e:
+            error_count += 1
+            backoff = min(1.5 * (2 ** error_count), max_backoff)
+            logger.error("broadcast_error", error=str(e), backoff=backoff, error_count=error_count)
+            await asyncio.sleep(backoff)  # Exponential backoff on errors
 
 
 @asynccontextmanager

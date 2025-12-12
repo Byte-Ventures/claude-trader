@@ -10,6 +10,7 @@ let reconnectAttempts = 0;
 let seenNotificationIds = new Set();
 const MAX_RECONNECT_ATTEMPTS = 10;
 const RECONNECT_DELAY = 3000;
+const MAX_SEEN_NOTIFICATIONS = 100;  // Prevent memory leak from unbounded Set
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
@@ -236,7 +237,7 @@ function updateDashboard(state) {
     signalEl.textContent = score > 0 ? `+${score}` : score;
     signalEl.className = 'metric-value ' + (score > 0 ? 'positive' : score < 0 ? 'negative' : 'neutral');
 
-    document.getElementById('signal-action').textContent = state.signal.action.toUpperCase();
+    document.getElementById('signal-threshold').textContent = `Threshold: ${state.signal.threshold}`;
 
     // Update indicators
     const indicators = state.indicators;
@@ -266,9 +267,6 @@ function updateDashboard(state) {
     updateBreakdownBar('breakdown-bollinger', breakdown.bollinger || 0);
     updateBreakdownBar('breakdown-ema', breakdown.ema || 0);
     updateBreakdownBar('breakdown-volume', breakdown.volume || 0);
-
-    // Update threshold info
-    document.getElementById('threshold-info').textContent = `Threshold: ${state.signal.threshold}`;
 
     // Update last update time
     document.getElementById('last-update').textContent = `Last update: ${new Date(state.timestamp).toLocaleTimeString()}`;
@@ -309,7 +307,7 @@ function updateBreakdownBar(id, value) {
 // Update config display
 function updateConfig(config) {
     document.getElementById('trading-pair').textContent = config.trading_pair;
-    document.getElementById('threshold-info').textContent = `Threshold: ${config.signal_threshold}`;
+    document.getElementById('signal-threshold').textContent = `Threshold: ${config.signal_threshold}`;
 }
 
 // Update trades table
@@ -414,6 +412,13 @@ function addNewNotifications(notifications) {
     notifications.forEach(n => {
         if (!seenNotificationIds.has(n.id)) {
             seenNotificationIds.add(n.id);
+
+            // Prevent memory leak: clear oldest entries if Set gets too large
+            if (seenNotificationIds.size > MAX_SEEN_NOTIFICATIONS) {
+                const idsArray = Array.from(seenNotificationIds);
+                seenNotificationIds = new Set(idsArray.slice(-MAX_SEEN_NOTIFICATIONS / 2));
+            }
+
             const html = createNotificationHTML(n, true);
             container.insertAdjacentHTML('afterbegin', html);
 

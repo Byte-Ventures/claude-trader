@@ -1,5 +1,6 @@
 """REST API routes for dashboard."""
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -21,8 +22,9 @@ from .models import (
 router = APIRouter()
 
 
+@lru_cache(maxsize=1)
 def get_db() -> Database:
-    """Get database instance."""
+    """Get singleton database instance."""
     settings = get_settings()
     return Database(settings.database_path)
 
@@ -78,7 +80,7 @@ async def get_candles(
                     RateHistory.symbol == settings.trading_pair,
                     RateHistory.exchange == settings.exchange.value.capitalize(),
                     RateHistory.interval == interval,
-                    RateHistory.is_paper == True,
+                    RateHistory.is_paper == settings.is_paper_trading,
                 )
                 .order_by(RateHistory.timestamp.desc())
                 .limit(limit)
