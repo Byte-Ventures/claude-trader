@@ -62,6 +62,7 @@ def mock_settings():
     settings.ai_review_enabled = False
     settings.openrouter_api_key = None
     settings.hourly_analysis_enabled = False
+    settings.ai_recommendation_ttl_minutes = 20
 
     # Strategy config
     settings.signal_threshold = 50

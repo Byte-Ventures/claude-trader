@@ -295,6 +295,12 @@ class Settings(BaseSettings):
         le=30,
         description="Score margin from threshold for 'interesting hold' analysis"
     )
+    ai_recommendation_ttl_minutes: int = Field(
+        default=20,
+        ge=5,
+        le=60,
+        description="How long AI 'accumulate'/'reduce' recommendations influence thresholds (minutes)"
+    )
     ai_review_all: bool = Field(
         default=False,
         description="Review ALL decisions with AI (for debugging/testing)"

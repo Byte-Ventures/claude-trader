@@ -247,6 +247,12 @@ class TradingDaemon:
                 logger.info("regime_restored_from_db", regime=last_regime)
             logger.info("market_regime_initialized", scale=settings.regime_adjustment_scale)
 
+        # AI recommendation state (for threshold adjustments from interesting holds)
+        self._ai_recommendation: Optional[str] = None  # "accumulate", "reduce", "wait"
+        self._ai_recommendation_confidence: float = 0.0
+        self._ai_recommendation_time: Optional[datetime] = None
+        self._ai_recommendation_ttl_minutes: int = settings.ai_recommendation_ttl_minutes
+
         # Register shutdown handlers
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -315,6 +321,45 @@ class TradingDaemon:
             raise ValueError(
                 f"Trading pair '{trading_pair}' is not valid on {self.exchange_name}: {e}"
             ) from e
+
+    def _get_ai_threshold_adjustment(self, action: str) -> int:
+        """
+        Calculate threshold adjustment based on active AI recommendation.
+
+        When the AI judge recommends "accumulate" or "reduce" on an interesting hold,
+        this temporarily adjusts the threshold to make trading easier.
+
+        Args:
+            action: "buy" or "sell"
+
+        Returns:
+            Negative value to lower threshold (easier to trade), 0 otherwise.
+            Decays linearly over TTL period.
+        """
+        if not self._ai_recommendation or not self._ai_recommendation_time:
+            return 0
+
+        # Check if recommendation has expired
+        elapsed = (datetime.utcnow() - self._ai_recommendation_time).total_seconds() / 60
+        if elapsed > self._ai_recommendation_ttl_minutes:
+            # Clear expired recommendation
+            self._ai_recommendation = None
+            self._ai_recommendation_time = None
+            return 0
+
+        # Calculate decay factor (1.0 at start, 0.0 at TTL)
+        decay = 1.0 - (elapsed / self._ai_recommendation_ttl_minutes)
+
+        # Base adjustment of 15 points, scaled by confidence and decay
+        base_adjustment = 15
+        adjustment = int(base_adjustment * self._ai_recommendation_confidence * decay)
+
+        if self._ai_recommendation == "accumulate" and action == "buy":
+            return -adjustment  # Lower buy threshold (easier to buy)
+        elif self._ai_recommendation == "reduce" and action == "sell":
+            return -adjustment  # Lower sell threshold (easier to sell)
+
+        return 0
 
     def _handle_shutdown(self, signum: int, frame) -> None:
         """Handle shutdown signals."""
@@ -407,6 +452,9 @@ class TradingDaemon:
                 self.trade_reviewer.delay_minutes = new_settings.delay_minutes
                 self.trade_reviewer.interesting_hold_margin = new_settings.interesting_hold_margin
                 self.trade_reviewer.candle_interval = new_settings.candle_interval
+
+            # Update AI recommendation TTL
+            self._ai_recommendation_ttl_minutes = new_settings.ai_recommendation_ttl_minutes
 
             logger.info(
                 "config_reload_complete",
@@ -721,14 +769,37 @@ class TradingDaemon:
             )
             self._last_regime = regime.regime_name
 
-        # Apply regime threshold adjustment to determine effective action
-        effective_threshold = self.settings.signal_threshold + regime.threshold_adjustment
-        if signal_result.score >= effective_threshold:
+        # Apply regime and AI threshold adjustments to determine effective action
+        base_threshold = self.settings.signal_threshold + regime.threshold_adjustment
+        ai_buy_adj = self._get_ai_threshold_adjustment("buy")
+        ai_sell_adj = self._get_ai_threshold_adjustment("sell")
+
+        effective_buy_threshold = base_threshold + ai_buy_adj
+        effective_sell_threshold = base_threshold + ai_sell_adj
+
+        if signal_result.score >= effective_buy_threshold:
             effective_action = "buy"
-        elif signal_result.score <= -effective_threshold:
+        elif signal_result.score <= -effective_sell_threshold:
             effective_action = "sell"
         else:
             effective_action = "hold"
+
+        # Use the more restrictive threshold for logging (when no AI adjustment active)
+        effective_threshold = base_threshold if ai_buy_adj == 0 and ai_sell_adj == 0 else effective_buy_threshold
+
+        # Log when AI adjustment is active
+        if ai_buy_adj != 0 or ai_sell_adj != 0:
+            elapsed = (datetime.utcnow() - self._ai_recommendation_time).total_seconds() / 60
+            decay_pct = (1.0 - elapsed / self._ai_recommendation_ttl_minutes) * 100
+            logger.info(
+                "ai_threshold_adjustment_active",
+                recommendation=self._ai_recommendation,
+                buy_adj=ai_buy_adj,
+                sell_adj=ai_sell_adj,
+                decay_remaining=f"{decay_pct:.0f}%",
+                effective_buy_threshold=effective_buy_threshold,
+                effective_sell_threshold=effective_sell_threshold,
+            )
 
         logger.info(
             "trading_check",
@@ -823,8 +894,18 @@ class TradingDaemon:
                             return  # Skip this iteration (user can check Telegram)
                         # VetoAction.INFO: log but proceed with trade
 
-                    # For interesting holds, just return (already notified Telegram)
+                    # For interesting holds, store recommendation for threshold adjustment
                     if review_type == "interesting_hold":
+                        if review.judge_recommendation in ("accumulate", "reduce"):
+                            self._ai_recommendation = review.judge_recommendation
+                            self._ai_recommendation_confidence = review.judge_confidence
+                            self._ai_recommendation_time = datetime.utcnow()
+                            logger.info(
+                                "ai_recommendation_stored",
+                                recommendation=review.judge_recommendation,
+                                confidence=f"{review.judge_confidence:.2f}",
+                                ttl_minutes=self._ai_recommendation_ttl_minutes,
+                            )
                         return
 
                 except Exception as e:
