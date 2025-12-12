@@ -75,6 +75,11 @@ header h1 {
     color: var(--accent-red);
 }
 
+.last-update {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
 main {
     padding: 1.5rem;
     max-width: 1400px;
