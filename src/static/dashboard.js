@@ -51,6 +51,16 @@ function initChart() {
             secondsVisible: false,
             barSpacing: 12,
         },
+        localization: {
+            timeFormatter: (timestamp) => {
+                const date = new Date(timestamp * 1000);
+                return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            },
+            dateFormatter: (timestamp) => {
+                const date = new Date(timestamp * 1000);
+                return date.toLocaleDateString();
+            },
+        },
     });
 
     candleSeries = chart.addCandlestickSeries({
@@ -97,6 +107,12 @@ function initPerformanceChart() {
         },
         timeScale: {
             borderColor: '#374151',
+        },
+        localization: {
+            dateFormatter: (timestamp) => {
+                const date = new Date(timestamp * 1000);
+                return date.toLocaleDateString();
+            },
         },
     });
 
