@@ -38,6 +38,8 @@ DEFAULT_COOLDOWNS = {
     "order_failed": 1800,     # 30 minutes
     "regime_change": 0,       # Always send (only fires on actual change)
     "trade": 0,               # Always send trade notifications
+    "trade_review": 0,        # Always send actual trade reviews
+    "interesting_hold": 1800, # 30 minutes - throttle repetitive hold alerts
     "daily_summary": 0,       # Always send summaries
     "startup": 0,             # Always send
     "shutdown": 0,            # Always send
@@ -368,6 +370,10 @@ class TelegramNotifier:
         """
         ctx = review.trade_context
 
+        # Determine message type for deduplication
+        # Actual trades always go through, interesting holds get throttled
+        msg_type = "trade_review" if review_type == "trade" else "interesting_hold"
+
         # Format signal breakdown
         breakdown = ctx.get('breakdown', {})
         breakdown_text = self._format_signal_breakdown(breakdown)
@@ -505,7 +511,20 @@ class TelegramNotifier:
                 f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
 
-        self.send_message_sync(message)
+        # For interesting holds, use deduplication to avoid spam
+        # Key on score + recommendation to detect meaningful changes
+        dedup_key = f"{ctx.get('score', 0)}_{review.judge_recommendation}_{review.judge_decision}"
+
+        if not self._should_send(msg_type, dedup_key):
+            logger.debug(
+                "interesting_hold_throttled",
+                score=ctx.get('score'),
+                recommendation=review.judge_recommendation,
+            )
+            return
+
+        if self.send_message_sync(message):
+            self._record_sent(msg_type, dedup_key)
 
     def notify_regime_change(
         self,

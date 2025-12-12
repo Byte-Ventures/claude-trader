@@ -45,8 +45,11 @@ class ValidationResult:
 class ValidatorConfig:
     """Configuration for order validator."""
 
-    min_trade_quote: float = 10.0  # Minimum trade size in quote currency
-    max_position_percent: float = 80.0  # Maximum position as % of portfolio
+    min_trade_quote: float = 100.0  # Minimum trade size in quote currency
+    # Hard safety limit for position size (catches edge cases).
+    # The position sizer has a lower "soft limit" (40%) for normal sizing.
+    # Two-tier design: sizer targets 40%, validator enforces 80% hard stop.
+    max_position_percent: float = 80.0
     price_sanity_percent: float = 5.0  # Max deviation from market price
 
 

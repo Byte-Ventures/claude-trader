@@ -77,11 +77,16 @@ Signal scoring system:
 - Positive scores = bullish signals, negative = bearish
 - Trade executes when |score| >= threshold
 
+Trading timeframe context:
+- Daytrading (short candles): Focus on momentum, quick reversals, tight risk management
+- Swing trading (medium candles): Balance momentum with trend confirmation
+- Position trading (long candles): Emphasize macro trends, fundamentals, wider stops acceptable
+
 Focus on:
 - Favorable indicator readings
 - Positive market conditions
 - Historical patterns supporting this trade
-- Risk/reward opportunity
+- Risk/reward opportunity appropriate for the timeframe
 
 Respond with JSON only:
 {
@@ -102,11 +107,16 @@ Signal scoring system:
 - Positive scores = bullish signals, negative = bearish
 - Trade executes when |score| >= threshold
 
+Trading timeframe context:
+- Daytrading (short candles): Focus on momentum, quick reversals, tight risk management
+- Swing trading (medium candles): Balance momentum with trend confirmation
+- Position trading (long candles): Emphasize macro trends, fundamentals, wider stops acceptable
+
 Analyze:
 - Both positive and negative signals
 - Current market sentiment vs technical signals
 - Risk factors AND opportunities
-- Overall signal quality
+- Overall signal quality relative to the trading timeframe
 
 Respond with JSON only:
 {
@@ -127,11 +137,16 @@ Signal scoring system:
 - Positive scores = bullish signals, negative = bearish
 - Trade executes when |score| >= threshold
 
+Trading timeframe context:
+- Daytrading (short candles): Focus on momentum, quick reversals, tight risk management
+- Swing trading (medium candles): Balance momentum with trend confirmation
+- Position trading (long candles): Emphasize macro trends, fundamentals, wider stops acceptable
+
 Focus on:
 - Warning signs in indicators
 - Market conditions that could hurt this trade
 - Historical patterns suggesting caution
-- Downside risks and potential losses
+- Downside risks appropriate for the timeframe
 
 Respond with JSON only:
 {
@@ -153,12 +168,20 @@ Your job is to:
 1. Consider the strength of each argument
 2. Weigh the confidence levels
 3. Look for consensus or strong disagreement
-4. Make the final decision and recommendation
+4. Consider the trading timeframe (daytrading vs swing vs position trading)
+5. Make the final decision and recommendation
+
+Trading timeframe context:
+- Daytrading: Requires quick decisions, momentum-focused, tight risk management
+- Swing trading: Balance short-term signals with trend confirmation
+- Position trading: Prioritize macro trends, can tolerate more volatility
 
 Decision guidelines:
 - If all three agree, follow the consensus
 - If PRO and NEUTRAL approve with high confidence, likely approve
 - If OPPOSING has very strong arguments (>0.8 confidence), consider rejecting
+- For daytrading: Be more decisive, momentum matters
+- For position trading: Be more patient, wait for stronger confirmation
 - When in doubt, err on the side of caution
 
 Respond with JSON only:
@@ -181,10 +204,15 @@ Signal scoring system:
 - Trade executes when |score| >= threshold
 - Current score's magnitude is below threshold, so the bot holds
 
+Trading timeframe context:
+- Daytrading: Short candles, focus on momentum and quick setups
+- Swing trading: Medium candles, balance momentum with trend
+- Position trading: Long candles, focus on macro trends
+
 Respond with JSON only:
 {
   "sentiment": "bullish"/"bearish"/"neutral",
-  "reasoning": "1-2 sentence explanation of the current market signals",
+  "reasoning": "1-2 sentence explanation of the current market signals, considering the timeframe",
   "confidence": 0.0-1.0
 }"""
 
@@ -332,6 +360,7 @@ class TradeReviewer:
         market_research_enabled: bool = True,
         ai_web_search_enabled: bool = True,
         market_research_cache_minutes: int = 15,
+        candle_interval: str = "ONE_HOUR",
     ):
         """
         Initialize multi-agent trade reviewer.
@@ -350,6 +379,7 @@ class TradeReviewer:
             market_research_enabled: Fetch online research for market analysis
             ai_web_search_enabled: Allow AI models to search web during analysis
             market_research_cache_minutes: Cache duration for research data
+            candle_interval: Candle timeframe for determining trading style
         """
         self.api_key = api_key
         self.db = db
@@ -363,6 +393,7 @@ class TradeReviewer:
         self.review_all = review_all
         self.market_research_enabled = market_research_enabled
         self.ai_web_search_enabled = ai_web_search_enabled
+        self.candle_interval = candle_interval
 
         # Set cache TTL for market research
         set_cache_ttl(market_research_cache_minutes)
@@ -372,6 +403,23 @@ class TradeReviewer:
         self._max_failures = 5
         self._last_failure_time: Optional[datetime] = None
         self._circuit_breaker_reset_hours = 24
+
+    def _get_trading_style(self) -> tuple[str, str]:
+        """
+        Determine trading style based on candle interval.
+
+        Returns:
+            (style_name, style_description) tuple
+        """
+        short_intervals = ("ONE_MINUTE", "FIVE_MINUTE", "FIFTEEN_MINUTE")
+        medium_intervals = ("THIRTY_MINUTE", "ONE_HOUR", "TWO_HOUR")
+
+        if self.candle_interval in short_intervals:
+            return ("daytrading", "short-term daytrading (minutes to hours)")
+        elif self.candle_interval in medium_intervals:
+            return ("swing", "swing trading (hours to days)")
+        else:
+            return ("position", "position trading (days to weeks)")
 
     def should_review(
         self, signal_result: SignalResult, threshold: int
@@ -637,6 +685,7 @@ class TradeReviewer:
         review_type: str,
     ) -> dict:
         """Build context dict for prompts and Telegram."""
+        trading_style, trading_style_desc = self._get_trading_style()
         return {
             "review_type": review_type,
             "action": signal_result.action,
@@ -651,6 +700,9 @@ class TradeReviewer:
             "net_pnl": float(trade_summary.net_pnl),
             "breakdown": signal_result.breakdown,
             "timestamp": datetime.utcnow().isoformat(),
+            "candle_interval": self.candle_interval,
+            "trading_style": trading_style,
+            "trading_style_desc": trading_style_desc,
         }
 
     def _build_reviewer_prompt(self, context: dict) -> str:
@@ -662,6 +714,9 @@ Price: ${context['price']:,.2f}
 Signal Score: {context['score']:+d} (threshold: ±60)
 Signal Breakdown: {json.dumps(context['breakdown'])}
 
+Trading Style: {context['trading_style_desc']}
+Timeframe: {context['candle_interval']} candles
+
 Market Context:
 - Fear & Greed Index: {context['fear_greed']} ({context['fear_greed_class']})
 
@@ -670,7 +725,7 @@ Recent Performance (7 days):
 - Net P&L: ${context['net_pnl']:+,.2f}
 - Total Trades: {context['total_trades']}
 
-Analyze this trade from your assigned perspective."""
+Analyze this trade from your assigned perspective, considering the trading timeframe."""
 
     def _build_judge_prompt(self, reviews: list[AgentReview], context: dict) -> str:
         """Build prompt for judge with all reviews."""
@@ -686,11 +741,12 @@ Analyze this trade from your assigned perspective."""
 
         return f"""Trade Decision: {context['action'].upper()} at ${context['price']:,.2f}
 Signal Score: {context['score']:+d}
+Trading Style: {context['trading_style_desc']}
 
 Agent Reviews:
 {chr(10).join(reviews_text)}
 
-Based on these three perspectives, make the final decision."""
+Based on these three perspectives and the trading timeframe, make the final decision."""
 
     def _build_hold_prompt(self, context: dict) -> str:
         """Build prompt for hold analysis."""
@@ -700,10 +756,13 @@ Signal Score: {context['score']:+d} (need ≥+60 for buy or ≤-60 for sell)
 Price: ${context['price']:,.2f}
 Signal Breakdown: {json.dumps(context['breakdown'])}
 
+Trading Style: {context['trading_style_desc']}
+Timeframe: {context['candle_interval']} candles
+
 Market Context:
 - Fear & Greed Index: {context['fear_greed']} ({context['fear_greed_class']})
 
-Explain what the indicators are showing."""
+Explain what the indicators are showing, considering the trading timeframe."""
 
     # ========== Market Analysis (Multi-Agent) ==========
 

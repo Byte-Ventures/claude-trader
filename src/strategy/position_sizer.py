@@ -25,10 +25,14 @@ logger = structlog.get_logger(__name__)
 class PositionSizeConfig:
     """Configuration for position sizing."""
 
-    max_position_percent: float = 40.0  # Maximum 40% of portfolio (conservative)
+    # Target position limit during order calculation (conservative default).
+    # This is the "soft limit" that guides normal order sizing.
+    # The validator has a separate "hard limit" (80%) that catches edge cases.
+    # Two-tier design: 40% target prevents over-concentration, 80% hard stop for safety.
+    max_position_percent: float = 40.0
     risk_per_trade_percent: float = 0.5  # Risk 0.5% per trade (conservative)
     stop_loss_atr_multiplier: float = 1.5  # Stop at 1.5x ATR
-    min_trade_quote: float = 10.0  # Minimum trade size in quote currency
+    min_trade_quote: float = 100.0  # Minimum trade size in quote currency
 
 
 @dataclass
@@ -168,16 +172,28 @@ class PositionSizer:
         # Step 6: Apply safety system multiplier
         size_base *= Decimal(str(safety_multiplier))
 
-        # Step 7: Apply maximum position limit
+        # Step 7: Apply maximum position limit (accounting for existing position)
         max_position_base = (total_value * Decimal(str(self.config.max_position_percent / 100))) / current_price
 
         if side == "buy":
-            # For buys, also cap at available quote currency
+            # Calculate how much more we can buy before hitting the position limit
+            # Note: This uses position_sizer's max (40% default) as the target.
+            # The validator has a separate hard limit (80% default) as a safety net.
+            max_additional_base = max_position_base - base_balance
+            if max_additional_base <= 0:
+                # Already at or above position limit
+                logger.debug(
+                    "buy_size_zero_at_position_limit",
+                    base_balance=str(base_balance),
+                    max_position_base=str(max_position_base),
+                )
+                return self._zero_result(current_price, side)
+            # Also cap at available quote currency
             max_from_balance = quote_balance / current_price
-            size_base = min(size_base, max_position_base, max_from_balance)
+            size_base = min(size_base, max_additional_base, max_from_balance)
         else:  # sell
-            # For sells, cap at available base currency
-            size_base = min(size_base, base_balance, max_position_base)
+            # For sells, only cap at available base currency (no position limit for exits)
+            size_base = min(size_base, base_balance)
 
         # Step 8: Ensure minimum trade size
         size_quote = size_base * current_price
