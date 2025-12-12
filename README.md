@@ -1,6 +1,8 @@
-# Crypto Trading Bot
+# Claude Bitcoin Trader
 
-An automated cryptocurrency trading bot supporting **Coinbase** and **Kraken** exchanges with multi-indicator confluence strategy, comprehensive safety systems, and paper trading mode.
+*Get Rich or Vibe Trying*
+
+An automated Bitcoin trading bot supporting **Coinbase** and **Kraken** exchanges with multi-indicator confluence strategy, AI-powered trade review, comprehensive safety systems, and paper trading mode.
 
 Works with any trading pair (BTC-USD, BTC-EUR, ETH-USD, etc.).
 
@@ -10,6 +12,7 @@ Works with any trading pair (BTC-USD, BTC-EUR, ETH-USD, etc.).
 - **Multi-Indicator Strategy**: Combines RSI, MACD, Bollinger Bands, EMA crossover, and ATR
 - **Multi-Agent AI Review**: 3 reviewers (Pro/Neutral/Opposing) + judge for trade decisions
 - **Hourly Market Analysis**: AI-powered analysis during volatile conditions
+- **Live Dashboard**: Real-time web dashboard with charts, signals, and trade history
 - **Safety Systems**: Kill switch, circuit breaker, loss limits, order validation
 - **Paper Trading**: Test strategies with virtual money using real market data
 - **Telegram Notifications**: Real-time alerts for trades, errors, and daily summaries
@@ -178,6 +181,25 @@ kill -SIGUSR2 $(pgrep -f "python -m src.main")
 sudo systemctl reload claude-trader
 ```
 
+### Adaptive Check Intervals
+
+The bot can adjust check frequency based on market volatility:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ADAPTIVE_INTERVAL_ENABLED` | `true` | Enable volatility-based intervals |
+| `INTERVAL_LOW_VOLATILITY` | `120` | Seconds between checks (low vol) |
+| `INTERVAL_NORMAL` | `60` | Seconds between checks (normal) |
+| `INTERVAL_HIGH_VOLATILITY` | `30` | Seconds between checks (high vol) |
+| `INTERVAL_EXTREME_VOLATILITY` | `15` | Seconds between checks (extreme) |
+
+### Candle Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CANDLE_INTERVAL` | `ONE_HOUR` | Candlestick granularity for analysis |
+| `CANDLE_LIMIT` | `100` | Number of candles to fetch |
+
 **Reloadable:** signal_threshold, RSI/MACD/Bollinger/EMA parameters, position_size_percent, loss limits, AI settings
 
 **Requires restart:** exchange, trading_pair, trading_mode, database_path
@@ -209,10 +231,46 @@ The bot automatically generates performance reports comparing your portfolio aga
 
 Reports show **alpha** (portfolio return minus BTC return) to measure strategy effectiveness.
 
+## Live Dashboard
+
+A real-time web dashboard showing trading activity, signals, and portfolio status.
+
+### Starting the Dashboard
+
+```bash
+# Terminal 1: Trading daemon
+python -m src.main
+
+# Terminal 2: Dashboard server
+python -m src.dashboard.server
+```
+
+Dashboard accessible at `http://localhost:8081`
+
+### Dashboard Features
+
+- **Candlestick Chart**: Live price action with TradingView Lightweight Charts
+- **Signal Display**: Current signal score (-100 to +100) with threshold indicator
+- **Signal Breakdown**: Visual breakdown of RSI, MACD, Bollinger, EMA, Volume contributions
+- **Portfolio Overview**: Quote/base balances, total value, position percentage
+- **Circuit Breaker Status**: Current safety level (GREEN/YELLOW/RED/BLACK)
+- **Recent Trades**: Last 20 trades with side, size, price, and P&L
+- **Performance Chart**: Portfolio vs BTC buy-and-hold comparison
+- **Notifications Feed**: Real-time trade reviews, market analysis, and alerts
+
+### Dashboard Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DASHBOARD_HOST` | `127.0.0.1` | Bind address (use `0.0.0.0` for network access) |
+| `DASHBOARD_PORT` | `8081` | Web server port |
+
+The dashboard uses WebSocket for real-time updates (1.5s poll interval) and includes rate limiting on all API endpoints.
+
 ## Project Structure
 
 ```
-coinbase-trader/
+claude-trader/
 ├── config/
 │   ├── settings.py          # Pydantic configuration
 │   └── logging_config.py    # Structured logging
@@ -240,10 +298,20 @@ coinbase-trader/
 │   │   └── market_analyzer.py   # Hourly AI market analysis
 │   ├── state/
 │   │   └── database.py          # SQLite persistence
-│   └── daemon/
-│       └── runner.py            # Main loop
+│   ├── daemon/
+│   │   └── runner.py            # Main loop
+│   ├── dashboard/
+│   │   ├── server.py            # FastAPI dashboard server
+│   │   ├── routes.py            # REST API endpoints
+│   │   ├── websocket.py         # WebSocket manager
+│   │   └── models.py            # Pydantic response models
+│   ├── static/
+│   │   ├── dashboard.css        # Dashboard styles
+│   │   └── dashboard.js         # Frontend JavaScript
+│   └── templates/
+│       └── index.html           # Dashboard HTML
 ├── scripts/
-│   ├── coinbase-trader.service  # systemd service file
+│   ├── claude-trader.service    # systemd service file
 │   └── install-service.sh       # Ubuntu install script
 ├── data/                        # SQLite database
 ├── logs/                        # Log files
@@ -263,11 +331,11 @@ cd claude-trader
 sudo ./scripts/install-service.sh
 
 # Configure
-sudo nano /opt/coinbase-trader/.env
+sudo nano /opt/claude-trader/.env
 
 # Start
-sudo systemctl start coinbase-trader
-sudo journalctl -u coinbase-trader -f
+sudo systemctl start claude-trader
+sudo journalctl -u claude-trader -f
 ```
 
 The service will:
@@ -278,15 +346,15 @@ The service will:
 
 **Service commands:**
 ```bash
-sudo systemctl status coinbase-trader   # Check status
-sudo systemctl stop coinbase-trader     # Stop
-sudo systemctl restart coinbase-trader  # Restart
-sudo journalctl -u coinbase-trader -f   # Follow logs
+sudo systemctl status claude-trader   # Check status
+sudo systemctl stop claude-trader     # Stop
+sudo systemctl restart claude-trader  # Restart
+sudo journalctl -u claude-trader -f   # Follow logs
 ```
 
 ### Manual systemd Setup
 
-If you prefer manual installation, copy `scripts/coinbase-trader.service` to `/etc/systemd/system/` and adjust paths.
+If you prefer manual installation, copy `scripts/claude-trader.service` to `/etc/systemd/system/` and adjust paths.
 
 ### launchd (macOS)
 
