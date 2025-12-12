@@ -326,10 +326,11 @@ class Database:
         )
         self.SessionLocal = sessionmaker(bind=self.engine, expire_on_commit=False)
 
-        # Create tables
+        # Create tables - we use create_all() instead of Alembic for simplicity.
+        # SQLite handles new tables automatically; schema changes use _run_migrations().
         Base.metadata.create_all(self.engine)
 
-        # Run migrations for existing databases
+        # Run migrations for existing databases (column renames, etc.)
         self._run_migrations()
 
         logger.info("database_initialized", path=str(db_path))

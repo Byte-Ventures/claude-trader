@@ -23,15 +23,27 @@ from .models import (
 
 router = APIRouter()
 
-# Rate limiter instance
+# Rate limiter instance - limits are intentionally permissive for single-user dashboard:
+# - /api/state: 60/min allows initial polling before WebSocket connects
+# - /api/candles: 30/min is sufficient for page loads and refreshes
+# - /api/performance: 20/min is stricter as it's the most expensive query
 limiter = Limiter(key_func=get_remote_address)
 
 
 @lru_cache(maxsize=1)
 def get_db() -> Database:
-    """Get singleton database instance."""
+    """Get singleton database instance.
+
+    Uses lru_cache for singleton pattern. The Database instance is disposed
+    in server.py lifespan handler on shutdown. This is acceptable for SQLite
+    which handles connection pooling internally.
+    """
     settings = get_settings()
     return Database(settings.database_path)
+
+
+# TODO: Add integration tests for dashboard endpoints (see tests/dashboard/)
+# Priority tests: paper/live data separation, WebSocket reconnection, notification deduplication
 
 
 @router.get("/", response_class=HTMLResponse)

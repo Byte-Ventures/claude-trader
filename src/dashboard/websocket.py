@@ -1,6 +1,7 @@
 """WebSocket connection manager for real-time updates."""
 
 from fastapi import WebSocket
+from starlette.websockets import WebSocketState
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -30,7 +31,9 @@ class ConnectionManager:
         for connection in self.active_connections:
             try:
                 await connection.send_json(message)
-            except Exception:
+            except (RuntimeError, ConnectionError, OSError) as e:
+                # Connection closed or network error - mark for cleanup
+                logger.debug("broadcast_send_failed", error=str(e))
                 disconnected.append(connection)
 
         # Clean up disconnected clients

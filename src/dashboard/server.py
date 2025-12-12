@@ -1,6 +1,7 @@
 """FastAPI dashboard server with WebSocket support."""
 
 import asyncio
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -30,10 +31,12 @@ logger = structlog.get_logger(__name__)
 # Background task handle
 _broadcaster_task = None
 _db = None
+_broadcaster_healthy = True  # Track broadcaster health for /health endpoint
 
 
 async def state_broadcaster(db: Database):
     """Background task to poll DB and broadcast state updates."""
+    global _broadcaster_healthy
     settings = get_settings()
     seen_notification_ids: set[int] = set()
     max_seen_ids = 500  # Prevent unbounded growth
@@ -76,13 +79,23 @@ async def state_broadcaster(db: Database):
 
             # Reset error count on success
             error_count = 0
+            _broadcaster_healthy = True
             await asyncio.sleep(1.5)  # Normal poll interval
 
-        except Exception as e:
+        except (sqlite3.Error, OSError, ConnectionError) as e:
+            # Database or I/O errors - use backoff
             error_count += 1
+            _broadcaster_healthy = error_count < 5  # Unhealthy after 5 consecutive errors
             backoff = min(1.5 * (2 ** error_count), max_backoff)
             logger.error("broadcast_error", error=str(e), backoff=backoff, error_count=error_count)
-            await asyncio.sleep(backoff)  # Exponential backoff on errors
+            await asyncio.sleep(backoff)
+        except Exception as e:
+            # Unexpected errors - log with full traceback but continue
+            error_count += 1
+            _broadcaster_healthy = error_count < 5
+            backoff = min(1.5 * (2 ** error_count), max_backoff)
+            logger.error("broadcast_unexpected_error", error=str(e), exc_info=True, backoff=backoff)
+            await asyncio.sleep(backoff)
 
 
 @asynccontextmanager
@@ -152,7 +165,12 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "ok", "connections": manager.connection_count}
+    status = "ok" if _broadcaster_healthy else "degraded"
+    return {
+        "status": status,
+        "connections": manager.connection_count,
+        "broadcaster": "healthy" if _broadcaster_healthy else "unhealthy",
+    }
 
 
 def main():
