@@ -626,11 +626,11 @@ footer {
     border: 1px solid var(--border-color);
     border-radius: 0.5rem;
     padding: 2rem;
+    width: 90%;
     max-width: 600px;
-    max-height: 80vh;
+    max-height: 70vh;
     overflow-y: auto;
     position: relative;
-    margin: 1rem;
 }
 
 .modal-content h2 {
