@@ -769,6 +769,15 @@ class TradingDaemon:
                 position_mult=regime.position_multiplier,
                 components=regime.components,
             )
+
+            # Save to dashboard notifications
+            self.db.save_notification(
+                type="regime_change",
+                title=f"Regime: {self._last_regime} → {regime.regime_name}",
+                message=f"Threshold adj: {regime.threshold_adjustment:+d}, Position mult: {regime.position_multiplier:.1f}x",
+                is_paper=self.settings.is_paper_trading,
+            )
+
             self._last_regime = regime.regime_name
 
         # Apply regime and AI threshold adjustments to determine effective action
