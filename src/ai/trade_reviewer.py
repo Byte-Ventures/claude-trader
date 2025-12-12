@@ -197,6 +197,134 @@ Recommendation meanings:
 - "accumulate": Good opportunity to buy/add to position
 - "reduce": Consider reducing exposure or taking profits"""
 
+# Hold-specific system prompts for "interesting hold" reviews
+# Key semantic: approved=true means "I AGREE with the bot's hold decision"
+SYSTEM_PROMPT_PRO_HOLD = """You are a Bitcoin trading analyst reviewing a HOLD decision.
+
+The bot decided NOT to trade because the signal score is below threshold.
+Your role (PRO stance): Argue why the HOLD decision is CORRECT.
+
+Signal scoring system:
+- Score ranges from -100 (strong sell) to +100 (strong buy)
+- Trade executes when |score| >= threshold
+- Current score is BELOW threshold, so bot is holding
+
+Trading timeframe context:
+- Daytrading (short candles): Quick setups, momentum-focused
+- Swing trading (medium candles): Balance momentum with trend
+- Position trading (long candles): Macro trends, patience
+
+Focus on:
+- Why the weak signal correctly indicates no action
+- Why patience is appropriate here
+- Risks avoided by not trading
+- Market conditions favoring caution
+
+Respond with JSON only:
+{
+  "approved": true if you AGREE with the hold (bot should stay passive), false if you think bot should act instead,
+  "confidence": 0.0-1.0,
+  "sentiment": "bullish"/"bearish"/"neutral",
+  "summary": "One short sentence (max 15 words) arguing FOR the hold",
+  "reasoning": "2-3 sentences explaining why holding is the right decision"
+}"""
+
+SYSTEM_PROMPT_NEUTRAL_HOLD = """You are a Bitcoin trading analyst reviewing a HOLD decision.
+
+The bot decided NOT to trade because the signal score is below threshold.
+Your role (NEUTRAL stance): Provide balanced analysis on whether the hold is correct.
+
+Signal scoring system:
+- Score ranges from -100 (strong sell) to +100 (strong buy)
+- Trade executes when |score| >= threshold
+- Current score is BELOW threshold, so bot is holding
+
+Trading timeframe context:
+- Daytrading (short candles): Quick setups, momentum-focused
+- Swing trading (medium candles): Balance momentum with trend
+- Position trading (long candles): Macro trends, patience
+
+Analyze:
+- Both reasons to hold AND reasons to act
+- Signal quality relative to threshold
+- Current market conditions
+- Whether the threshold seems appropriate
+
+Respond with JSON only:
+{
+  "approved": true if you AGREE with the hold (bot should stay passive), false if you think bot should act instead,
+  "confidence": 0.0-1.0,
+  "sentiment": "bullish"/"bearish"/"neutral",
+  "summary": "One short sentence (max 15 words) with your balanced view",
+  "reasoning": "2-3 sentences with objective analysis of the hold decision"
+}"""
+
+SYSTEM_PROMPT_OPPOSING_HOLD = """You are a Bitcoin trading analyst reviewing a HOLD decision.
+
+The bot decided NOT to trade because the signal score is below threshold.
+Your role (OPPOSING stance): Argue why the HOLD decision is WRONG.
+
+Signal scoring system:
+- Score ranges from -100 (strong sell) to +100 (strong buy)
+- Trade executes when |score| >= threshold
+- Current score is BELOW threshold, so bot is holding
+
+Trading timeframe context:
+- Daytrading (short candles): Quick setups, momentum-focused
+- Swing trading (medium candles): Balance momentum with trend
+- Position trading (long candles): Macro trends, patience
+
+Focus on:
+- Hidden opportunities being missed
+- Why the threshold might be too conservative
+- Reasons to act despite the weak signal
+- What the bot might be overlooking
+
+Respond with JSON only:
+{
+  "approved": true if you AGREE with the hold (bot should stay passive), false if you think bot should act instead,
+  "confidence": 0.0-1.0,
+  "sentiment": "bullish"/"bearish"/"neutral",
+  "summary": "One short sentence (max 15 words) arguing AGAINST the hold",
+  "reasoning": "2-3 sentences explaining why the bot SHOULD act despite the weak signal"
+}"""
+
+SYSTEM_PROMPT_JUDGE_HOLD = """You are the final decision maker for a Bitcoin trading system reviewing a HOLD decision.
+
+The bot decided NOT to trade because the signal was below threshold.
+You will receive three analyses from different agents:
+1. A PRO stance (arguing the hold is correct)
+2. A NEUTRAL stance (balanced view)
+3. An OPPOSING stance (arguing the hold is wrong)
+
+Your job is to:
+1. Consider the strength of each argument
+2. Weigh the confidence levels
+3. Decide if the bot's HOLD decision is correct
+
+Decision:
+- approved=true → CONFIRM the hold is correct, bot should stay passive
+- approved=false → OVERRIDE the hold, bot should consider acting
+
+Guidelines:
+- If all three agree the hold is correct, confirm it
+- If PRO and NEUTRAL approve with high confidence, confirm the hold
+- If OPPOSING has very strong arguments (>0.8 confidence), consider overriding
+- When in doubt, the hold is usually correct (weak signals = wait)
+
+Respond with JSON only:
+{
+  "approved": true to CONFIRM hold (stay passive), false to OVERRIDE hold (consider acting),
+  "confidence": 0.0-1.0,
+  "recommendation": "wait"/"accumulate"/"reduce",
+  "reasoning": "2-3 sentences explaining your decision"
+}
+
+Recommendation meanings for holds:
+- "wait": Correct to hold, wait for stronger signals
+- "accumulate": Opportunity to buy even with weak signal
+- "reduce": Consider reducing position even with weak signal"""
+
 SYSTEM_PROMPT_HOLD = """You are a Bitcoin trading analyst. Explain why the trading bot is holding instead of trading.
 
 Signal scoring system:
@@ -615,11 +743,20 @@ class TradeReviewer:
         self, model: str, stance: str, context: dict
     ) -> AgentReview:
         """Run single reviewer with assigned stance."""
-        system_prompts = {
-            "pro": SYSTEM_PROMPT_PRO,
-            "neutral": SYSTEM_PROMPT_NEUTRAL,
-            "opposing": SYSTEM_PROMPT_OPPOSING,
-        }
+        # Select prompts based on review type
+        review_type = context.get("review_type", "trade")
+        if review_type == "interesting_hold":
+            system_prompts = {
+                "pro": SYSTEM_PROMPT_PRO_HOLD,
+                "neutral": SYSTEM_PROMPT_NEUTRAL_HOLD,
+                "opposing": SYSTEM_PROMPT_OPPOSING_HOLD,
+            }
+        else:
+            system_prompts = {
+                "pro": SYSTEM_PROMPT_PRO,
+                "neutral": SYSTEM_PROMPT_NEUTRAL,
+                "opposing": SYSTEM_PROMPT_OPPOSING,
+            }
 
         prompt = self._build_reviewer_prompt(context)
         response = await self._call_api(model, system_prompts[stance], prompt)
@@ -653,8 +790,12 @@ class TradeReviewer:
         self, reviews: list[AgentReview], context: dict
     ) -> dict:
         """Run judge to synthesize reviews and make final decision."""
+        # Select judge prompt based on review type
+        review_type = context.get("review_type", "trade")
+        judge_prompt = SYSTEM_PROMPT_JUDGE_HOLD if review_type == "interesting_hold" else SYSTEM_PROMPT_JUDGE
+
         prompt = self._build_judge_prompt(reviews, context)
-        response = await self._call_api(self.judge_model, SYSTEM_PROMPT_JUDGE, prompt)
+        response = await self._call_api(self.judge_model, judge_prompt, prompt)
         data = self._extract_json(response)
 
         approved_raw = data.get("approved", True)
@@ -707,10 +848,10 @@ class TradeReviewer:
 
     def _build_reviewer_prompt(self, context: dict) -> str:
         """Build prompt for reviewer agents."""
-        return f"""Review this trade:
+        review_type = context.get("review_type", "trade")
 
-Action: {context['action'].upper()}
-Price: ${context['price']:,.2f}
+        # Build common context sections
+        common_context = f"""Price: ${context['price']:,.2f}
 Signal Score: {context['score']:+d} (threshold: ±60)
 Signal Breakdown: {json.dumps(context['breakdown'])}
 
@@ -723,23 +864,59 @@ Market Context:
 Recent Performance (7 days):
 - Win Rate: {context['win_rate']:.0f}%
 - Net P&L: ${context['net_pnl']:+,.2f}
-- Total Trades: {context['total_trades']}
+- Total Trades: {context['total_trades']}"""
+
+        if review_type == "interesting_hold":
+            return f"""Review this HOLD decision:
+
+The bot decided NOT to trade because the signal score ({context['score']:+d}) is below the threshold (±60).
+The score is close to threshold, making this an "interesting hold" worth reviewing.
+
+{common_context}
+
+Should the bot stay passive (hold), or should it act despite the weak signal?
+Analyze from your assigned perspective."""
+        else:
+            return f"""Review this trade:
+
+Action: {context['action'].upper()}
+{common_context}
 
 Analyze this trade from your assigned perspective, considering the trading timeframe."""
 
     def _build_judge_prompt(self, reviews: list[AgentReview], context: dict) -> str:
         """Build prompt for judge with all reviews."""
+        review_type = context.get("review_type", "trade")
         reviews_text = []
+
         for review in reviews:
             stance_label = {"pro": "PRO", "neutral": "NEUTRAL", "opposing": "OPPOSING"}[review.stance]
             model_short = review.model.split("/")[-1]
-            verdict = "APPROVE" if review.approved else "REJECT"
+
+            # For holds: approved=true means "agree with hold", approved=false means "should act"
+            if review_type == "interesting_hold":
+                verdict = "HOLD CORRECT" if review.approved else "SHOULD ACT"
+            else:
+                verdict = "APPROVE" if review.approved else "REJECT"
+
             reviews_text.append(
                 f"[{stance_label}] ({model_short}) - {verdict} ({review.confidence:.0%} confidence)\n"
                 f"  Reasoning: {review.reasoning}"
             )
 
-        return f"""Trade Decision: {context['action'].upper()} at ${context['price']:,.2f}
+        if review_type == "interesting_hold":
+            return f"""Hold Decision Review at ${context['price']:,.2f}
+Signal Score: {context['score']:+d} (below threshold ±60)
+Trading Style: {context['trading_style_desc']}
+
+The bot decided NOT to trade. Should this hold be confirmed or overridden?
+
+Agent Reviews:
+{chr(10).join(reviews_text)}
+
+Based on these perspectives, decide: Is the hold correct (stay passive) or should the bot act?"""
+        else:
+            return f"""Trade Decision: {context['action'].upper()} at ${context['price']:,.2f}
 Signal Score: {context['score']:+d}
 Trading Style: {context['trading_style_desc']}
 
