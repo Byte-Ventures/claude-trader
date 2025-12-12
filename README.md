@@ -329,16 +329,24 @@ launchctl load ~/Library/LaunchAgents/com.btc-bot.plist
 - [ ] Start with small position size (default 40% is conservative)
 - [ ] Monitor closely for first 48 hours
 
-## Risk Warning
+## Disclaimer
 
-⚠️ **Trading cryptocurrency is risky.** This bot:
-- Can and will lose money
-- Makes no profit guarantees
-- Requires active monitoring
-- Should start with small amounts
-- Includes fees in P&L calculations but slippage can vary
+⚠️ **WARNING: YOU WILL VERY LIKELY LOSE MONEY** ⚠️
 
-Only trade what you can afford to lose.
+This software is provided for **educational and experimental purposes only**. By using this application, you acknowledge and accept that:
+
+- **You will very likely lose some or all of your money**
+- This bot makes no profit guarantees whatsoever
+- Past performance (if any) does not indicate future results
+- The authors and contributors are not financial advisors
+- The authors and contributors accept no liability for any financial losses
+- Cryptocurrency markets are extremely volatile and unpredictable
+- Automated trading amplifies both gains and losses
+- Technical failures, bugs, or exchange issues can cause unexpected losses
+
+**Do not use money you cannot afford to lose completely.**
+
+This is an experimental project. If you choose to use it with real money, you do so entirely at your own risk.
 
 ## Contributing
 
@@ -352,4 +360,4 @@ See `CLAUDE.md` for detailed branching workflow and coding guidelines.
 
 ## License
 
-MIT
+[AGPL-3.0](LICENSE) - All modifications must be shared under the same license.
