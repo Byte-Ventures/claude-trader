@@ -9,7 +9,8 @@ let ws = null;
 let reconnectAttempts = 0;
 let seenNotificationIds = new Set();
 const MAX_RECONNECT_ATTEMPTS = 10;
-const RECONNECT_DELAY = 3000;
+const BASE_RECONNECT_DELAY = 1000;
+const MAX_RECONNECT_DELAY = 30000;
 const MAX_SEEN_NOTIFICATIONS = 100;  // Prevent memory leak from unbounded Set
 
 // Initialize on page load
@@ -224,11 +225,14 @@ function connectWebSocket() {
         document.getElementById('connection-status').textContent = 'Disconnected';
         document.getElementById('connection-status').className = 'status disconnected';
 
-        // Attempt to reconnect
+        // Attempt to reconnect with exponential backoff and jitter
         if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
             reconnectAttempts++;
-            console.log(`Reconnecting... (attempt ${reconnectAttempts})`);
-            setTimeout(connectWebSocket, RECONNECT_DELAY);
+            const backoff = Math.min(BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts - 1), MAX_RECONNECT_DELAY);
+            const jitter = Math.random() * 1000;  // 0-1s jitter to prevent thundering herd
+            const delay = backoff + jitter;
+            console.log(`Reconnecting in ${Math.round(delay)}ms... (attempt ${reconnectAttempts})`);
+            setTimeout(connectWebSocket, delay);
         }
     };
 

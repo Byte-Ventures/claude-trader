@@ -27,6 +27,8 @@ router = APIRouter()
 # - /api/state: 60/min allows initial polling before WebSocket connects
 # - /api/candles: 30/min is sufficient for page loads and refreshes
 # - /api/performance: 20/min is stricter as it's the most expensive query
+# Note: Without authentication, these limits assume trusted network access.
+# For public deployment, add authentication or tighten limits.
 limiter = Limiter(key_func=get_remote_address)
 
 
@@ -76,7 +78,8 @@ async def get_candles(
     settings = get_settings()
     db = get_db()
 
-    # DB has inconsistent interval formats - try both
+    # DB has inconsistent interval formats (legacy: ONE_MINUTE, new: 1m) - try both.
+    # TODO: Migrate database to consistent format and remove this workaround.
     interval_map = {
         "ONE_MINUTE": "1m",
         "FIVE_MINUTE": "5m",
