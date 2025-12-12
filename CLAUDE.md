@@ -72,6 +72,17 @@ Update the version BEFORE committing.
 4. After review, merge to `develop`
 5. When ready for release, create PR from `develop` to `main`
 
+### Creating PRs to Main
+
+**Before creating a PR from `develop` to `main`, always pull main first:**
+
+```bash
+git fetch origin main
+git log origin/main..develop --oneline  # See actual new commits
+```
+
+This ensures the PR description only includes commits not already in main.
+
 ### Rules
 
 - All merges to `main` must be done via pull requests
