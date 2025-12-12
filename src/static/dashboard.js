@@ -532,3 +532,19 @@ function formatCurrency(value) {
 function formatBTC(value) {
     return value.toFixed(8) + ' BTC';
 }
+
+// FAQ Modal
+(function() {
+    const modal = document.getElementById('faq-modal');
+    const btn = document.getElementById('faq-btn');
+    const close = modal.querySelector('.modal-close');
+
+    btn.onclick = () => modal.classList.add('active');
+    close.onclick = () => modal.classList.remove('active');
+    modal.onclick = (e) => {
+        if (e.target === modal) modal.classList.remove('active');
+    };
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') modal.classList.remove('active');
+    });
+})();
