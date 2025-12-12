@@ -1,3 +1,3 @@
 """Version information for claude-trader."""
 
-__version__ = "1.22.7"
+__version__ = "1.22.8"
