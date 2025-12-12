@@ -342,7 +342,7 @@ function updateTradesTable(trades) {
 
         return `
             <tr>
-                <td>${new Date(trade.executed_at).toLocaleString()}</td>
+                <td>${new Date(trade.executed_at + 'Z').toLocaleString()}</td>
                 <td class="trade-${trade.side}">${trade.side.toUpperCase()}</td>
                 <td>${formatBTC(parseFloat(trade.size))}</td>
                 <td>${formatCurrency(parseFloat(trade.price))}</td>
@@ -465,7 +465,7 @@ function createNotificationHTML(n, isNew) {
                     <span class="notification-type ${n.type}">${n.type.replace('_', ' ')}</span>
                     <span class="notification-title">${escapeHtml(n.title)}</span>
                 </div>
-                <span class="notification-time">${new Date(n.created_at).toLocaleString()}</span>
+                <span class="notification-time">${new Date(n.created_at + 'Z').toLocaleString()}</span>
             </div>
             <div class="notification-message">${escapeHtml(displayMessage)}</div>
             ${truncated ? '<div class="notification-expand-hint">Click to expand</div>' : ''}
