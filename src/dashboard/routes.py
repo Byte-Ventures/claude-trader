@@ -23,12 +23,11 @@ from .models import (
 
 router = APIRouter()
 
-# Rate limiter instance - limits are intentionally permissive for single-user dashboard:
-# - /api/state: 60/min allows initial polling before WebSocket connects
-# - /api/candles: 30/min is sufficient for page loads and refreshes
-# - /api/performance: 20/min is stricter as it's the most expensive query
-# Note: Without authentication, these limits assume trusted network access.
-# For public deployment, add authentication or tighten limits.
+# Rate limiter instance - stricter limits for unauthenticated access:
+# - /api/state: 20/min (WebSocket preferred for real-time updates)
+# - /api/candles: 10/min (page loads and refreshes)
+# - /api/trades, /api/position, /api/stats, /api/config, /api/notifications: 10/min
+# - /api/performance: 5/min (most expensive query)
 limiter = Limiter(key_func=get_remote_address)
 
 
@@ -58,7 +57,7 @@ async def serve_dashboard():
 
 
 @router.get("/api/state")
-@limiter.limit("60/minute")
+@limiter.limit("20/minute")
 async def get_current_state(request: Request) -> Optional[DashboardState]:
     """Get the current trading state from the daemon."""
     db = get_db()
@@ -69,7 +68,7 @@ async def get_current_state(request: Request) -> Optional[DashboardState]:
 
 
 @router.get("/api/candles")
-@limiter.limit("30/minute")
+@limiter.limit("10/minute")
 async def get_candles(
     request: Request,
     limit: int = Query(default=100, ge=1, le=500),
@@ -127,7 +126,7 @@ async def get_candles(
 
 
 @router.get("/api/trades")
-@limiter.limit("30/minute")
+@limiter.limit("10/minute")
 async def get_trades(
     request: Request,
     limit: int = Query(default=20, ge=1, le=100),
@@ -157,7 +156,7 @@ async def get_trades(
 
 
 @router.get("/api/position")
-@limiter.limit("30/minute")
+@limiter.limit("10/minute")
 async def get_position(request: Request) -> Optional[PositionInfo]:
     """Get current position."""
     settings = get_settings()
@@ -180,7 +179,7 @@ async def get_position(request: Request) -> Optional[PositionInfo]:
 
 
 @router.get("/api/stats")
-@limiter.limit("30/minute")
+@limiter.limit("10/minute")
 async def get_daily_stats(request: Request) -> Optional[DailyStatsInfo]:
     """Get today's trading statistics."""
     settings = get_settings()
@@ -201,7 +200,7 @@ async def get_daily_stats(request: Request) -> Optional[DailyStatsInfo]:
 
 
 @router.get("/api/config")
-@limiter.limit("30/minute")
+@limiter.limit("10/minute")
 async def get_config(request: Request) -> dict:
     """Get non-sensitive configuration info."""
     settings = get_settings()
@@ -216,7 +215,7 @@ async def get_config(request: Request) -> dict:
 
 
 @router.get("/api/notifications")
-@limiter.limit("30/minute")
+@limiter.limit("10/minute")
 async def get_notifications(
     request: Request,
     limit: int = Query(default=50, ge=1, le=200),
@@ -243,7 +242,7 @@ async def get_notifications(
 
 
 @router.get("/api/performance")
-@limiter.limit("20/minute")
+@limiter.limit("5/minute")
 async def get_performance(
     request: Request,
     days: int = Query(default=30, ge=1, le=365),
