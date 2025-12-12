@@ -25,7 +25,11 @@ logger = structlog.get_logger(__name__)
 class PositionSizeConfig:
     """Configuration for position sizing."""
 
-    max_position_percent: float = 40.0  # Maximum 40% of portfolio (conservative)
+    # Target position limit during order calculation (conservative default).
+    # This is the "soft limit" that guides normal order sizing.
+    # The validator has a separate "hard limit" (80%) that catches edge cases.
+    # Two-tier design: 40% target prevents over-concentration, 80% hard stop for safety.
+    max_position_percent: float = 40.0
     risk_per_trade_percent: float = 0.5  # Risk 0.5% per trade (conservative)
     stop_loss_atr_multiplier: float = 1.5  # Stop at 1.5x ATR
     min_trade_quote: float = 100.0  # Minimum trade size in quote currency
