@@ -5,7 +5,8 @@
       "Bash(sqlite3:*)",
       "Bash(git log:*)",
       "Bash(gh api:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(gh pr list:*)"
     ],
     "deny": [],
     "ask": []

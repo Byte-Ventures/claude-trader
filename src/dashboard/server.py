@@ -145,7 +145,8 @@ app.include_router(router)
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time updates."""
-    await manager.connect(websocket)
+    if not await manager.connect(websocket):
+        return  # Rate limited, connection already closed
     try:
         while True:
             # Keep connection alive, handle any client messages
