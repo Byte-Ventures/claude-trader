@@ -130,6 +130,8 @@ class TradingDaemon:
             bot_token=settings.telegram_bot_token.get_secret_value() if settings.telegram_bot_token else "",
             chat_id=settings.telegram_chat_id or "",
             enabled=settings.telegram_enabled,
+            db=self.db,
+            is_paper=settings.is_paper_trading,
         )
 
         # Initialize multi-agent AI trade reviewer (optional, via OpenRouter)
@@ -767,6 +769,15 @@ class TradingDaemon:
                 position_mult=regime.position_multiplier,
                 components=regime.components,
             )
+
+            # Save to dashboard notifications
+            self.db.save_notification(
+                type="regime_change",
+                title=f"Regime: {self._last_regime} → {regime.regime_name}",
+                message=f"Threshold adj: {regime.threshold_adjustment:+d}, Position mult: {regime.position_multiplier:.1f}x",
+                is_paper=self.settings.is_paper_trading,
+            )
+
             self._last_regime = regime.regime_name
 
         # Apply regime and AI threshold adjustments to determine effective action
@@ -816,6 +827,47 @@ class TradingDaemon:
             portfolio_value=str(portfolio_value),
             position_pct=f"{position_percent:.1f}%",
         )
+
+        # Persist state for dashboard
+        ind = signal_result.indicators
+        dashboard_state = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "price": str(current_price),
+            "signal": {
+                "score": signal_result.score,
+                "action": effective_action,
+                "threshold": effective_threshold,
+                "breakdown": signal_result.breakdown,
+                "confidence": signal_result.confidence,
+            },
+            "indicators": {
+                "rsi": ind.rsi,
+                "macd_line": ind.macd_line,
+                "macd_signal": ind.macd_signal,
+                "macd_histogram": ind.macd_histogram,
+                "bb_upper": float(ind.bb_upper) if ind.bb_upper else None,
+                "bb_middle": float(ind.bb_middle) if ind.bb_middle else None,
+                "bb_lower": float(ind.bb_lower) if ind.bb_lower else None,
+                "ema_fast": float(ind.ema_fast) if ind.ema_fast else None,
+                "ema_slow": float(ind.ema_slow) if ind.ema_slow else None,
+                "atr": float(ind.atr) if ind.atr else None,
+                "volatility": ind.volatility,
+            },
+            "portfolio": {
+                "quote_balance": str(quote_balance),
+                "base_balance": str(base_balance),
+                "portfolio_value": str(portfolio_value),
+                "position_percent": position_percent,
+            },
+            "regime": regime.regime_name,
+            "safety": {
+                "circuit_breaker": self.circuit_breaker.level.name,
+                "can_trade": self.circuit_breaker.can_trade,
+            },
+            "trading_pair": self.settings.trading_pair,
+            "is_paper": self.settings.is_paper_trading,
+        }
+        self.db.set_state("dashboard_state", dashboard_state)
 
         # Claude AI trade review (if enabled)
         claude_veto_multiplier = 1.0  # Default: no reduction

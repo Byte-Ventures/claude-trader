@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude Trader Dashboard</title>
+    <link rel="stylesheet" href="/static/dashboard.css">
+    <!-- TradingView Lightweight Charts - loaded from CDN. Dashboard requires internet connection. -->
+    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"
+            integrity="sha384-rcCMiCptH4kTlEbg0euOTUKWe72TESbrjElatnG+9BfbmUIV268UK/Pro5biJdGm"
+            crossorigin="anonymous"></script>
+    <script defer data-domain="bitcoinbot.byteventures.se" src="https://plausible.byteventures.se/js/script.js"></script>
+</head>
+<body>
+    <header>
+        <h1>Claude Trader</h1>
+        <button id="faq-btn" class="faq-btn">FAQ</button>
+        <span id="last-update" class="last-update">Last update: --</span>
+        <div id="connection-status" class="status disconnected">Disconnected</div>
+    </header>
+
+    <main>
+        <section class="chart-section">
+            <div id="chart-container"></div>
+        </section>
+
+        <section class="metrics-section">
+            <div class="metric-card price-card">
+                <div class="metric-label">Price</div>
+                <div id="current-price" class="metric-value">--</div>
+                <div id="trading-pair" class="metric-sub">BTC-USD</div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-label">Total Trades</div>
+                <div id="total-trades" class="metric-value">--</div>
+                <div id="last-trade-time" class="metric-sub">--</div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-label">Today's P&L</div>
+                <div id="daily-pnl" class="metric-value">--</div>
+                <div id="daily-pnl-percent" class="metric-sub">--</div>
+            </div>
+
+            <div class="metric-card signal-card">
+                <div class="metric-label">Signal</div>
+                <div id="signal-score" class="metric-value">--</div>
+                <div id="signal-threshold" class="metric-sub">Threshold: --</div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-label">Volatility</div>
+                <div id="volatility-value" class="metric-value">--</div>
+                <div id="regime-value" class="metric-sub">--</div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-label">Circuit Breaker</div>
+                <div id="circuit-breaker" class="metric-value status-green">GREEN</div>
+                <div id="can-trade" class="metric-sub">Can Trade</div>
+            </div>
+        </section>
+
+        <section class="portfolio-section">
+            <div class="portfolio-card">
+                <h3>Portfolio</h3>
+                <div class="portfolio-row">
+                    <span class="portfolio-label">Quote Balance:</span>
+                    <span id="quote-balance" class="portfolio-value">--</span>
+                </div>
+                <div class="portfolio-row">
+                    <span class="portfolio-label">Base Balance:</span>
+                    <span id="base-balance" class="portfolio-value">--</span>
+                </div>
+                <div class="portfolio-row">
+                    <span class="portfolio-label">Total Value:</span>
+                    <span id="portfolio-value" class="portfolio-value">--</span>
+                </div>
+                <div class="portfolio-row">
+                    <span class="portfolio-label">Position:</span>
+                    <span id="position-percent" class="portfolio-value">--</span>
+                </div>
+            </div>
+
+            <div class="portfolio-card">
+                <h3>Signal Breakdown</h3>
+                <div id="signal-breakdown" class="breakdown-bars">
+                    <div class="breakdown-bar-item">
+                        <span class="breakdown-label">RSI</span>
+                        <div class="breakdown-bar-container">
+                            <div class="breakdown-bar-neg"></div>
+                            <div class="breakdown-bar-center"></div>
+                            <div class="breakdown-bar-pos"></div>
+                            <div id="breakdown-rsi" class="breakdown-bar" data-value="0"></div>
+                        </div>
+                        <span class="breakdown-value-label" id="breakdown-rsi-val">0</span>
+                    </div>
+                    <div class="breakdown-bar-item">
+                        <span class="breakdown-label">MACD</span>
+                        <div class="breakdown-bar-container">
+                            <div class="breakdown-bar-neg"></div>
+                            <div class="breakdown-bar-center"></div>
+                            <div class="breakdown-bar-pos"></div>
+                            <div id="breakdown-macd" class="breakdown-bar" data-value="0"></div>
+                        </div>
+                        <span class="breakdown-value-label" id="breakdown-macd-val">0</span>
+                    </div>
+                    <div class="breakdown-bar-item">
+                        <span class="breakdown-label">Bollinger</span>
+                        <div class="breakdown-bar-container">
+                            <div class="breakdown-bar-neg"></div>
+                            <div class="breakdown-bar-center"></div>
+                            <div class="breakdown-bar-pos"></div>
+                            <div id="breakdown-bollinger" class="breakdown-bar" data-value="0"></div>
+                        </div>
+                        <span class="breakdown-value-label" id="breakdown-bollinger-val">0</span>
+                    </div>
+                    <div class="breakdown-bar-item">
+                        <span class="breakdown-label">EMA</span>
+                        <div class="breakdown-bar-container">
+                            <div class="breakdown-bar-neg"></div>
+                            <div class="breakdown-bar-center"></div>
+                            <div class="breakdown-bar-pos"></div>
+                            <div id="breakdown-ema" class="breakdown-bar" data-value="0"></div>
+                        </div>
+                        <span class="breakdown-value-label" id="breakdown-ema-val">0</span>
+                    </div>
+                    <div class="breakdown-bar-item">
+                        <span class="breakdown-label">Volume</span>
+                        <div class="breakdown-bar-container">
+                            <div class="breakdown-bar-neg"></div>
+                            <div class="breakdown-bar-center"></div>
+                            <div class="breakdown-bar-pos"></div>
+                            <div id="breakdown-volume" class="breakdown-bar" data-value="0"></div>
+                        </div>
+                        <span class="breakdown-value-label" id="breakdown-volume-val">0</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="trades-section">
+            <h3>Recent Trades</h3>
+            <table id="trades-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Side</th>
+                        <th>Size</th>
+                        <th>Price</th>
+                        <th>P&L</th>
+                    </tr>
+                </thead>
+                <tbody id="trades-body">
+                    <tr>
+                        <td colspan="5" class="no-trades">No trades yet</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section class="performance-section">
+            <h3>Performance vs BTC (Daily)</h3>
+            <div id="performance-chart"></div>
+            <div class="performance-legend">
+                <div class="legend-item">
+                    <div class="legend-color portfolio"></div>
+                    <span>Portfolio</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color btc"></div>
+                    <span>BTC Hold</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="notifications-section">
+            <h3>Notifications</h3>
+            <div id="notifications-container">
+                <div class="no-notifications">No notifications yet</div>
+            </div>
+        </section>
+    </main>
+
+    <div id="faq-modal" class="modal">
+        <div class="modal-content">
+            <span class="modal-close">&times;</span>
+            <h2>Frequently Asked Questions</h2>
+
+            <div class="faq-item">
+                <div class="faq-q">What is this?</div>
+                <div class="faq-a">A Bitcoin bot that uses technical indicators to generate buy/sell signals, then consults 3 AI reviewers and a judge before doing anything rash.</div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-q">Does it work?</div>
+                <div class="faq-a">I don't know.</div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-q">Who created this?</div>
+                <div class="faq-a"><a href="https://linktr.ee/theodorstorm" target="_blank">A senior fullstack developer</a> with too much time on his hands.</div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-q">What's your fintech background?</div>
+                <div class="faq-a">You're looking at it.</div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-q">Do you know what you're doing?</div>
+                <div class="faq-a">No.</div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-q">How do you weigh the indicators? RSIs and MACD tend to lag the market. Do you include ALGO levels to detect where Liquidity levels sit?</div>
+                <div class="faq-a">Those are great questions.</div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-q">You didn't actually let Claude Code build this unsupervised while you were working on something else, did you?</div>
+                <div class="faq-a">I absolutely did. Check out <a href="https://klara.do" target="_blank">Klara.do</a></div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-q">Is it trading with real money?</div>
+                <div class="faq-a">No (but it can).</div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-q">How is this different from a volatility filter that's optimized to not trade?</div>
+                <div class="faq-a">It has AI smacked on top of it, so it gets much better reach on LinkedIn.</div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-q">Github repo?</div>
+                <div class="faq-a">Lose all your money fast here: <a href="https://github.com/Byte-Ventures/claude-trader" target="_blank">github.com/Byte-Ventures/claude-trader</a></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/dashboard.js"></script>
+</body>
+</html>

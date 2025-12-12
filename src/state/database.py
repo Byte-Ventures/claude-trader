@@ -138,6 +138,19 @@ class SystemState(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class Notification(Base):
+    """Notification history for dashboard display."""
+
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    type = Column(String(50), nullable=False)  # trade, error, circuit_breaker, etc.
+    title = Column(String(200), nullable=False)
+    message = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    is_paper = Column(Boolean, default=False)
+
+
 class RegimeHistory(Base):
     """Historical record of market regime changes."""
 
@@ -313,10 +326,11 @@ class Database:
         )
         self.SessionLocal = sessionmaker(bind=self.engine, expire_on_commit=False)
 
-        # Create tables
+        # Create tables - we use create_all() instead of Alembic for simplicity.
+        # SQLite handles new tables automatically; schema changes use _run_migrations().
         Base.metadata.create_all(self.engine)
 
-        # Run migrations for existing databases
+        # Run migrations for existing databases (column renames, etc.)
         self._run_migrations()
 
         logger.info("database_initialized", path=str(db_path))
@@ -688,6 +702,29 @@ class Database:
                 .all()
             )
 
+    def get_recent_trades(
+        self,
+        limit: int = 20,
+        is_paper: bool = False,
+        symbol: Optional[str] = None,
+    ) -> list[Trade]:
+        """
+        Get recent trades filtered by paper/live mode.
+
+        Args:
+            limit: Maximum number of trades to return
+            is_paper: Whether to get paper trades or live trades
+            symbol: Optional symbol filter (e.g., "BTC-USD")
+
+        Returns:
+            List of Trade objects ordered by execution time (most recent first)
+        """
+        with self.session() as session:
+            query = session.query(Trade).filter(Trade.is_paper == is_paper)
+            if symbol:
+                query = query.filter(Trade.symbol == symbol)
+            return query.order_by(Trade.executed_at.desc()).limit(limit).all()
+
     def get_last_paper_balance(
         self, symbol: str = "BTC-USD"
     ) -> Optional[tuple[Decimal, Decimal, Decimal]]:
@@ -820,6 +857,38 @@ class Database:
         with self.session() as session:
             result = session.query(SystemState).filter(SystemState.key == key).delete()
             return result > 0
+
+    # Notification methods
+    def save_notification(
+        self,
+        type: str,
+        title: str,
+        message: str,
+        is_paper: bool = False,
+    ) -> Notification:
+        """Save a notification to the database."""
+        with self.session() as session:
+            notification = Notification(
+                type=type,
+                title=title,
+                message=message,
+                is_paper=is_paper,
+            )
+            session.add(notification)
+            session.flush()
+            return notification
+
+    def get_recent_notifications(
+        self,
+        limit: int = 50,
+        is_paper: Optional[bool] = None,
+    ) -> list[Notification]:
+        """Get recent notifications."""
+        with self.session() as session:
+            query = session.query(Notification)
+            if is_paper is not None:
+                query = query.filter(Notification.is_paper == is_paper)
+            return query.order_by(Notification.created_at.desc()).limit(limit).all()
 
     # Trailing stop methods
     def create_trailing_stop(

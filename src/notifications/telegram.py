@@ -70,6 +70,8 @@ class TelegramNotifier:
         bot_token: str,
         chat_id: str,
         enabled: bool = True,
+        db=None,
+        is_paper: bool = False,
     ):
         """
         Initialize Telegram notifier.
@@ -78,10 +80,14 @@ class TelegramNotifier:
             bot_token: Telegram bot token from @BotFather
             chat_id: Your Telegram chat ID
             enabled: Whether notifications are enabled
+            db: Optional database instance for saving notifications to dashboard
+            is_paper: Whether in paper trading mode
         """
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.enabled = enabled
+        self._db = db
+        self._is_paper = is_paper
         self._bot: Optional[Bot] = None
         self._last_message_time: float = 0.0
         self._min_interval: float = 1.0  # Minimum seconds between messages
@@ -96,6 +102,19 @@ class TelegramNotifier:
             logger.info("telegram_notifier_initialized")
         else:
             logger.warning("telegram_notifier_disabled")
+
+    def _save_to_dashboard(self, msg_type: str, title: str, message: str) -> None:
+        """Save notification to database for dashboard display."""
+        if self._db:
+            try:
+                self._db.save_notification(
+                    type=msg_type,
+                    title=title,
+                    message=message,
+                    is_paper=self._is_paper,
+                )
+            except Exception as e:
+                logger.error("notification_save_failed", error=str(e))
 
     def _should_send(self, msg_type: str, message: str) -> bool:
         """
@@ -219,6 +238,7 @@ class TelegramNotifier:
         )
 
         self.send_message_sync(message)
+        self._save_to_dashboard("trade", f"{side.upper()} {size:.6f}", message)
 
     def notify_order_failed(
         self,
@@ -267,6 +287,7 @@ class TelegramNotifier:
 
         if self.send_message_sync(message):
             self._record_sent("circuit_breaker", f"{level}:{reason}")
+            self._save_to_dashboard("circuit_breaker", f"Circuit Breaker: {level.upper()}", message)
 
     def notify_kill_switch(self, reason: str) -> None:
         """Send notification for kill switch activation."""
@@ -323,15 +344,17 @@ class TelegramNotifier:
 
     def notify_startup(self, mode: str, balance: Decimal, exchange: str = "Coinbase") -> None:
         """Send notification on bot startup."""
+        display_mode = "PAPER" if mode.lower() == "paper" else mode.upper()
         message = (
             f"🤖 <b>Trading Bot Started</b>\n\n"
             f"Exchange: {exchange}\n"
-            f"Mode: {mode.upper()}\n"
+            f"Mode: {display_mode}\n"
             f"Balance: ¤{balance:,.2f}\n"
             f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
         self.send_message_sync(message)
+        self._save_to_dashboard("startup", f"Bot Started ({display_mode})", message)
 
     def notify_shutdown(self, reason: str = "Manual shutdown") -> None:
         """Send notification on bot shutdown."""
@@ -342,6 +365,7 @@ class TelegramNotifier:
         )
 
         self.send_message_sync(message)
+        self._save_to_dashboard("shutdown", "Bot Stopped", message)
 
     def notify_error(self, error: str, context: str = "") -> None:
         """Send notification for system error."""
@@ -525,6 +549,8 @@ class TelegramNotifier:
 
         if self.send_message_sync(message):
             self._record_sent(msg_type, dedup_key)
+            title = f"AI Review: {review_type.replace('_', ' ').title()}"
+            self._save_to_dashboard(msg_type, title, message)
 
     def notify_regime_change(
         self,
@@ -727,3 +753,4 @@ class TelegramNotifier:
         )
 
         self.send_message_sync(message)
+        self._save_to_dashboard("market_analysis", "Hourly Market Analysis", message)
