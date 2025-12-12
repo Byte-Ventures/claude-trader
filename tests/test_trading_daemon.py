@@ -577,3 +577,155 @@ def test_daemon_uses_kraken_when_configured(mock_settings, mock_exchange_client,
                 daemon = TradingDaemon(mock_settings)
 
                 assert daemon.exchange_name in ["Kraken", "kraken"]
+
+
+# ============================================================================
+# AI Threshold Adjustment Tests
+# ============================================================================
+
+def test_ai_threshold_adjustment_returns_zero_without_recommendation(mock_settings, mock_exchange_client, mock_database):
+    """Test AI threshold adjustment returns 0 when no recommendation is active."""
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                # No recommendation set
+                assert daemon._ai_recommendation is None
+
+                # Should return 0 for both buy and sell
+                assert daemon._get_ai_threshold_adjustment("buy") == 0
+                assert daemon._get_ai_threshold_adjustment("sell") == 0
+
+
+def test_ai_threshold_adjustment_accumulate_lowers_buy_threshold(mock_settings, mock_exchange_client, mock_database):
+    """Test 'accumulate' recommendation lowers buy threshold."""
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                # Set accumulate recommendation with high confidence
+                daemon._ai_recommendation = "accumulate"
+                daemon._ai_recommendation_confidence = 0.9
+                daemon._ai_recommendation_time = datetime.utcnow()
+
+                buy_adj = daemon._get_ai_threshold_adjustment("buy")
+                sell_adj = daemon._get_ai_threshold_adjustment("sell")
+
+                # Buy threshold should be lowered (negative adjustment)
+                assert buy_adj < 0
+                # Sell threshold should not be affected
+                assert sell_adj == 0
+
+                # Adjustment should be scaled by confidence (15 * 0.9 * ~1.0 decay = ~13)
+                assert buy_adj <= -10  # At least -10 with high confidence
+
+
+def test_ai_threshold_adjustment_reduce_lowers_sell_threshold(mock_settings, mock_exchange_client, mock_database):
+    """Test 'reduce' recommendation lowers sell threshold."""
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                # Set reduce recommendation with high confidence
+                daemon._ai_recommendation = "reduce"
+                daemon._ai_recommendation_confidence = 0.9
+                daemon._ai_recommendation_time = datetime.utcnow()
+
+                buy_adj = daemon._get_ai_threshold_adjustment("buy")
+                sell_adj = daemon._get_ai_threshold_adjustment("sell")
+
+                # Buy threshold should not be affected
+                assert buy_adj == 0
+                # Sell threshold should be lowered (negative adjustment)
+                assert sell_adj < 0
+
+
+def test_ai_threshold_adjustment_wait_has_no_effect(mock_settings, mock_exchange_client, mock_database):
+    """Test 'wait' recommendation does not affect thresholds."""
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                # Set wait recommendation
+                daemon._ai_recommendation = "wait"
+                daemon._ai_recommendation_confidence = 0.9
+                daemon._ai_recommendation_time = datetime.utcnow()
+
+                # Neither threshold should be affected
+                assert daemon._get_ai_threshold_adjustment("buy") == 0
+                assert daemon._get_ai_threshold_adjustment("sell") == 0
+
+
+def test_ai_threshold_adjustment_decays_over_time(mock_settings, mock_exchange_client, mock_database):
+    """Test AI adjustment decays linearly over TTL period."""
+    from datetime import timedelta
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                # Set accumulate recommendation with full confidence
+                daemon._ai_recommendation = "accumulate"
+                daemon._ai_recommendation_confidence = 1.0
+                daemon._ai_recommendation_ttl_minutes = 20
+
+                # Test at start (no decay)
+                daemon._ai_recommendation_time = datetime.utcnow()
+                adj_at_start = daemon._get_ai_threshold_adjustment("buy")
+
+                # Test at 50% through TTL (should be ~50% of original)
+                daemon._ai_recommendation_time = datetime.utcnow() - timedelta(minutes=10)
+                adj_at_half = daemon._get_ai_threshold_adjustment("buy")
+
+                # Adjustment should decay (less negative over time)
+                assert adj_at_start < adj_at_half < 0  # Both negative, but half is closer to 0
+
+
+def test_ai_threshold_adjustment_expires_after_ttl(mock_settings, mock_exchange_client, mock_database):
+    """Test AI recommendation expires and clears after TTL."""
+    from datetime import timedelta
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                # Set recommendation with 20 minute TTL
+                daemon._ai_recommendation = "accumulate"
+                daemon._ai_recommendation_confidence = 1.0
+                daemon._ai_recommendation_ttl_minutes = 20
+
+                # Set time to beyond TTL
+                daemon._ai_recommendation_time = datetime.utcnow() - timedelta(minutes=25)
+
+                # Should return 0 and clear the recommendation
+                assert daemon._get_ai_threshold_adjustment("buy") == 0
+                assert daemon._ai_recommendation is None
+                assert daemon._ai_recommendation_time is None
+
+
+def test_ai_threshold_adjustment_scales_with_confidence(mock_settings, mock_exchange_client, mock_database):
+    """Test AI adjustment scales with confidence level."""
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                daemon._ai_recommendation = "accumulate"
+                daemon._ai_recommendation_time = datetime.utcnow()
+
+                # Test with high confidence
+                daemon._ai_recommendation_confidence = 1.0
+                high_conf_adj = daemon._get_ai_threshold_adjustment("buy")
+
+                # Test with low confidence
+                daemon._ai_recommendation_confidence = 0.5
+                low_conf_adj = daemon._get_ai_threshold_adjustment("buy")
+
+                # Higher confidence should give larger (more negative) adjustment
+                assert high_conf_adj < low_conf_adj < 0
