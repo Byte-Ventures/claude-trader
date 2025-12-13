@@ -570,6 +570,174 @@ class KrakenClient:
                 error=str(e),
             )
 
+    def limit_buy_ioc(
+        self,
+        product_id: str,
+        base_size: Decimal,
+        limit_price: Decimal,
+    ) -> OrderResult:
+        """
+        Execute a limit buy order with IOC time-in-force.
+
+        Args:
+            product_id: Trading pair (e.g., BTC-USD)
+            base_size: Amount to buy in base currency (BTC)
+            limit_price: Maximum price willing to pay
+
+        Returns:
+            OrderResult with execution details
+        """
+        try:
+            kraken_pair = to_exchange_symbol(product_id, Exchange.KRAKEN)
+            pair_code = kraken_pair.replace("/", "")
+
+            order_data = {
+                "pair": pair_code,
+                "type": "buy",
+                "ordertype": "limit",
+                "price": str(limit_price),
+                "volume": str(base_size),
+                "oflags": "ioc",  # Immediate-or-cancel
+            }
+
+            result = self._private_request("AddOrder", order_data)
+
+            order_ids = result.get("txid", [])
+            order_id = order_ids[0] if order_ids else ""
+
+            logger.info(
+                "kraken_limit_buy_ioc",
+                order_id=order_id,
+                base_size=str(base_size),
+                limit_price=str(limit_price),
+            )
+
+            # Get order details
+            if order_id:
+                order_info = self._get_order_info(order_id)
+                filled_price = Decimal(order_info.get("price", "0")) if order_info.get("price") else None
+                filled_size = Decimal(order_info.get("vol_exec", "0"))
+                fee = Decimal(order_info.get("fee", "0"))
+                status = order_info.get("status", "pending")
+            else:
+                filled_price = limit_price
+                filled_size = Decimal("0")
+                fee = Decimal("0")
+                status = "submitted"
+
+            return OrderResult(
+                order_id=order_id,
+                side="buy",
+                size=filled_size,
+                filled_price=filled_price,
+                status=status,
+                fee=fee,
+                success=True,
+            )
+
+        except Exception as e:
+            logger.error(
+                "kraken_limit_buy_ioc_failed",
+                error=str(e),
+                product_id=product_id,
+                base_size=str(base_size),
+                limit_price=str(limit_price),
+            )
+            return OrderResult(
+                order_id="",
+                side="buy",
+                size=Decimal("0"),
+                filled_price=None,
+                status="failed",
+                fee=Decimal("0"),
+                success=False,
+                error=str(e),
+            )
+
+    def limit_sell_ioc(
+        self,
+        product_id: str,
+        base_size: Decimal,
+        limit_price: Decimal,
+    ) -> OrderResult:
+        """
+        Execute a limit sell order with IOC time-in-force.
+
+        Args:
+            product_id: Trading pair (e.g., BTC-USD)
+            base_size: Amount to sell in base currency (BTC)
+            limit_price: Minimum price willing to accept
+
+        Returns:
+            OrderResult with execution details
+        """
+        try:
+            kraken_pair = to_exchange_symbol(product_id, Exchange.KRAKEN)
+            pair_code = kraken_pair.replace("/", "")
+
+            order_data = {
+                "pair": pair_code,
+                "type": "sell",
+                "ordertype": "limit",
+                "price": str(limit_price),
+                "volume": str(base_size),
+                "oflags": "ioc",  # Immediate-or-cancel
+            }
+
+            result = self._private_request("AddOrder", order_data)
+
+            order_ids = result.get("txid", [])
+            order_id = order_ids[0] if order_ids else ""
+
+            logger.info(
+                "kraken_limit_sell_ioc",
+                order_id=order_id,
+                base_size=str(base_size),
+                limit_price=str(limit_price),
+            )
+
+            # Get order details
+            if order_id:
+                order_info = self._get_order_info(order_id)
+                filled_price = Decimal(order_info.get("price", "0")) if order_info.get("price") else None
+                filled_size = Decimal(order_info.get("vol_exec", "0"))
+                fee = Decimal(order_info.get("fee", "0"))
+                status = order_info.get("status", "pending")
+            else:
+                filled_price = limit_price
+                filled_size = Decimal("0")
+                fee = Decimal("0")
+                status = "submitted"
+
+            return OrderResult(
+                order_id=order_id,
+                side="sell",
+                size=filled_size,
+                filled_price=filled_price,
+                status=status,
+                fee=fee,
+                success=True,
+            )
+
+        except Exception as e:
+            logger.error(
+                "kraken_limit_sell_ioc_failed",
+                error=str(e),
+                product_id=product_id,
+                base_size=str(base_size),
+                limit_price=str(limit_price),
+            )
+            return OrderResult(
+                order_id="",
+                side="sell",
+                size=Decimal("0"),
+                filled_price=None,
+                status="failed",
+                fee=Decimal("0"),
+                success=False,
+                error=str(e),
+            )
+
     def _get_order_info(self, order_id: str) -> dict:
         """Get order information from Kraken."""
         try:

@@ -150,6 +150,44 @@ class ExchangeClient(Protocol):
         """
         ...
 
+    def limit_buy_ioc(
+        self,
+        product_id: str,
+        base_size: Decimal,
+        limit_price: Decimal,
+    ) -> OrderResult:
+        """
+        Execute a limit buy order with IOC (Immediate-Or-Cancel) time-in-force.
+
+        Args:
+            product_id: Trading pair (e.g., BTC-USD)
+            base_size: Amount to buy in base currency (BTC)
+            limit_price: Maximum price willing to pay
+
+        Returns:
+            OrderResult with execution details
+        """
+        ...
+
+    def limit_sell_ioc(
+        self,
+        product_id: str,
+        base_size: Decimal,
+        limit_price: Decimal,
+    ) -> OrderResult:
+        """
+        Execute a limit sell order with IOC (Immediate-Or-Cancel) time-in-force.
+
+        Args:
+            product_id: Trading pair (e.g., BTC-USD)
+            base_size: Amount to sell in base currency (BTC)
+            limit_price: Minimum price willing to accept
+
+        Returns:
+            OrderResult with execution details
+        """
+        ...
+
     def get_order(self, order_id: str) -> dict:
         """
         Get order details by ID.
