@@ -1,6 +1,6 @@
 # Performance Improvement Roadmap
 
-> Analysis Date: 2025-12-13 | Bot Version: 1.25.3
+> Analysis Date: 2025-12-13 | Bot Version: 1.25.4
 > Last Updated: 2025-12-13
 
 This roadmap documents gaps identified compared to professional trading systems, prioritized by **P&L impact** rather than institutional features.
@@ -19,15 +19,15 @@ Rejects trades where stop distance < 2× round-trip fees (1.2%) to ensure positi
 - Added `_check_profit_margin()` validation in `validator.py`
 - Warns when margin is tight (between 1.2% and 1.8%)
 
-### 4.1 Maker Fee Optimization (v1.25.1)
+### 4.1 Maker Fee Optimization (v1.25.1 → v1.25.4)
 
-**Status:** DONE
+**Status:** REVERTED
 
-Orders now try post-only (maker) first, then fall back to IOC (taker), then market.
+Added post-only (maker) orders in v1.25.1 to save ~0.2% per trade. **Reverted in v1.25.4**
+due to fundamental race condition issues with GTC orders - risk of double-fills outweighs
+fee savings.
 
-- Added `limit_buy_post_only` / `limit_sell_post_only` to all exchange clients
-- Execution flow: post-only at bid/ask → IOC with offset → market fallback
-- Fee savings: ~0.2% per trade (0.4% maker vs 0.6% taker)
+Execution now uses simple IOC → market fallback which is reliable and predictable.
 
 ### 4.3 AI as Regime Setter
 
@@ -456,7 +456,8 @@ elif self._ai_strategy_mode == "wait":
 
 | Phase | Items | Status |
 |-------|-------|--------|
-| **Phase 1** | 4.1 Maker fees, 4.2 Min profit check | DONE (v1.25.1) |
+| **Phase 1** | 4.2 Min profit check | DONE (v1.25.0) |
+| **Phase 1a** | 4.1 Maker fees | REVERTED (v1.25.4) - race conditions |
 | **Phase 1b** | 4.3 AI regime setter | DEFERRED (needs metrics) |
 | **Phase 2** | 1.1 Multi-timeframe, 2.3 Volume spikes | Pending |
 | **Phase 3** | 1.2 Adaptive weights, 1.3 S/R awareness | Pending |

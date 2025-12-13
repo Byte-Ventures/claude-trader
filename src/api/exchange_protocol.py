@@ -188,52 +188,6 @@ class ExchangeClient(Protocol):
         """
         ...
 
-    def limit_buy_post_only(
-        self,
-        product_id: str,
-        base_size: Decimal,
-        limit_price: Decimal,
-    ) -> OrderResult:
-        """
-        Execute a limit buy order with POST_ONLY (maker-only) time-in-force.
-
-        The order will be rejected if it would immediately match (take liquidity).
-        This ensures the order earns maker rebates instead of paying taker fees.
-
-        Args:
-            product_id: Trading pair (e.g., BTC-USD)
-            base_size: Amount to buy in base currency (BTC)
-            limit_price: Maximum price willing to pay
-
-        Returns:
-            OrderResult with execution details. Check success=False if rejected
-            due to immediate match.
-        """
-        ...
-
-    def limit_sell_post_only(
-        self,
-        product_id: str,
-        base_size: Decimal,
-        limit_price: Decimal,
-    ) -> OrderResult:
-        """
-        Execute a limit sell order with POST_ONLY (maker-only) time-in-force.
-
-        The order will be rejected if it would immediately match (take liquidity).
-        This ensures the order earns maker rebates instead of paying taker fees.
-
-        Args:
-            product_id: Trading pair (e.g., BTC-USD)
-            base_size: Amount to sell in base currency (BTC)
-            limit_price: Minimum price willing to accept
-
-        Returns:
-            OrderResult with execution details. Check success=False if rejected
-            due to immediate match.
-        """
-        ...
-
     def get_order(self, order_id: str) -> dict:
         """
         Get order details by ID.
