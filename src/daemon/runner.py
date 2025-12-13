@@ -683,8 +683,9 @@ class TradingDaemon:
 
         # Determine which trade directions are possible
         min_quote = Decimal(str(self.position_sizer.config.min_trade_quote))
+        min_base = Decimal(str(self.position_sizer.config.min_trade_base))
         can_buy = quote_balance > min_quote and position_percent < self.position_sizer.config.max_position_percent
-        can_sell = base_balance > Decimal("0.0001")
+        can_sell = base_balance > min_base
 
         # Calculate signal
         signal_result = self.signal_scorer.calculate_score(candles, current_price)
@@ -1212,8 +1213,9 @@ class TradingDaemon:
             )
             size_base = position.size_base
 
-        if size_base < Decimal("0.0001"):
-            logger.info("sell_skipped", reason="position_too_small", size_base=str(size_base))
+        min_base = Decimal(str(self.position_sizer.config.min_trade_base))
+        if size_base < min_base:
+            logger.info("sell_skipped", reason="position_too_small", size_base=str(size_base), min_base=str(min_base))
             return
 
         # Validate order
