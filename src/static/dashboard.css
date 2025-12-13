@@ -40,6 +40,14 @@ header h1 {
     font-weight: 600;
 }
 
+header h1 .subtitle {
+    font-size: 0.9rem;
+    font-weight: 400;
+    color: var(--text-secondary);
+    font-style: italic;
+    margin-left: 0.5rem;
+}
+
 .badge {
     padding: 0.25rem 0.75rem;
     border-radius: 9999px;
@@ -59,7 +67,6 @@ header h1 {
 }
 
 .status {
-    margin-left: auto;
     padding: 0.25rem 0.75rem;
     border-radius: 0.25rem;
     font-size: 0.875rem;
@@ -587,6 +594,7 @@ footer {
 
 /* FAQ Button */
 .faq-btn {
+    margin-left: auto;
     background: transparent;
     border: 1px solid var(--border-color);
     color: var(--text-secondary);

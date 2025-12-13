@@ -180,7 +180,8 @@ class TrailingStop(Base):
     trailing_stop = Column(String(50), nullable=True)  # Current stop level
     trailing_activation = Column(String(50), nullable=True)  # Price where trailing activates
     trailing_distance = Column(String(50), nullable=True)  # ATR-based distance
-    hard_stop = Column(String(50), nullable=True)  # Hard stop-loss price (never moves)
+    hard_stop = Column(String(50), nullable=True)  # Hard stop: emergency exit, moves to entry at break-even
+    breakeven_triggered = Column(Boolean, default=False)  # True when stop moved to break-even
     is_active = Column(Boolean, default=False)
     is_paper = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -200,6 +201,10 @@ class TrailingStop(Base):
 
     def get_hard_stop(self) -> Optional[Decimal]:
         return Decimal(self.hard_stop) if self.hard_stop else None
+
+    def is_breakeven_active(self) -> bool:
+        """Return True if break-even protection has been triggered."""
+        return self.breakeven_triggered or False
 
 
 class RateHistory(Base):
@@ -490,6 +495,19 @@ class Database:
                     conn.commit()
             except Exception as e:
                 logger.debug("trailing_stops_hard_stop_migration_skipped", reason=str(e))
+
+            # Add breakeven_triggered column to trailing_stops table
+            try:
+                result = conn.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type='table' AND name='trailing_stops'")
+                )
+                ts_schema = result.scalar()
+                if ts_schema and "breakeven_triggered" not in ts_schema:
+                    conn.execute(text("ALTER TABLE trailing_stops ADD COLUMN breakeven_triggered BOOLEAN DEFAULT 0"))
+                    logger.info("migrated_trailing_stops_added_breakeven_triggered")
+                    conn.commit()
+            except Exception as e:
+                logger.debug("trailing_stops_breakeven_migration_skipped", reason=str(e))
 
             # Add is_paper column to rate_history table
             # NOTE: SQLite doesn't support ALTER CONSTRAINT, so the unique constraint
@@ -1036,6 +1054,28 @@ class Database:
             session.flush()
             return ts
 
+    def update_trailing_stop_breakeven(
+        self,
+        trailing_stop_id: int,
+        new_hard_stop: Decimal,
+    ) -> Optional[TrailingStop]:
+        """
+        Activate break-even protection by moving hard stop to entry price.
+
+        This is called when price reaches the break-even threshold (e.g., +0.5 ATR).
+        Once triggered, the position is protected at entry - no loss possible.
+        """
+        with self.session() as session:
+            ts = session.query(TrailingStop).filter(TrailingStop.id == trailing_stop_id).first()
+            if not ts:
+                return None
+
+            ts.hard_stop = str(new_hard_stop)
+            ts.breakeven_triggered = True
+
+            session.flush()
+            return ts
+
     def update_trailing_stop_for_dca(
         self,
         symbol: str,
@@ -1073,6 +1113,8 @@ class Database:
             ts.trailing_activation = str(trailing_activation)
             ts.trailing_distance = str(trailing_distance)
             ts.hard_stop = str(hard_stop) if hard_stop else None
+            # Reset break-even flag so it can re-trigger at new avg_cost level
+            ts.breakeven_triggered = False
             # Note: Don't reset trailing_stop level - let it continue trailing
 
             session.flush()

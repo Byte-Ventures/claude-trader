@@ -13,14 +13,14 @@ import asyncio
 import math
 import signal
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from threading import Event
 from typing import Optional, Union
 
 import structlog
 
-from config.settings import Settings, TradingMode, VetoAction, request_reload, reload_pending, reload_settings
+from config.settings import Settings, TradingMode, VetoAction, AIFailureMode, request_reload, reload_pending, reload_settings
 from src.api.exchange_factory import create_exchange_client, get_exchange_name
 from src.api.exchange_protocol import ExchangeClient
 from src.api.paper_client import PaperTradingClient
@@ -73,6 +73,7 @@ class TradingDaemon:
         self._last_hourly_analysis: Optional[datetime] = None  # For hourly market analysis
         self._pending_post_volatility_analysis: bool = False  # Trigger analysis when volatility calms
         self._last_stop_check: Optional[datetime] = None  # For periodic stop protection checks
+        self._last_ai_failure_notification: Optional[datetime] = None  # Cooldown for AI failure notifications
 
         # Create persistent event loop for async operations (avoids repeated asyncio.run())
         self._loop = asyncio.new_event_loop()
@@ -157,6 +158,7 @@ class TradingDaemon:
                 ai_web_search_enabled=settings.ai_web_search_enabled,
                 market_research_cache_minutes=settings.market_research_cache_minutes,
                 candle_interval=settings.candle_interval,
+                signal_threshold=settings.signal_threshold,
             )
             logger.info(
                 "multi_agent_trade_reviewer_initialized",
@@ -985,8 +987,41 @@ class TradingDaemon:
                             return
 
                     except Exception as e:
-                        logger.error("claude_review_failed", error=str(e))
-                        # Continue with trade on review failure (fail open)
+                        logger.error("claude_review_failed", error=str(e), exc_info=True)
+
+                        # Check AI failure mode setting
+                        if self.settings.ai_failure_mode == AIFailureMode.SAFE:
+                            logger.warning(
+                                "trade_skipped_ai_unavailable",
+                                signal_score=signal_result.score,
+                                action=effective_action,
+                                failure_mode="safe",
+                            )
+
+                            # Rate-limit notifications to avoid spam (max once per 15 minutes)
+                            # Note: _last_ai_failure_notification is intentionally ephemeral (in-memory only)
+                            # It resets on bot restart, which is acceptable for notification cooldown
+                            now = datetime.now(timezone.utc)
+                            should_notify = (
+                                self._last_ai_failure_notification is None
+                                or (now - self._last_ai_failure_notification).total_seconds() >= 900  # 15 min
+                            )
+                            if should_notify:
+                                self._last_ai_failure_notification = now
+                                self.notifier.send_message(
+                                    f"⚠️ Trade skipped: AI review unavailable\n"
+                                    f"Signal: {effective_action} (score: {signal_result.score})"
+                                )
+
+                            return  # Skip this iteration
+
+                        # AIFailureMode.OPEN: Continue with trade (fail-open, current default)
+                        logger.info(
+                            "trade_proceeding_without_ai_review",
+                            signal_score=signal_result.score,
+                            action=effective_action,
+                            failure_mode="open",
+                        )
 
         # Execute trade if signal is strong enough (using regime-adjusted threshold)
         if effective_action == "hold":
@@ -1084,11 +1119,58 @@ class TradingDaemon:
             logger.info("buy_rejected", reason=validation.reason)
             return
 
-        # Execute order
-        result = self.client.market_buy(
-            self.settings.trading_pair,
-            position.size_quote,
-        )
+        # Execute order (limit IOC with fallback to market)
+        if self.settings.use_limit_orders:
+            try:
+                # Get market data for limit price calculation
+                market_data = self.client.get_market_data(self.settings.trading_pair)
+                offset = Decimal(str(self.settings.limit_order_offset_percent)) / 100
+                # Use high precision for limit price to support various trading pairs
+                limit_price = (market_data.ask * (1 + offset)).quantize(
+                    Decimal("0.00000001"), rounding=ROUND_HALF_UP
+                ).normalize()
+                base_size = (position.size_quote / limit_price).quantize(Decimal("0.00000001"))
+
+                result = self.client.limit_buy_ioc(
+                    self.settings.trading_pair,
+                    base_size,
+                    limit_price,
+                )
+
+                # Fall back to market order if limit didn't fill
+                if not result.success or result.size == Decimal("0"):
+                    logger.warning(
+                        "limit_buy_ioc_fallback",
+                        reason="unfilled" if result.success else result.error,
+                        limit_price=str(limit_price),
+                    )
+                    result = self.client.market_buy(
+                        self.settings.trading_pair,
+                        position.size_quote,
+                    )
+                else:
+                    logger.info(
+                        "limit_buy_ioc_filled",
+                        limit_price=str(limit_price),
+                        filled_price=str(result.filled_price),
+                        size=str(result.size),
+                    )
+            except Exception as e:
+                # Fall back to market order if limit order setup fails
+                logger.warning(
+                    "limit_buy_ioc_setup_failed",
+                    error=str(e),
+                    fallback="market_order",
+                )
+                result = self.client.market_buy(
+                    self.settings.trading_pair,
+                    position.size_quote,
+                )
+        else:
+            result = self.client.market_buy(
+                self.settings.trading_pair,
+                position.size_quote,
+            )
 
         if result.success:
             # Record trade
@@ -1230,11 +1312,56 @@ class TradingDaemon:
             logger.info("sell_rejected", reason=validation.reason)
             return
 
-        # Execute order
-        result = self.client.market_sell(
-            self.settings.trading_pair,
-            size_base,
-        )
+        # Execute order (limit IOC with fallback to market)
+        if self.settings.use_limit_orders:
+            try:
+                # Get market data for limit price calculation
+                market_data = self.client.get_market_data(self.settings.trading_pair)
+                offset = Decimal(str(self.settings.limit_order_offset_percent)) / 100
+                limit_price = (market_data.bid * (1 - offset)).quantize(
+                    Decimal("0.00000001"), rounding=ROUND_HALF_UP
+                ).normalize()
+
+                result = self.client.limit_sell_ioc(
+                    self.settings.trading_pair,
+                    size_base,
+                    limit_price,
+                )
+
+                # Fall back to market order if limit didn't fill
+                if not result.success or result.size == Decimal("0"):
+                    logger.warning(
+                        "limit_sell_ioc_fallback",
+                        reason="unfilled" if result.success else result.error,
+                        limit_price=str(limit_price),
+                    )
+                    result = self.client.market_sell(
+                        self.settings.trading_pair,
+                        size_base,
+                    )
+                else:
+                    logger.info(
+                        "limit_sell_ioc_filled",
+                        limit_price=str(limit_price),
+                        filled_price=str(result.filled_price),
+                        size=str(result.size),
+                    )
+            except Exception as e:
+                # Fall back to market order if limit order setup fails
+                logger.warning(
+                    "limit_sell_ioc_setup_failed",
+                    error=str(e),
+                    fallback="market_order",
+                )
+                result = self.client.market_sell(
+                    self.settings.trading_pair,
+                    size_base,
+                )
+        else:
+            result = self.client.market_sell(
+                self.settings.trading_pair,
+                size_base,
+            )
 
         if result.success:
             is_paper = self.settings.is_paper_trading
@@ -1852,8 +1979,25 @@ class TradingDaemon:
             # Trailing distance is based on config multiplier
             distance = atr * Decimal(str(self.settings.trailing_stop_atr_multiplier))
 
-            # Hard stop: based on average cost, not latest entry
-            hard_stop = avg_cost - (atr * Decimal(str(self.settings.stop_loss_atr_multiplier)))
+            # Hard stop: based on MARKET entry price, NOT fee-inflated cost basis
+            # Using avg_cost caused immediate stop triggers because cost basis is ~0.6%
+            # higher than market price due to fee inclusion
+            #
+            # Use the LARGER of ATR-based distance or minimum percentage distance
+            # This ensures stop is never too tight on low-volatility timeframes
+            atr_stop_distance = atr * Decimal(str(self.settings.stop_loss_atr_multiplier))
+            min_pct_distance = entry_price * Decimal(str(self.settings.min_stop_loss_percent)) / Decimal("100")
+            stop_distance = max(atr_stop_distance, min_pct_distance)
+            hard_stop = entry_price - stop_distance
+
+            # Log which method determined the stop
+            if min_pct_distance > atr_stop_distance:
+                logger.info(
+                    "hard_stop_using_min_percent",
+                    atr_distance=str(atr_stop_distance),
+                    min_pct_distance=str(min_pct_distance),
+                    min_pct=self.settings.min_stop_loss_percent,
+                )
 
             # Check if we're DCA'ing (stop already exists)
             # If so, UPDATE the existing stop in-place to avoid any window
@@ -1909,10 +2053,11 @@ class TradingDaemon:
         Check and update trailing stop, return action if stop triggered.
 
         Priority order (for buy positions):
-        1. Hard stop (emergency capital protection, always active, never moves)
-        2. Trailing stop activation (activates at 1 ATR profit above avg cost)
-        3. Trailing stop update (follows price up, locks in gains)
-        4. Trailing stop trigger (price drops to stop level, locks profit)
+        1. Hard stop (capital protection, triggers sell)
+        2. Break-even trigger (moves hard stop to entry at +0.5 ATR, no sell)
+        3. Trailing activation (activates at +1 ATR, no sell)
+        4. Trailing update (moves stop up, no sell)
+        5. Trailing trigger (locks profit, triggers sell)
 
         The entry_price stored in trailing_stops is the weighted average cost,
         not the individual entry price, ensuring correct calculations for DCA.
@@ -1974,6 +2119,42 @@ class TradingDaemon:
                     is_paper=is_paper,
                 )
                 return "sell"
+
+            # Check break-even trigger (protects capital once in moderate profit)
+            # This triggers BEFORE trailing activation (0.5 ATR vs 1 ATR)
+            # TODO: Add equivalent logic for short positions when implemented
+            if not ts.is_breakeven_active() and distance is not None:
+                # Calculate break-even activation: entry + (ATR * breakeven_multiplier)
+                # ATR = distance / trailing_stop_atr_multiplier
+                breakeven_multiplier = Decimal(str(self.settings.breakeven_atr_multiplier))
+                trailing_multiplier = Decimal(str(self.settings.trailing_stop_atr_multiplier))
+                atr = distance / trailing_multiplier
+                breakeven_activation = entry_price + (atr * breakeven_multiplier)
+
+                if current_price >= breakeven_activation:
+                    # Move hard stop to break-even (entry price)
+                    self.db.update_trailing_stop_breakeven(ts.id, new_hard_stop=entry_price)
+                    # Update local state to prevent duplicate triggers this iteration
+                    ts.breakeven_triggered = True
+                    profit_pct = ((current_price - entry_price) / entry_price * 100).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+                    logger.info(
+                        "breakeven_stop_activated",
+                        current_price=str(current_price),
+                        breakeven_activation=str(breakeven_activation),
+                        entry_price=str(entry_price),
+                        profit_percent=str(profit_pct),
+                        breakeven_multiplier=str(breakeven_multiplier),
+                        atr=str(atr),
+                    )
+                    self.notifier.send_message(
+                        f"🛡️ Break-even protection activated\n"
+                        f"Entry: ${entry_price:,.2f} | Current: ${current_price:,.2f} (+{profit_pct}%)\n"
+                        f"Position now protected at entry"
+                    )
+                    # Update local hard_stop for subsequent checks this iteration
+                    hard_stop = entry_price
 
             # Check if trailing stop is now activated
             if current_stop is None and activation and current_price >= activation:

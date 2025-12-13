@@ -34,6 +34,12 @@ class VetoAction(str, Enum):
     INFO = "info"      # Log but proceed with trade
 
 
+class AIFailureMode(str, Enum):
+    """Behavior when AI trade review fails or times out."""
+    OPEN = "open"    # Proceed with trade (current behavior, fail-open)
+    SAFE = "safe"    # Skip trade if AI unreachable (fail-safe)
+
+
 class Settings(BaseSettings):
     """Main application settings with validation."""
 
@@ -195,6 +201,12 @@ class Settings(BaseSettings):
         le=5.0,
         description="Stop loss distance as ATR multiple"
     )
+    min_stop_loss_percent: float = Field(
+        default=0.5,
+        ge=0.1,
+        le=5.0,
+        description="Minimum stop loss distance as percentage below entry (safety floor)"
+    )
     take_profit_atr_multiplier: float = Field(
         default=2.0,
         ge=1.0,
@@ -206,6 +218,22 @@ class Settings(BaseSettings):
         ge=0.5,
         le=5.0,
         description="Trailing stop distance as ATR multiple"
+    )
+    breakeven_atr_multiplier: float = Field(
+        default=0.5,
+        ge=0.1,
+        le=1.0,
+        description="Move stop to break-even when profit reaches this ATR multiple"
+    )
+    use_limit_orders: bool = Field(
+        default=True,
+        description="Use limit IOC orders instead of market orders to reduce slippage"
+    )
+    limit_order_offset_percent: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=1.0,
+        description="Offset from bid/ask for limit orders (0.1 = 0.1%)"
     )
     max_daily_loss_percent: float = Field(
         default=10.0,
@@ -310,6 +338,10 @@ class Settings(BaseSettings):
     ai_review_all: bool = Field(
         default=False,
         description="Review ALL decisions with AI (for debugging/testing)"
+    )
+    ai_failure_mode: AIFailureMode = Field(
+        default=AIFailureMode.OPEN,
+        description="Behavior when AI review fails: open (proceed with trade) or safe (skip trade)"
     )
 
     # Hourly Market Analysis (uses same multi-agent system as trade reviews)

@@ -382,6 +382,142 @@ class CoinbaseClient:
                 error=str(e),
             )
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        retry=retry_if_exception_type(RETRY_EXCEPTIONS),
+    )
+    def limit_buy_ioc(
+        self,
+        product_id: str,
+        base_size: Decimal,
+        limit_price: Decimal,
+    ) -> OrderResult:
+        """
+        Execute a limit buy order with IOC time-in-force.
+
+        Args:
+            product_id: Trading pair (e.g., BTC-USD)
+            base_size: Amount to buy in base currency (BTC)
+            limit_price: Maximum price willing to pay
+
+        Returns:
+            OrderResult with execution details
+        """
+        try:
+            order_data = {
+                "client_order_id": str(uuid.uuid4()),
+                "product_id": product_id,
+                "side": "BUY",
+                "order_configuration": {
+                    "limit_limit_ioc": {
+                        "base_size": str(base_size),
+                        "limit_price": str(limit_price),
+                    }
+                },
+            }
+
+            result = self._request("POST", "/api/v3/brokerage/orders", data=order_data)
+
+            order = result.get("success_response", result)
+
+            return OrderResult(
+                order_id=order.get("order_id", ""),
+                side="buy",
+                size=Decimal(order.get("filled_size", "0")),
+                filled_price=Decimal(order.get("average_filled_price", "0")) if order.get("average_filled_price") else None,
+                status=order.get("status", "unknown"),
+                fee=Decimal(order.get("total_fees", "0")),
+                success=True,
+            )
+
+        except Exception as e:
+            logger.error(
+                "limit_buy_ioc_failed",
+                error=str(e),
+                product_id=product_id,
+                base_size=str(base_size),
+                limit_price=str(limit_price),
+            )
+            return OrderResult(
+                order_id="",
+                side="buy",
+                size=Decimal("0"),
+                filled_price=None,
+                status="failed",
+                fee=Decimal("0"),
+                success=False,
+                error=str(e),
+            )
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        retry=retry_if_exception_type(RETRY_EXCEPTIONS),
+    )
+    def limit_sell_ioc(
+        self,
+        product_id: str,
+        base_size: Decimal,
+        limit_price: Decimal,
+    ) -> OrderResult:
+        """
+        Execute a limit sell order with IOC time-in-force.
+
+        Args:
+            product_id: Trading pair (e.g., BTC-USD)
+            base_size: Amount to sell in base currency (BTC)
+            limit_price: Minimum price willing to accept
+
+        Returns:
+            OrderResult with execution details
+        """
+        try:
+            order_data = {
+                "client_order_id": str(uuid.uuid4()),
+                "product_id": product_id,
+                "side": "SELL",
+                "order_configuration": {
+                    "limit_limit_ioc": {
+                        "base_size": str(base_size),
+                        "limit_price": str(limit_price),
+                    }
+                },
+            }
+
+            result = self._request("POST", "/api/v3/brokerage/orders", data=order_data)
+
+            order = result.get("success_response", result)
+
+            return OrderResult(
+                order_id=order.get("order_id", ""),
+                side="sell",
+                size=Decimal(order.get("filled_size", "0")),
+                filled_price=Decimal(order.get("average_filled_price", "0")) if order.get("average_filled_price") else None,
+                status=order.get("status", "unknown"),
+                fee=Decimal(order.get("total_fees", "0")),
+                success=True,
+            )
+
+        except Exception as e:
+            logger.error(
+                "limit_sell_ioc_failed",
+                error=str(e),
+                product_id=product_id,
+                base_size=str(base_size),
+                limit_price=str(limit_price),
+            )
+            return OrderResult(
+                order_id="",
+                side="sell",
+                size=Decimal("0"),
+                filled_price=None,
+                status="failed",
+                fee=Decimal("0"),
+                success=False,
+                error=str(e),
+            )
+
     def get_order(self, order_id: str) -> dict:
         """Get order details by ID."""
         return self._request("GET", f"/api/v3/brokerage/orders/historical/{order_id}")

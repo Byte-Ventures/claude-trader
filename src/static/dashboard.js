@@ -257,7 +257,7 @@ function updateDashboard(state) {
     signalEl.textContent = score > 0 ? `+${score}` : score;
     signalEl.className = 'metric-value ' + (score > 0 ? 'positive' : score < 0 ? 'negative' : 'neutral');
 
-    document.getElementById('signal-threshold').textContent = `Threshold: ${state.signal.threshold}`;
+    document.getElementById('signal-threshold').textContent = `Threshold: |${state.signal.threshold}|`;
 
     // Update indicators
     const indicators = state.indicators;
@@ -302,6 +302,12 @@ function updateDashboard(state) {
             close: price,
         });
     }
+
+    // Update trades table if recent_trades included
+    if (state.recent_trades) {
+        updateTradesTable(state.recent_trades);
+        updateLastTradeTime(state.recent_trades);
+    }
 }
 
 // Update breakdown bar visualization
@@ -327,7 +333,7 @@ function updateBreakdownBar(id, value) {
 // Update config display
 function updateConfig(config) {
     document.getElementById('trading-pair').textContent = config.trading_pair;
-    document.getElementById('signal-threshold').textContent = `Threshold: ${config.signal_threshold}`;
+    document.getElementById('signal-threshold').textContent = `Threshold: |${config.signal_threshold}|`;
 }
 
 // Update trades table

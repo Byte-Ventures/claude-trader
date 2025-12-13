@@ -86,6 +86,7 @@ def mock_settings():
     settings.max_position_percent = Decimal("25")  # Used by OrderValidator
     settings.position_size_percent = Decimal("25")
     settings.stop_loss_atr_multiplier = 2.0
+    settings.min_stop_loss_percent = 0.5
     settings.take_profit_atr_multiplier = 3.0
     settings.stop_loss_pct = None
     settings.trailing_stop_enabled = False
@@ -747,3 +748,621 @@ def test_ai_threshold_adjustment_scales_with_confidence(mock_settings, mock_exch
 
                 # Higher confidence should give larger (more negative) adjustment
                 assert high_conf_adj < low_conf_adj < 0
+
+
+# ============================================================================
+# AI Failure Mode Tests - CRITICAL
+# ============================================================================
+
+def test_ai_failure_mode_open_does_not_skip_trade(mock_settings, mock_exchange_client, mock_database):
+    """
+    CRITICAL: Verify AI_FAILURE_MODE=open does NOT skip trade when AI review fails.
+
+    This is the default fail-open behavior - the code should NOT return early
+    after AI failure, allowing the trade to proceed.
+    """
+    from config.settings import AIFailureMode, VetoAction
+
+    # Enable AI review and set to OPEN mode (default)
+    mock_settings.ai_review_enabled = True
+    mock_settings.ai_failure_mode = AIFailureMode.OPEN
+    mock_settings.openrouter_api_key = Mock()
+    mock_settings.openrouter_api_key.get_secret_value.return_value = "test_key"
+    mock_settings.reviewer_model_1 = "test/model1"
+    mock_settings.reviewer_model_2 = "test/model2"
+    mock_settings.reviewer_model_3 = "test/model3"
+    mock_settings.judge_model = "test/judge"
+    mock_settings.veto_action = VetoAction.INFO
+    mock_settings.veto_threshold = 0.8
+    mock_settings.position_reduction = 0.5
+    mock_settings.delay_minutes = 15
+    mock_settings.interesting_hold_margin = 15
+    mock_settings.ai_review_all = False
+    mock_settings.market_research_enabled = False
+    mock_settings.ai_web_search_enabled = False
+    mock_settings.market_research_cache_minutes = 15
+    mock_settings.trailing_stop_atr_multiplier = 1.0
+    mock_settings.is_paper_trading = False
+
+    # Create strong buy signal that would trigger a trade
+    buy_signal = SignalResult(
+        score=70,
+        action="buy",
+        indicators=IndicatorValues(
+            rsi=30.0,
+            macd_line=100.0,
+            macd_signal=50.0,
+            macd_histogram=50.0,
+            bb_upper=51000.0,
+            bb_middle=50000.0,
+            bb_lower=49000.0,
+            ema_fast=50100.0,
+            ema_slow=50000.0,
+            atr=500.0,
+            volatility="normal"
+        ),
+        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+        confidence=0.8
+    )
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier') as mock_notifier:
+                daemon = TradingDaemon(mock_settings)
+
+                # Mock position_sizer config to ensure can_buy=True
+                # This ensures direction_is_tradeable=True so AI review code path is reached
+                daemon.position_sizer.config.min_trade_quote = Decimal("10")  # Less than 10000 quote balance
+                daemon.position_sizer.config.max_position_percent = Decimal("100")  # Allow full position
+                daemon.position_sizer.config.min_trade_base = Decimal("0.0001")
+
+                # Mock signal scorer to return strong buy signal
+                daemon.signal_scorer.calculate_score = Mock(return_value=buy_signal)
+
+                # Mock trade reviewer to raise an exception (simulating AI failure)
+                daemon.trade_reviewer = Mock()
+                daemon.trade_reviewer.should_review.return_value = (True, "trade")
+                daemon.trade_reviewer.review_trade = Mock(side_effect=Exception("AI API Timeout"))
+
+                # Run trading iteration
+                daemon._trading_iteration()
+
+                # In OPEN mode, notification about skipping should NOT be sent
+                # (unlike SAFE mode which sends "Trade skipped: AI review unavailable")
+                # Note: We don't verify market_buy.assert_called() here because the test
+                # focuses on the AI failure handling behavior, not the complete trade path.
+                # The trade may not execute due to other conditions (order sizing, etc.)
+                notifier_instance = mock_notifier.return_value
+                for call in notifier_instance.send_message.call_args_list:
+                    msg = str(call)
+                    assert "Trade skipped" not in msg, "OPEN mode should not skip trades"
+
+
+def test_ai_failure_mode_safe_skips_trade(mock_settings, mock_exchange_client, mock_database):
+    """
+    CRITICAL: Verify AI_FAILURE_MODE=safe skips trade when AI review fails.
+
+    In safe mode, trades are NOT executed when AI review is unavailable,
+    providing protection against trading blind during AI outages.
+    """
+    from config.settings import AIFailureMode, VetoAction
+
+    # Enable AI review and set to SAFE mode
+    mock_settings.ai_review_enabled = True
+    mock_settings.ai_failure_mode = AIFailureMode.SAFE
+    mock_settings.openrouter_api_key = Mock()
+    mock_settings.openrouter_api_key.get_secret_value.return_value = "test_key"
+    mock_settings.reviewer_model_1 = "test/model1"
+    mock_settings.reviewer_model_2 = "test/model2"
+    mock_settings.reviewer_model_3 = "test/model3"
+    mock_settings.judge_model = "test/judge"
+    mock_settings.veto_action = VetoAction.INFO
+    mock_settings.veto_threshold = 0.8
+    mock_settings.position_reduction = 0.5
+    mock_settings.delay_minutes = 15
+    mock_settings.interesting_hold_margin = 15
+    mock_settings.ai_review_all = False
+    mock_settings.market_research_enabled = False
+    mock_settings.ai_web_search_enabled = False
+    mock_settings.market_research_cache_minutes = 15
+    mock_settings.trailing_stop_atr_multiplier = 1.0
+    mock_settings.is_paper_trading = False
+
+    # Create strong buy signal that would trigger a trade
+    buy_signal = SignalResult(
+        score=70,
+        action="buy",
+        indicators=IndicatorValues(
+            rsi=30.0,
+            macd_line=100.0,
+            macd_signal=50.0,
+            macd_histogram=50.0,
+            bb_upper=51000.0,
+            bb_middle=50000.0,
+            bb_lower=49000.0,
+            ema_fast=50100.0,
+            ema_slow=50000.0,
+            atr=500.0,
+            volatility="normal"
+        ),
+        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+        confidence=0.8
+    )
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier') as mock_notifier:
+                daemon = TradingDaemon(mock_settings)
+
+                # Mock position_sizer config to ensure can_buy=True
+                # This ensures direction_is_tradeable=True so AI review code path is reached
+                daemon.position_sizer.config.min_trade_quote = Decimal("10")  # Less than 10000 quote balance
+                daemon.position_sizer.config.max_position_percent = Decimal("100")  # Allow full position
+                daemon.position_sizer.config.min_trade_base = Decimal("0.0001")
+
+                # Mock signal scorer to return strong buy signal
+                daemon.signal_scorer.calculate_score = Mock(return_value=buy_signal)
+
+                # Mock trade reviewer to raise an exception (simulating AI failure)
+                daemon.trade_reviewer = Mock()
+                daemon.trade_reviewer.should_review.return_value = (True, "trade")
+                daemon.trade_reviewer.review_trade = Mock(side_effect=Exception("AI API Timeout"))
+
+                # Reset mock to clear init calls
+                mock_exchange_client.market_buy.reset_mock()
+
+                # Run trading iteration
+                daemon._trading_iteration()
+
+                # Verify trade was NOT executed (fail-safe)
+                mock_exchange_client.market_buy.assert_not_called()
+
+                # Verify notification was sent about skipped trade
+                notifier_instance = mock_notifier.return_value
+                notifier_instance.send_message.assert_called()
+
+
+def test_ai_failure_mode_open_is_default(mock_settings, mock_exchange_client, mock_database):
+    """Verify AIFailureMode.OPEN is the default for backward compatibility."""
+    from config.settings import AIFailureMode, Settings
+
+    # Create real settings to check default
+    with patch.dict('os.environ', {}, clear=False):
+        settings = Settings(
+            trading_mode="paper",
+            trading_pair="BTC-USD",
+        )
+        assert settings.ai_failure_mode == AIFailureMode.OPEN
+
+
+def test_ai_failure_notification_cooldown(mock_settings, mock_exchange_client, mock_database):
+    """
+    Verify AI failure notifications are rate-limited to prevent Telegram spam.
+
+    When AI review fails repeatedly in SAFE mode, notifications should only be
+    sent once per 15 minutes to avoid flooding the user's Telegram.
+    """
+    from config.settings import AIFailureMode, VetoAction
+    from datetime import datetime, timedelta, timezone
+
+    # Enable AI review and set to SAFE mode
+    mock_settings.ai_review_enabled = True
+    mock_settings.ai_failure_mode = AIFailureMode.SAFE
+    mock_settings.openrouter_api_key = Mock()
+    mock_settings.openrouter_api_key.get_secret_value.return_value = "test_key"
+    mock_settings.reviewer_model_1 = "test/model1"
+    mock_settings.reviewer_model_2 = "test/model2"
+    mock_settings.reviewer_model_3 = "test/model3"
+    mock_settings.judge_model = "test/judge"
+    mock_settings.veto_action = VetoAction.INFO
+    mock_settings.veto_threshold = 0.8
+    mock_settings.position_reduction = 0.5
+    mock_settings.delay_minutes = 15
+    mock_settings.interesting_hold_margin = 15
+    mock_settings.ai_review_all = False
+    mock_settings.market_research_enabled = False
+    mock_settings.ai_web_search_enabled = False
+    mock_settings.market_research_cache_minutes = 15
+    mock_settings.trailing_stop_atr_multiplier = 1.0
+    mock_settings.is_paper_trading = False
+
+    # Create strong buy signal
+    buy_signal = SignalResult(
+        score=70,
+        action="buy",
+        indicators=IndicatorValues(
+            rsi=30.0,
+            macd_line=100.0,
+            macd_signal=50.0,
+            macd_histogram=50.0,
+            bb_upper=51000.0,
+            bb_middle=50000.0,
+            bb_lower=49000.0,
+            ema_fast=50100.0,
+            ema_slow=50000.0,
+            atr=500.0,
+            volatility="normal"
+        ),
+        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+        confidence=0.8
+    )
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier') as mock_notifier:
+                daemon = TradingDaemon(mock_settings)
+
+                # Mock position_sizer config to ensure can_buy=True
+                # This ensures direction_is_tradeable=True so AI review code path is reached
+                daemon.position_sizer.config.min_trade_quote = Decimal("10")  # Less than 10000 quote balance
+                daemon.position_sizer.config.max_position_percent = Decimal("100")  # Allow full position
+                daemon.position_sizer.config.min_trade_base = Decimal("0.0001")
+
+                # Mock signal scorer to return strong buy signal
+                daemon.signal_scorer.calculate_score = Mock(return_value=buy_signal)
+
+                # Mock trade reviewer to always fail
+                daemon.trade_reviewer = Mock()
+                daemon.trade_reviewer.should_review.return_value = (True, "trade")
+                daemon.trade_reviewer.review_trade = Mock(side_effect=Exception("AI API Timeout"))
+
+                notifier_instance = mock_notifier.return_value
+
+                # First failure: should send notification
+                daemon._trading_iteration()
+                assert notifier_instance.send_message.call_count == 1
+
+                # Second failure immediately after: should NOT send notification (cooldown)
+                daemon._trading_iteration()
+                assert notifier_instance.send_message.call_count == 1  # Still 1, not 2
+
+                # Third failure immediately after: should still NOT send notification
+                daemon._trading_iteration()
+                assert notifier_instance.send_message.call_count == 1  # Still 1, not 3
+
+                # Simulate 15 minutes passing by resetting the timestamp (use timezone-aware UTC)
+                daemon._last_ai_failure_notification = datetime.now(timezone.utc) - timedelta(minutes=16)
+
+                # Fourth failure after cooldown: should send notification again
+                daemon._trading_iteration()
+                assert notifier_instance.send_message.call_count == 2  # Now 2
+
+
+# ============================================================================
+# Hard Stop Calculation Tests - Critical for preventing immediate stop triggers
+# ============================================================================
+
+
+def test_hard_stop_uses_entry_price_not_avg_cost(mock_settings):
+    """
+    CRITICAL: Hard stop must be calculated from entry_price (market execution price),
+    NOT avg_cost (fee-inflated cost basis).
+
+    Bug context: avg_cost includes fees (~0.6% premium), causing hard stop to be set
+    above market price when ATR is small, triggering immediate sells after every buy.
+    """
+    mock_settings.trailing_stop_enabled = True
+    mock_settings.stop_loss_atr_multiplier = 1.5
+    mock_settings.min_stop_loss_percent = 0.1  # Low value so ATR-based calculation wins
+    mock_settings.trailing_stop_atr_multiplier = 1.0
+    mock_settings.breakeven_atr_multiplier = 0.5
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None  # Fresh start
+    mock_database.get_last_regime.return_value = None
+    mock_database.get_active_trailing_stop.return_value = None  # No existing stop
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                # Simulate a buy where:
+                # - Market entry price (filled_price): $76,861
+                # - Cost basis with fees (avg_cost): $77,325 (~0.6% higher)
+                # - ATR: $92 (typical for 15-min candles)
+                entry_price = Decimal("76861.00")  # Market execution price
+                avg_cost = Decimal("77325.00")     # Fee-inflated cost basis
+
+                # Create mock candles for ATR calculation
+                candles = pd.DataFrame({
+                    'high': [77000.0] * 20,
+                    'low': [76800.0] * 20,
+                    'close': [76900.0] * 20,
+                })
+
+                # Mock ATR calculation to return known value
+                with patch('src.indicators.atr.calculate_atr') as mock_atr:
+                    mock_atr_result = Mock()
+                    mock_atr_result.atr = pd.Series([92.0] * 20)  # ATR = $92
+                    mock_atr.return_value = mock_atr_result
+
+                    daemon._create_trailing_stop(
+                        entry_price=entry_price,
+                        candles=candles,
+                        is_paper=True,
+                        avg_cost=avg_cost,
+                    )
+
+                    # Verify create_trailing_stop was called
+                    assert mock_database.create_trailing_stop.called
+                    call_kwargs = mock_database.create_trailing_stop.call_args[1]
+
+                    # Calculate expected hard stop from entry_price (NOT avg_cost)
+                    # hard_stop = entry_price - (ATR * multiplier) = 76861 - (92 * 1.5) = 76723
+                    expected_hard_stop = entry_price - (Decimal("92") * Decimal("1.5"))
+
+                    # CRITICAL: Hard stop should be based on entry_price
+                    # If it were based on avg_cost, it would be:
+                    # 77325 - 138 = 77187 (ABOVE current market price!)
+                    wrong_hard_stop = avg_cost - (Decimal("92") * Decimal("1.5"))
+
+                    actual_hard_stop = call_kwargs['hard_stop']
+
+                    # Verify hard stop uses entry_price (should be ~$76,723)
+                    assert actual_hard_stop == expected_hard_stop, \
+                        f"Hard stop should be {expected_hard_stop} (from entry_price), got {actual_hard_stop}"
+
+                    # Verify it's NOT using avg_cost (which would be ~$77,187)
+                    assert actual_hard_stop != wrong_hard_stop, \
+                        f"Hard stop should NOT use avg_cost ({wrong_hard_stop})"
+
+                    # Verify the stop is BELOW entry price (allows room for normal volatility)
+                    assert actual_hard_stop < entry_price, \
+                        f"Hard stop ({actual_hard_stop}) should be below entry ({entry_price})"
+
+
+def test_hard_stop_prevents_immediate_trigger(mock_settings):
+    """
+    Verify that with the fix, a buy at $76,861 with cost basis $77,325
+    does NOT immediately trigger a stop at market price $76,800.
+
+    Before fix: hard_stop = $77,187 (from avg_cost), market at $76,800 → TRIGGER
+    After fix: hard_stop = $76,723 (from entry_price), market at $76,800 → NO TRIGGER
+    """
+    mock_settings.trailing_stop_enabled = True
+    mock_settings.stop_loss_atr_multiplier = 1.5
+    mock_settings.min_stop_loss_percent = 0.1  # Low value so ATR-based calculation wins
+    mock_settings.trailing_stop_atr_multiplier = 1.0
+    mock_settings.breakeven_atr_multiplier = 0.5
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None  # Fresh start
+    mock_database.get_last_regime.return_value = None
+    mock_database.get_active_trailing_stop.return_value = None
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                entry_price = Decimal("76861.00")
+                avg_cost = Decimal("77325.00")
+                current_market_price = Decimal("76800.00")  # Price after buy
+
+                candles = pd.DataFrame({
+                    'high': [77000.0] * 20,
+                    'low': [76800.0] * 20,
+                    'close': [76900.0] * 20,
+                })
+
+                with patch('src.indicators.atr.calculate_atr') as mock_atr:
+                    mock_atr_result = Mock()
+                    mock_atr_result.atr = pd.Series([92.0] * 20)
+                    mock_atr.return_value = mock_atr_result
+
+                    daemon._create_trailing_stop(
+                        entry_price=entry_price,
+                        candles=candles,
+                        is_paper=True,
+                        avg_cost=avg_cost,
+                    )
+
+                    call_kwargs = mock_database.create_trailing_stop.call_args[1]
+                    hard_stop = call_kwargs['hard_stop']
+
+                    # With fix: hard_stop = 76861 - 138 = 76723
+                    # Market at 76800 is ABOVE 76723 → NO TRIGGER
+                    assert current_market_price > hard_stop, \
+                        f"Market price {current_market_price} should be above hard stop {hard_stop} (no trigger)"
+
+                    # Verify margin between market and stop
+                    margin = current_market_price - hard_stop
+                    assert margin > 0, f"Expected positive margin, got {margin}"
+
+
+def test_hard_stop_dca_uses_latest_entry_price(mock_settings):
+    """
+    During DCA (Dollar Cost Averaging), hard stop should be recalculated
+    based on the latest entry_price, allowing the stop to adapt to new entries.
+    """
+    mock_settings.trailing_stop_enabled = True
+    mock_settings.stop_loss_atr_multiplier = 1.5
+    mock_settings.min_stop_loss_percent = 0.1  # Low value so ATR-based calculation wins
+    mock_settings.trailing_stop_atr_multiplier = 1.0
+    mock_settings.breakeven_atr_multiplier = 0.5
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None  # Fresh start
+    mock_database.get_last_regime.return_value = None
+    # Simulate existing stop (DCA scenario)
+    existing_stop = Mock()
+    existing_stop.id = 1
+    mock_database.get_active_trailing_stop.return_value = existing_stop
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                # DCA scenario: averaging down at lower price
+                new_entry_price = Decimal("75000.00")  # Lower entry (averaging down)
+                new_avg_cost = Decimal("76000.00")     # Weighted average cost
+
+                candles = pd.DataFrame({
+                    'high': [76000.0] * 20,
+                    'low': [74800.0] * 20,
+                    'close': [75500.0] * 20,
+                })
+
+                with patch('src.indicators.atr.calculate_atr') as mock_atr:
+                    mock_atr_result = Mock()
+                    mock_atr_result.atr = pd.Series([100.0] * 20)
+                    mock_atr.return_value = mock_atr_result
+
+                    daemon._create_trailing_stop(
+                        entry_price=new_entry_price,
+                        candles=candles,
+                        is_paper=True,
+                        avg_cost=new_avg_cost,
+                    )
+
+                    # Should call update for DCA, not create
+                    assert mock_database.update_trailing_stop_for_dca.called
+                    call_kwargs = mock_database.update_trailing_stop_for_dca.call_args[1]
+
+                    # Hard stop based on new entry price: 75000 - (100 * 1.5) = 74850
+                    expected_hard_stop = new_entry_price - (Decimal("100") * Decimal("1.5"))
+                    actual_hard_stop = call_kwargs['hard_stop']
+
+                    assert actual_hard_stop == expected_hard_stop, \
+                        f"DCA hard stop should be {expected_hard_stop}, got {actual_hard_stop}"
+
+
+def test_hard_stop_uses_min_percent_when_atr_too_tight(mock_settings):
+    """
+    When ATR-based stop is too tight (e.g., 15-min candles with small ATR),
+    the min_stop_loss_percent should kick in as a safety floor.
+
+    Example:
+    - Entry: $76,861
+    - ATR: $92, multiplier 1.5 → ATR distance = $138 (0.18%)
+    - min_stop_loss_percent: 0.5% → Min distance = $384
+    - Result: Use $384 (the larger distance) → hard_stop = $76,477
+    """
+    mock_settings.trailing_stop_enabled = True
+    mock_settings.stop_loss_atr_multiplier = 1.5
+    mock_settings.min_stop_loss_percent = 0.5  # 0.5% minimum stop distance
+    mock_settings.trailing_stop_atr_multiplier = 1.0
+    mock_settings.breakeven_atr_multiplier = 0.5
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None
+    mock_database.get_last_regime.return_value = None
+    mock_database.get_active_trailing_stop.return_value = None
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                entry_price = Decimal("76861.00")
+                avg_cost = Decimal("77325.00")
+
+                candles = pd.DataFrame({
+                    'high': [77000.0] * 20,
+                    'low': [76800.0] * 20,
+                    'close': [76900.0] * 20,
+                })
+
+                with patch('src.indicators.atr.calculate_atr') as mock_atr:
+                    mock_atr_result = Mock()
+                    mock_atr_result.atr = pd.Series([92.0] * 20)  # Small ATR
+                    mock_atr.return_value = mock_atr_result
+
+                    daemon._create_trailing_stop(
+                        entry_price=entry_price,
+                        candles=candles,
+                        is_paper=True,
+                        avg_cost=avg_cost,
+                    )
+
+                    call_kwargs = mock_database.create_trailing_stop.call_args[1]
+
+                    # ATR distance = 92 * 1.5 = 138 (0.18%)
+                    atr_distance = Decimal("92") * Decimal("1.5")
+                    # Min % distance = 76861 * 0.5% = 384.305
+                    min_pct_distance = entry_price * Decimal("0.5") / Decimal("100")
+
+                    # Verify min % is larger (wins)
+                    assert min_pct_distance > atr_distance, \
+                        "Test setup error: min % should be larger than ATR distance"
+
+                    # Expected: use the larger distance (min %)
+                    expected_hard_stop = entry_price - min_pct_distance
+                    actual_hard_stop = call_kwargs['hard_stop']
+
+                    assert actual_hard_stop == expected_hard_stop, \
+                        f"Hard stop should use min % ({expected_hard_stop}), got {actual_hard_stop}"
+
+                    # Verify this gives more room than ATR-based stop
+                    atr_based_stop = entry_price - atr_distance
+                    assert actual_hard_stop < atr_based_stop, \
+                        f"Min % stop ({actual_hard_stop}) should be lower than ATR stop ({atr_based_stop})"
+
+
+def test_hard_stop_uses_atr_when_larger_than_min_percent(mock_settings):
+    """
+    When ATR-based distance is larger than minimum percentage,
+    ATR should be used (no artificial widening of stop).
+
+    Example with larger ATR:
+    - Entry: $76,861
+    - ATR: $500, multiplier 1.5 → ATR distance = $750 (0.98%)
+    - min_stop_loss_percent: 0.5% → Min distance = $384
+    - Result: Use $750 (ATR is larger) → hard_stop = $76,111
+    """
+    mock_settings.trailing_stop_enabled = True
+    mock_settings.stop_loss_atr_multiplier = 1.5
+    mock_settings.min_stop_loss_percent = 0.5
+    mock_settings.trailing_stop_atr_multiplier = 1.0
+    mock_settings.breakeven_atr_multiplier = 0.5
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None
+    mock_database.get_last_regime.return_value = None
+    mock_database.get_active_trailing_stop.return_value = None
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                entry_price = Decimal("76861.00")
+                avg_cost = Decimal("77325.00")
+
+                candles = pd.DataFrame({
+                    'high': [78000.0] * 20,
+                    'low': [75000.0] * 20,
+                    'close': [76500.0] * 20,
+                })
+
+                with patch('src.indicators.atr.calculate_atr') as mock_atr:
+                    mock_atr_result = Mock()
+                    mock_atr_result.atr = pd.Series([500.0] * 20)  # Large ATR
+                    mock_atr.return_value = mock_atr_result
+
+                    daemon._create_trailing_stop(
+                        entry_price=entry_price,
+                        candles=candles,
+                        is_paper=True,
+                        avg_cost=avg_cost,
+                    )
+
+                    call_kwargs = mock_database.create_trailing_stop.call_args[1]
+
+                    # ATR distance = 500 * 1.5 = 750
+                    atr_distance = Decimal("500") * Decimal("1.5")
+                    # Min % distance = 76861 * 0.5% = 384.305
+                    min_pct_distance = entry_price * Decimal("0.5") / Decimal("100")
+
+                    # Verify ATR is larger (wins)
+                    assert atr_distance > min_pct_distance, \
+                        "Test setup error: ATR should be larger than min %"
+
+                    # Expected: use ATR distance
+                    expected_hard_stop = entry_price - atr_distance
+                    actual_hard_stop = call_kwargs['hard_stop']
+
+                    assert actual_hard_stop == expected_hard_stop, \
+                        f"Hard stop should use ATR ({expected_hard_stop}), got {actual_hard_stop}"

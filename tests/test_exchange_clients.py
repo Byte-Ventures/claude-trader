@@ -436,6 +436,177 @@ def test_reset(paper_client):
 
 
 # ============================================================================
+# Limit IOC Order Tests
+# ============================================================================
+
+def test_limit_buy_ioc_success(paper_client, mock_exchange_client):
+    """Test successful limit buy IOC order."""
+    initial_quote = paper_client._quote_balance  # 10000
+    base_size = Decimal("0.1")
+    limit_price = Decimal("50050")  # Above ask (50010), should fill
+
+    result = paper_client.limit_buy_ioc("BTC-USD", base_size, limit_price)
+
+    # Verify order result
+    assert result.success is True
+    assert result.side == "buy"
+    assert result.status == "FILLED"
+    assert result.size == base_size
+    # IOC orders fill at market ask price (50010), not limit price
+    assert result.filled_price == Decimal("50010")
+
+    # Verify balances updated
+    assert paper_client._base_balance == base_size
+    assert paper_client._quote_balance < initial_quote
+
+
+def test_limit_buy_ioc_cancelled_below_ask(paper_client, mock_exchange_client):
+    """Test limit buy IOC cancelled when limit price below ask."""
+    initial_quote = paper_client._quote_balance
+    base_size = Decimal("0.1")
+    limit_price = Decimal("49000")  # Below ask (50010), should NOT fill
+
+    result = paper_client.limit_buy_ioc("BTC-USD", base_size, limit_price)
+
+    # Verify order cancelled
+    assert result.success is True  # Order submitted successfully
+    assert result.status == "CANCELLED"
+    assert result.size == Decimal("0")  # Nothing filled
+
+    # Verify balances unchanged
+    assert paper_client._quote_balance == initial_quote
+    assert paper_client._base_balance == Decimal("0")
+
+
+def test_limit_buy_ioc_insufficient_balance(paper_client):
+    """Test limit buy IOC with insufficient balance."""
+    base_size = Decimal("1000")  # Way more than we can afford
+    limit_price = Decimal("50050")
+
+    result = paper_client.limit_buy_ioc("BTC-USD", base_size, limit_price)
+
+    assert result.success is False
+    assert "Insufficient" in result.error
+
+
+def test_limit_buy_ioc_uses_taker_fee(paper_client, mock_exchange_client):
+    """Test that limit IOC uses taker fee (not maker fee)."""
+    base_size = Decimal("0.1")
+    limit_price = Decimal("50050")
+
+    result = paper_client.limit_buy_ioc("BTC-USD", base_size, limit_price)
+
+    # IOC crossing spread = taker fee (0.6%)
+    expected_fee = base_size * Decimal("50010") * paper_client.TAKER_FEE
+    assert result.fee == expected_fee
+
+
+def test_limit_sell_ioc_success(paper_client, mock_exchange_client):
+    """Test successful limit sell IOC order."""
+    # First buy some BTC
+    paper_client.market_buy("BTC-USD", Decimal("5000"))
+    initial_base = paper_client._base_balance
+    initial_quote = paper_client._quote_balance
+
+    base_size = initial_base / 2
+    limit_price = Decimal("49000")  # Below bid (49990), should fill
+
+    result = paper_client.limit_sell_ioc("BTC-USD", base_size, limit_price)
+
+    # Verify order result
+    assert result.success is True
+    assert result.side == "sell"
+    assert result.status == "FILLED"
+    assert result.size == base_size
+    # IOC orders fill at market bid price (49990), not limit price
+    assert result.filled_price == Decimal("49990")
+
+    # Verify balances updated
+    assert paper_client._base_balance < initial_base
+    assert paper_client._quote_balance > initial_quote
+
+
+def test_limit_sell_ioc_cancelled_above_bid(paper_client, mock_exchange_client):
+    """Test limit sell IOC cancelled when limit price above bid."""
+    # First buy some BTC
+    paper_client.market_buy("BTC-USD", Decimal("5000"))
+    initial_base = paper_client._base_balance
+    initial_quote = paper_client._quote_balance
+
+    base_size = initial_base / 2
+    limit_price = Decimal("51000")  # Above bid (49990), should NOT fill
+
+    result = paper_client.limit_sell_ioc("BTC-USD", base_size, limit_price)
+
+    # Verify order cancelled
+    assert result.success is True  # Order submitted successfully
+    assert result.status == "CANCELLED"
+    assert result.size == Decimal("0")  # Nothing filled
+
+    # Verify balances unchanged
+    assert paper_client._quote_balance == initial_quote
+    assert paper_client._base_balance == initial_base
+
+
+def test_limit_sell_ioc_insufficient_balance(paper_client):
+    """Test limit sell IOC with insufficient balance."""
+    base_size = Decimal("1.0")  # Don't have any BTC
+    limit_price = Decimal("49000")
+
+    result = paper_client.limit_sell_ioc("BTC-USD", base_size, limit_price)
+
+    assert result.success is False
+    assert "Insufficient" in result.error
+
+
+def test_limit_sell_ioc_uses_taker_fee(paper_client, mock_exchange_client):
+    """Test that limit sell IOC uses taker fee (not maker fee)."""
+    # First buy some BTC
+    paper_client.market_buy("BTC-USD", Decimal("5000"))
+    base_size = paper_client._base_balance
+
+    limit_price = Decimal("49000")  # Below bid, should fill
+
+    result = paper_client.limit_sell_ioc("BTC-USD", base_size, limit_price)
+
+    # IOC crossing spread = taker fee (0.6%)
+    expected_fee = base_size * Decimal("49990") * paper_client.TAKER_FEE
+    assert result.fee == expected_fee
+
+
+def test_limit_buy_ioc_market_data_failure(paper_client, mock_exchange_client):
+    """Test limit buy IOC when market data fetch fails."""
+    mock_exchange_client.get_market_data.side_effect = Exception("API error")
+
+    result = paper_client.limit_buy_ioc("BTC-USD", Decimal("0.1"), Decimal("50050"))
+
+    assert result.success is False
+    assert "Failed to get market data" in result.error
+
+
+def test_limit_sell_ioc_market_data_failure(paper_client, mock_exchange_client):
+    """Test limit sell IOC when market data fetch fails."""
+    # First buy some BTC
+    mock_exchange_client.get_market_data.return_value = MarketData(
+        symbol="BTC-USD",
+        price=Decimal("50000"),
+        bid=Decimal("49990"),
+        ask=Decimal("50010"),
+        volume_24h=Decimal("1000"),
+        timestamp=datetime.now()
+    )
+    paper_client.market_buy("BTC-USD", Decimal("1000"))
+
+    # Now make market data fail
+    mock_exchange_client.get_market_data.side_effect = Exception("API error")
+
+    result = paper_client.limit_sell_ioc("BTC-USD", Decimal("0.01"), Decimal("49000"))
+
+    assert result.success is False
+    assert "Failed to get market data" in result.error
+
+
+# ============================================================================
 # SymbolMapper Tests
 # ============================================================================
 
