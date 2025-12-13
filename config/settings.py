@@ -213,6 +213,12 @@ class Settings(BaseSettings):
         le=5.0,
         description="Trailing stop distance as ATR multiple"
     )
+    breakeven_atr_multiplier: float = Field(
+        default=0.5,
+        ge=0.1,
+        le=1.0,
+        description="Move stop to break-even when profit reaches this ATR multiple"
+    )
     max_daily_loss_percent: float = Field(
         default=10.0,
         ge=1.0,

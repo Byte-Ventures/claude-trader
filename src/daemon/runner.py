@@ -1943,10 +1943,11 @@ class TradingDaemon:
         Check and update trailing stop, return action if stop triggered.
 
         Priority order (for buy positions):
-        1. Hard stop (emergency capital protection, always active, never moves)
-        2. Trailing stop activation (activates at 1 ATR profit above avg cost)
-        3. Trailing stop update (follows price up, locks in gains)
-        4. Trailing stop trigger (price drops to stop level, locks profit)
+        1. Hard stop (capital protection, triggers sell)
+        2. Break-even trigger (moves hard stop to entry at +0.5 ATR, no sell)
+        3. Trailing activation (activates at +1 ATR, no sell)
+        4. Trailing update (moves stop up, no sell)
+        5. Trailing trigger (locks profit, triggers sell)
 
         The entry_price stored in trailing_stops is the weighted average cost,
         not the individual entry price, ensuring correct calculations for DCA.
@@ -2008,6 +2009,42 @@ class TradingDaemon:
                     is_paper=is_paper,
                 )
                 return "sell"
+
+            # Check break-even trigger (protects capital once in moderate profit)
+            # This triggers BEFORE trailing activation (0.5 ATR vs 1 ATR)
+            # TODO: Add equivalent logic for short positions when implemented
+            if not ts.is_breakeven_active() and distance is not None:
+                # Calculate break-even activation: entry + (ATR * breakeven_multiplier)
+                # ATR = distance / trailing_stop_atr_multiplier
+                breakeven_multiplier = Decimal(str(self.settings.breakeven_atr_multiplier))
+                trailing_multiplier = Decimal(str(self.settings.trailing_stop_atr_multiplier))
+                atr = distance / trailing_multiplier
+                breakeven_activation = entry_price + (atr * breakeven_multiplier)
+
+                if current_price >= breakeven_activation:
+                    # Move hard stop to break-even (entry price)
+                    self.db.update_trailing_stop_breakeven(ts.id, new_hard_stop=entry_price)
+                    # Update local state to prevent duplicate triggers this iteration
+                    ts.breakeven_triggered = True
+                    profit_pct = ((current_price - entry_price) / entry_price * 100).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+                    logger.info(
+                        "breakeven_stop_activated",
+                        current_price=str(current_price),
+                        breakeven_activation=str(breakeven_activation),
+                        entry_price=str(entry_price),
+                        profit_percent=str(profit_pct),
+                        breakeven_multiplier=str(breakeven_multiplier),
+                        atr=str(atr),
+                    )
+                    self.notifier.send_message(
+                        f"🛡️ Break-even protection activated\n"
+                        f"Entry: ${entry_price:,.2f} | Current: ${current_price:,.2f} (+{profit_pct}%)\n"
+                        f"Position now protected at entry"
+                    )
+                    # Update local hard_stop for subsequent checks this iteration
+                    hard_stop = entry_price
 
             # Check if trailing stop is now activated
             if current_stop is None and activation and current_price >= activation:
