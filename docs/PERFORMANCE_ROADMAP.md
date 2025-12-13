@@ -1,7 +1,7 @@
 # Performance Improvement Roadmap
 
-> Analysis Date: 2024-12-13 | Bot Version: 1.25.1
-> Last Updated: 2024-12-13
+> Analysis Date: 2025-12-13 | Bot Version: 1.25.3
+> Last Updated: 2025-12-13
 
 This roadmap documents gaps identified compared to professional trading systems, prioritized by **P&L impact** rather than institutional features.
 
