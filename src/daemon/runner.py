@@ -2009,6 +2009,37 @@ class TradingDaemon:
                 )
                 return "sell"
 
+            # Check break-even trigger (protects capital once in moderate profit)
+            # This triggers BEFORE trailing activation (0.5 ATR vs 1 ATR)
+            if not ts.is_breakeven_active() and distance:
+                # Calculate break-even activation: entry + (ATR * breakeven_multiplier)
+                # ATR = distance / trailing_stop_atr_multiplier
+                breakeven_multiplier = Decimal(str(self.settings.breakeven_atr_multiplier))
+                trailing_multiplier = Decimal(str(self.settings.trailing_stop_atr_multiplier))
+                atr = distance / trailing_multiplier
+                breakeven_activation = entry_price + (atr * breakeven_multiplier)
+
+                if current_price >= breakeven_activation:
+                    # Move hard stop to break-even (entry price)
+                    self.db.update_trailing_stop_breakeven(ts.id, new_hard_stop=entry_price)
+                    profit_pct = ((current_price - entry_price) / entry_price * 100).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+                    logger.info(
+                        "breakeven_stop_activated",
+                        current_price=str(current_price),
+                        breakeven_activation=str(breakeven_activation),
+                        entry_price=str(entry_price),
+                        profit_percent=str(profit_pct),
+                    )
+                    self.notifier.send_message(
+                        f"🛡️ Break-even protection activated\n"
+                        f"Entry: ${entry_price:,.2f} | Current: ${current_price:,.2f} (+{profit_pct}%)\n"
+                        f"Position now protected at entry"
+                    )
+                    # Update local hard_stop for subsequent checks this iteration
+                    hard_stop = entry_price
+
             # Check if trailing stop is now activated
             if current_stop is None and activation and current_price >= activation:
                 # Activate: set initial stop at current_price - distance

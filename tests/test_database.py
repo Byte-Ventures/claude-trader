@@ -667,6 +667,114 @@ def test_deactivate_trailing_stop(db):
     assert active is None
 
 
+def test_update_trailing_stop_breakeven(db):
+    """
+    CRITICAL: Test break-even stop activation moves hard stop to entry price.
+    """
+    ts = db.create_trailing_stop(
+        symbol="BTC-USD",
+        side="buy",
+        entry_price=Decimal("50000"),
+        trailing_activation=Decimal("52000"),
+        trailing_distance=Decimal("1000"),
+        hard_stop=Decimal("48000"),  # Initial hard stop below entry
+        is_paper=False
+    )
+
+    # Verify initial state
+    assert ts.is_breakeven_active() is False
+    assert ts.get_hard_stop() == Decimal("48000")
+
+    # Activate break-even protection
+    updated = db.update_trailing_stop_breakeven(
+        trailing_stop_id=ts.id,
+        new_hard_stop=Decimal("50000")  # Move to entry price
+    )
+
+    assert updated is not None
+    assert updated.is_breakeven_active() is True
+    assert updated.get_hard_stop() == Decimal("50000")  # Now at entry
+
+
+def test_breakeven_flag_resets_on_dca(db):
+    """
+    CRITICAL: Test that break-even flag resets when DCA occurs.
+
+    When position is averaged, the break-even level changes,
+    so the flag must reset to allow re-triggering at new level.
+    """
+    symbol = "BTC-USD"
+
+    # Create stop with break-even already triggered
+    ts = db.create_trailing_stop(
+        symbol=symbol,
+        side="buy",
+        entry_price=Decimal("50000"),
+        trailing_activation=Decimal("52000"),
+        trailing_distance=Decimal("1000"),
+        hard_stop=Decimal("50000"),  # Already at break-even
+        is_paper=False
+    )
+    # Manually trigger break-even
+    db.update_trailing_stop_breakeven(ts.id, new_hard_stop=Decimal("50000"))
+
+    # Verify break-even is active
+    active = db.get_active_trailing_stop(symbol, is_paper=False)
+    assert active.is_breakeven_active() is True
+
+    # DCA update should reset break-even flag
+    updated = db.update_trailing_stop_for_dca(
+        symbol=symbol,
+        entry_price=Decimal("49000"),  # New average cost
+        trailing_activation=Decimal("51000"),
+        trailing_distance=Decimal("1000"),
+        hard_stop=Decimal("47000"),  # New hard stop based on new avg
+        is_paper=False
+    )
+
+    assert updated.is_breakeven_active() is False  # Reset for re-triggering
+    assert updated.get_hard_stop() == Decimal("47000")  # New calculated hard stop
+
+
+def test_breakeven_paper_live_separation(db):
+    """
+    CRITICAL: Verify break-even state is separate for paper and live trading.
+    """
+    symbol = "BTC-USD"
+
+    # Create paper stop
+    paper_ts = db.create_trailing_stop(
+        symbol=symbol,
+        side="buy",
+        entry_price=Decimal("50000"),
+        trailing_activation=Decimal("52000"),
+        trailing_distance=Decimal("1000"),
+        hard_stop=Decimal("48000"),
+        is_paper=True
+    )
+
+    # Create live stop
+    live_ts = db.create_trailing_stop(
+        symbol=symbol,
+        side="buy",
+        entry_price=Decimal("50000"),
+        trailing_activation=Decimal("52000"),
+        trailing_distance=Decimal("1000"),
+        hard_stop=Decimal("48000"),
+        is_paper=False
+    )
+
+    # Trigger break-even on paper only
+    db.update_trailing_stop_breakeven(paper_ts.id, new_hard_stop=Decimal("50000"))
+
+    # Verify separation
+    paper_active = db.get_active_trailing_stop(symbol, is_paper=True)
+    live_active = db.get_active_trailing_stop(symbol, is_paper=False)
+
+    assert paper_active.is_breakeven_active() is True
+    assert live_active.is_breakeven_active() is False
+
+
 # ============================================================================
 # Rate History Tests - Duplicate Handling & Atomicity
 # ============================================================================
