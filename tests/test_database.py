@@ -695,6 +695,12 @@ def test_update_trailing_stop_breakeven(db):
     assert updated.is_breakeven_active() is True
     assert updated.get_hard_stop() == Decimal("50000")  # Now at entry
 
+    # Verify persistence (fetch fresh from DB)
+    fresh_ts = db.get_active_trailing_stop("BTC-USD", is_paper=False)
+    assert fresh_ts is not None
+    assert fresh_ts.is_breakeven_active() is True
+    assert fresh_ts.get_hard_stop() == Decimal("50000")
+
 
 def test_breakeven_flag_resets_on_dca(db):
     """

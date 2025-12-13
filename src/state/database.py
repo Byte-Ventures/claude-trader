@@ -180,7 +180,7 @@ class TrailingStop(Base):
     trailing_stop = Column(String(50), nullable=True)  # Current stop level
     trailing_activation = Column(String(50), nullable=True)  # Price where trailing activates
     trailing_distance = Column(String(50), nullable=True)  # ATR-based distance
-    hard_stop = Column(String(50), nullable=True)  # Hard stop-loss price (moves to break-even)
+    hard_stop = Column(String(50), nullable=True)  # Hard stop: emergency exit, moves to entry at break-even
     breakeven_triggered = Column(Boolean, default=False)  # True when stop moved to break-even
     is_active = Column(Boolean, default=False)
     is_paper = Column(Boolean, default=False)
