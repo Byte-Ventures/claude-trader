@@ -489,6 +489,7 @@ class TradeReviewer:
         ai_web_search_enabled: bool = True,
         market_research_cache_minutes: int = 15,
         candle_interval: str = "ONE_HOUR",
+        signal_threshold: int = 60,
     ):
         """
         Initialize multi-agent trade reviewer.
@@ -522,6 +523,7 @@ class TradeReviewer:
         self.market_research_enabled = market_research_enabled
         self.ai_web_search_enabled = ai_web_search_enabled
         self.candle_interval = candle_interval
+        self.signal_threshold = signal_threshold
 
         # Set cache TTL for market research
         set_cache_ttl(market_research_cache_minutes)
@@ -849,6 +851,7 @@ class TradeReviewer:
             "trading_style": trading_style,
             "trading_style_desc": trading_style_desc,
             "position_percent": position_percent,
+            "threshold": self.signal_threshold,
         }
 
     def _build_reviewer_prompt(self, context: dict) -> str:
@@ -857,7 +860,7 @@ class TradeReviewer:
 
         # Build common context sections
         common_context = f"""Price: ${context['price']:,.2f}
-Signal Score: {context['score']:+d} (threshold: ±60)
+Signal Score: {context['score']:+d} (threshold: ±{context['threshold']})
 Signal Breakdown: {json.dumps(context['breakdown'])}
 
 Trading Style: {context['trading_style_desc']}
@@ -877,7 +880,7 @@ Recent Performance (7 days):
         if review_type == "interesting_hold":
             return f"""Review this HOLD decision:
 
-The bot decided NOT to trade because the signal score ({context['score']:+d}) is below the threshold (±60).
+The bot decided NOT to trade because the signal score ({context['score']:+d}) is below the threshold (±{context['threshold']}).
 The score is close to threshold, making this an "interesting hold" worth reviewing.
 
 {common_context}
@@ -914,7 +917,7 @@ Analyze this trade from your assigned perspective, considering the trading timef
 
         if review_type == "interesting_hold":
             return f"""Hold Decision Review at ${context['price']:,.2f}
-Signal Score: {context['score']:+d} (below threshold ±60)
+Signal Score: {context['score']:+d} (below threshold ±{context['threshold']})
 Trading Style: {context['trading_style_desc']}
 
 The bot decided NOT to trade. Should this hold be confirmed or overridden?
@@ -937,7 +940,7 @@ Based on these three perspectives and the trading timeframe, make the final deci
         """Build prompt for hold analysis."""
         return f"""Analyze this hold decision:
 
-Signal Score: {context['score']:+d} (need ≥+60 for buy or ≤-60 for sell)
+Signal Score: {context['score']:+d} (need ≥+{context['threshold']} for buy or ≤-{context['threshold']} for sell)
 Price: ${context['price']:,.2f}
 Signal Breakdown: {json.dumps(context['breakdown'])}
 

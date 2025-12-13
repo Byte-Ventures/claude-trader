@@ -158,6 +158,7 @@ class TradingDaemon:
                 ai_web_search_enabled=settings.ai_web_search_enabled,
                 market_research_cache_minutes=settings.market_research_cache_minutes,
                 candle_interval=settings.candle_interval,
+                signal_threshold=settings.signal_threshold,
             )
             logger.info(
                 "multi_agent_trade_reviewer_initialized",
