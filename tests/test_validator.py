@@ -757,8 +757,11 @@ def test_profit_margin_only_checked_for_buys(validator):
     # Even with tight stop, sell order should pass this check
     result = validator.validate(order, stop_distance_percent=0.005)
 
-    # Should not fail on profit margin (may pass or fail on other checks)
-    assert result.valid is True or "Stop too tight" not in result.reason
+    # Sell orders should never fail specifically due to profit margin check
+    # (they may fail other validation checks, which is fine)
+    if not result.valid:
+        assert "Stop too tight" not in (result.reason or ""), \
+            "Sell orders should not be rejected for profit margin"
 
 
 def test_profit_margin_skipped_when_no_stop_distance(validator):

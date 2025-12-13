@@ -5,6 +5,7 @@ Validates all orders before execution to ensure they pass safety checks.
 All checks must pass for an order to be executed.
 """
 
+import math
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
@@ -352,6 +353,19 @@ class OrderValidator:
         Returns:
             ValidationResult with valid=True if profit margin is sufficient
         """
+        # Defensive input validation
+        if not isinstance(stop_distance_percent, (int, float)):
+            return ValidationResult(
+                valid=False,
+                reason=f"Invalid stop distance type: {type(stop_distance_percent).__name__}",
+            )
+
+        if math.isnan(stop_distance_percent) or stop_distance_percent <= 0:
+            return ValidationResult(
+                valid=False,
+                reason=f"Invalid stop distance: {stop_distance_percent}",
+            )
+
         # Minimum required margin is 2x round-trip fees for break-even at 50% win rate
         min_margin = self.config.estimated_fee_percent * 2
 
