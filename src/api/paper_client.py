@@ -529,6 +529,219 @@ class PaperTradingClient:
             success=True,
         )
 
+    def limit_buy_post_only(
+        self,
+        product_id: str,
+        base_size: Decimal,
+        limit_price: Decimal,
+    ) -> OrderResult:
+        """
+        Simulate a limit buy order with POST_ONLY (maker-only).
+
+        For paper trading, simulates maker order behavior:
+        - Rejected if limit >= ask (would take liquidity)
+        - Filled at limit price with maker fee
+        """
+        # Get real market data
+        try:
+            market_data = self.get_market_data(product_id)
+        except Exception as e:
+            return OrderResult(
+                order_id="",
+                side="buy",
+                size=Decimal("0"),
+                filled_price=None,
+                status="failed",
+                fee=Decimal("0"),
+                success=False,
+                error=f"Failed to get market data: {e}",
+            )
+
+        # POST_ONLY: reject if limit >= ask (would cross spread)
+        if limit_price >= market_data.ask:
+            logger.info(
+                "paper_limit_buy_post_only_rejected",
+                limit_price=str(limit_price),
+                ask=str(market_data.ask),
+                reason="Would take liquidity",
+            )
+            return OrderResult(
+                order_id=str(uuid.uuid4()),
+                side="buy",
+                size=Decimal("0"),
+                filled_price=None,
+                status="REJECTED",
+                fee=Decimal("0"),
+                success=False,
+                error="POST_ONLY order would take liquidity",
+            )
+
+        # Check balance
+        gross_cost = base_size * limit_price
+        fee = gross_cost * self.MAKER_FEE
+        total_cost = gross_cost + fee
+
+        if total_cost > self._quote_balance:
+            return OrderResult(
+                order_id="",
+                side="buy",
+                size=Decimal("0"),
+                filled_price=None,
+                status="failed",
+                fee=Decimal("0"),
+                success=False,
+                error=f"Insufficient {self._quote_currency} balance",
+            )
+
+        # Simulate fill at limit price (maker gets their price)
+        fill_price = limit_price
+
+        # Update balances
+        self._quote_balance -= total_cost
+        self._base_balance += base_size
+
+        # Update statistics
+        self._total_fees += fee
+        self._total_volume += gross_cost
+
+        # Record trade
+        trade = PaperTrade(
+            trade_id=str(uuid.uuid4()),
+            timestamp=datetime.now(),
+            side="buy",
+            size=base_size,
+            price=fill_price,
+            fee=fee,
+            slippage=Decimal("0"),
+        )
+        self._trades.append(trade)
+
+        logger.info(
+            "paper_limit_buy_post_only_executed",
+            size=str(base_size),
+            limit_price=str(limit_price),
+            fill_price=str(fill_price),
+            fee=str(fee),
+            maker_fee_rate=str(self.MAKER_FEE),
+        )
+
+        return OrderResult(
+            order_id=trade.trade_id,
+            side="buy",
+            size=base_size,
+            filled_price=fill_price,
+            status="FILLED",
+            fee=fee,
+            success=True,
+        )
+
+    def limit_sell_post_only(
+        self,
+        product_id: str,
+        base_size: Decimal,
+        limit_price: Decimal,
+    ) -> OrderResult:
+        """
+        Simulate a limit sell order with POST_ONLY (maker-only).
+
+        For paper trading, simulates maker order behavior:
+        - Rejected if limit <= bid (would take liquidity)
+        - Filled at limit price with maker fee
+        """
+        # Get real market data
+        try:
+            market_data = self.get_market_data(product_id)
+        except Exception as e:
+            return OrderResult(
+                order_id="",
+                side="sell",
+                size=Decimal("0"),
+                filled_price=None,
+                status="failed",
+                fee=Decimal("0"),
+                success=False,
+                error=f"Failed to get market data: {e}",
+            )
+
+        # POST_ONLY: reject if limit <= bid (would cross spread)
+        if limit_price <= market_data.bid:
+            logger.info(
+                "paper_limit_sell_post_only_rejected",
+                limit_price=str(limit_price),
+                bid=str(market_data.bid),
+                reason="Would take liquidity",
+            )
+            return OrderResult(
+                order_id=str(uuid.uuid4()),
+                side="sell",
+                size=Decimal("0"),
+                filled_price=None,
+                status="REJECTED",
+                fee=Decimal("0"),
+                success=False,
+                error="POST_ONLY order would take liquidity",
+            )
+
+        # Check balance
+        if base_size > self._base_balance:
+            return OrderResult(
+                order_id="",
+                side="sell",
+                size=Decimal("0"),
+                filled_price=None,
+                status="failed",
+                fee=Decimal("0"),
+                success=False,
+                error=f"Insufficient {self._base_currency} balance",
+            )
+
+        # Simulate fill at limit price (maker gets their price)
+        fill_price = limit_price
+
+        # Calculate quote received and fee
+        gross_quote = base_size * fill_price
+        fee = gross_quote * self.MAKER_FEE
+        net_quote = gross_quote - fee
+
+        # Update balances
+        self._base_balance -= base_size
+        self._quote_balance += net_quote
+
+        # Update statistics
+        self._total_fees += fee
+        self._total_volume += gross_quote
+
+        # Record trade
+        trade = PaperTrade(
+            trade_id=str(uuid.uuid4()),
+            timestamp=datetime.now(),
+            side="sell",
+            size=base_size,
+            price=fill_price,
+            fee=fee,
+            slippage=Decimal("0"),
+        )
+        self._trades.append(trade)
+
+        logger.info(
+            "paper_limit_sell_post_only_executed",
+            size=str(base_size),
+            limit_price=str(limit_price),
+            fill_price=str(fill_price),
+            fee=str(fee),
+            maker_fee_rate=str(self.MAKER_FEE),
+        )
+
+        return OrderResult(
+            order_id=trade.trade_id,
+            side="sell",
+            size=base_size,
+            filled_price=fill_price,
+            status="FILLED",
+            fee=fee,
+            success=True,
+        )
+
     def get_order(self, order_id: str) -> dict:
         """Get paper order details."""
         for trade in self._trades:

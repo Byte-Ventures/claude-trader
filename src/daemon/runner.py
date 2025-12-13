@@ -1133,46 +1133,79 @@ class TradingDaemon:
             logger.info("buy_rejected", reason=validation.reason)
             return
 
-        # Execute order (limit IOC with fallback to market)
+        # Execute order (post-only maker -> IOC taker -> market fallback)
         if self.settings.use_limit_orders:
             try:
                 # Get market data for limit price calculation
                 market_data = self.client.get_market_data(self.settings.trading_pair)
                 offset = Decimal(str(self.settings.limit_order_offset_percent)) / 100
-                # Use high precision for limit price to support various trading pairs
-                limit_price = (market_data.ask * (1 + offset)).quantize(
+
+                # Step 1: Try post-only at bid price (maker order for lower fees)
+                # Price at bid ensures we're adding liquidity, not taking it
+                maker_price = market_data.bid.quantize(
                     Decimal("0.00000001"), rounding=ROUND_HALF_UP
                 ).normalize()
-                base_size = (position.size_quote / limit_price).quantize(Decimal("0.00000001"))
+                base_size = (position.size_quote / maker_price).quantize(Decimal("0.00000001"))
 
-                result = self.client.limit_buy_ioc(
+                result = self.client.limit_buy_post_only(
                     self.settings.trading_pair,
                     base_size,
-                    limit_price,
+                    maker_price,
                 )
 
-                # Fall back to market order if limit didn't fill
-                if not result.success or result.size == Decimal("0"):
-                    logger.warning(
-                        "limit_buy_ioc_fallback",
-                        reason="unfilled" if result.success else result.error,
-                        limit_price=str(limit_price),
-                    )
-                    result = self.client.market_buy(
-                        self.settings.trading_pair,
-                        position.size_quote,
-                    )
-                else:
+                # Check if post-only was accepted and filled
+                if result.success and result.size > Decimal("0"):
                     logger.info(
-                        "limit_buy_ioc_filled",
-                        limit_price=str(limit_price),
+                        "limit_buy_post_only_filled",
+                        maker_price=str(maker_price),
                         filled_price=str(result.filled_price),
                         size=str(result.size),
+                        fee_type="maker",
                     )
+                else:
+                    # Step 2: Post-only rejected/unfilled, try IOC at ask + offset (taker)
+                    logger.info(
+                        "limit_buy_post_only_fallback",
+                        reason=result.error or "unfilled",
+                        maker_price=str(maker_price),
+                        fallback="ioc",
+                    )
+
+                    taker_price = (market_data.ask * (1 + offset)).quantize(
+                        Decimal("0.00000001"), rounding=ROUND_HALF_UP
+                    ).normalize()
+                    base_size = (position.size_quote / taker_price).quantize(Decimal("0.00000001"))
+
+                    result = self.client.limit_buy_ioc(
+                        self.settings.trading_pair,
+                        base_size,
+                        taker_price,
+                    )
+
+                    if result.success and result.size > Decimal("0"):
+                        logger.info(
+                            "limit_buy_ioc_filled",
+                            taker_price=str(taker_price),
+                            filled_price=str(result.filled_price),
+                            size=str(result.size),
+                            fee_type="taker",
+                        )
+                    else:
+                        # Step 3: IOC failed, fall back to market
+                        logger.warning(
+                            "limit_buy_ioc_fallback",
+                            reason="unfilled" if result.success else result.error,
+                            taker_price=str(taker_price),
+                            fallback="market",
+                        )
+                        result = self.client.market_buy(
+                            self.settings.trading_pair,
+                            position.size_quote,
+                        )
             except Exception as e:
                 # Fall back to market order if limit order setup fails
                 logger.warning(
-                    "limit_buy_ioc_setup_failed",
+                    "limit_buy_setup_failed",
                     error=str(e),
                     fallback="market_order",
                 )
@@ -1326,44 +1359,77 @@ class TradingDaemon:
             logger.info("sell_rejected", reason=validation.reason)
             return
 
-        # Execute order (limit IOC with fallback to market)
+        # Execute order (post-only maker -> IOC taker -> market fallback)
         if self.settings.use_limit_orders:
             try:
                 # Get market data for limit price calculation
                 market_data = self.client.get_market_data(self.settings.trading_pair)
                 offset = Decimal(str(self.settings.limit_order_offset_percent)) / 100
-                limit_price = (market_data.bid * (1 - offset)).quantize(
+
+                # Step 1: Try post-only at ask price (maker order for lower fees)
+                # Price at ask ensures we're adding liquidity, not taking it
+                maker_price = market_data.ask.quantize(
                     Decimal("0.00000001"), rounding=ROUND_HALF_UP
                 ).normalize()
 
-                result = self.client.limit_sell_ioc(
+                result = self.client.limit_sell_post_only(
                     self.settings.trading_pair,
                     size_base,
-                    limit_price,
+                    maker_price,
                 )
 
-                # Fall back to market order if limit didn't fill
-                if not result.success or result.size == Decimal("0"):
-                    logger.warning(
-                        "limit_sell_ioc_fallback",
-                        reason="unfilled" if result.success else result.error,
-                        limit_price=str(limit_price),
-                    )
-                    result = self.client.market_sell(
-                        self.settings.trading_pair,
-                        size_base,
-                    )
-                else:
+                # Check if post-only was accepted and filled
+                if result.success and result.size > Decimal("0"):
                     logger.info(
-                        "limit_sell_ioc_filled",
-                        limit_price=str(limit_price),
+                        "limit_sell_post_only_filled",
+                        maker_price=str(maker_price),
                         filled_price=str(result.filled_price),
                         size=str(result.size),
+                        fee_type="maker",
                     )
+                else:
+                    # Step 2: Post-only rejected/unfilled, try IOC at bid - offset (taker)
+                    logger.info(
+                        "limit_sell_post_only_fallback",
+                        reason=result.error or "unfilled",
+                        maker_price=str(maker_price),
+                        fallback="ioc",
+                    )
+
+                    taker_price = (market_data.bid * (1 - offset)).quantize(
+                        Decimal("0.00000001"), rounding=ROUND_HALF_UP
+                    ).normalize()
+
+                    result = self.client.limit_sell_ioc(
+                        self.settings.trading_pair,
+                        size_base,
+                        taker_price,
+                    )
+
+                    if result.success and result.size > Decimal("0"):
+                        logger.info(
+                            "limit_sell_ioc_filled",
+                            taker_price=str(taker_price),
+                            filled_price=str(result.filled_price),
+                            size=str(result.size),
+                            fee_type="taker",
+                        )
+                    else:
+                        # Step 3: IOC failed, fall back to market
+                        logger.warning(
+                            "limit_sell_ioc_fallback",
+                            reason="unfilled" if result.success else result.error,
+                            taker_price=str(taker_price),
+                            fallback="market",
+                        )
+                        result = self.client.market_sell(
+                            self.settings.trading_pair,
+                            size_base,
+                        )
             except Exception as e:
                 # Fall back to market order if limit order setup fails
                 logger.warning(
-                    "limit_sell_ioc_setup_failed",
+                    "limit_sell_setup_failed",
                     error=str(e),
                     fallback="market_order",
                 )
