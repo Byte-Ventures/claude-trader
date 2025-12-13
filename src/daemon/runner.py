@@ -1120,38 +1120,50 @@ class TradingDaemon:
 
         # Execute order (limit IOC with fallback to market)
         if self.settings.use_limit_orders:
-            # Get market data for limit price calculation
-            market_data = self.client.get_market_data(self.settings.trading_pair)
-            offset = Decimal(str(self.settings.limit_order_offset_percent)) / 100
-            # Use high precision for limit price to support various trading pairs
-            limit_price = (market_data.ask * (1 + offset)).quantize(
-                Decimal("0.00000001"), rounding=ROUND_HALF_UP
-            ).normalize()
-            base_size = (position.size_quote / limit_price).quantize(Decimal("0.00000001"))
+            try:
+                # Get market data for limit price calculation
+                market_data = self.client.get_market_data(self.settings.trading_pair)
+                offset = Decimal(str(self.settings.limit_order_offset_percent)) / 100
+                # Use high precision for limit price to support various trading pairs
+                limit_price = (market_data.ask * (1 + offset)).quantize(
+                    Decimal("0.00000001"), rounding=ROUND_HALF_UP
+                ).normalize()
+                base_size = (position.size_quote / limit_price).quantize(Decimal("0.00000001"))
 
-            result = self.client.limit_buy_ioc(
-                self.settings.trading_pair,
-                base_size,
-                limit_price,
-            )
+                result = self.client.limit_buy_ioc(
+                    self.settings.trading_pair,
+                    base_size,
+                    limit_price,
+                )
 
-            # Fall back to market order if limit didn't fill
-            if not result.success or result.size == Decimal("0"):
+                # Fall back to market order if limit didn't fill
+                if not result.success or result.size == Decimal("0"):
+                    logger.warning(
+                        "limit_buy_ioc_fallback",
+                        reason="unfilled" if result.success else result.error,
+                        limit_price=str(limit_price),
+                    )
+                    result = self.client.market_buy(
+                        self.settings.trading_pair,
+                        position.size_quote,
+                    )
+                else:
+                    logger.info(
+                        "limit_buy_ioc_filled",
+                        limit_price=str(limit_price),
+                        filled_price=str(result.filled_price),
+                        size=str(result.size),
+                    )
+            except Exception as e:
+                # Fall back to market order if limit order setup fails
                 logger.warning(
-                    "limit_buy_ioc_fallback",
-                    reason="unfilled" if result.success else result.error,
-                    limit_price=str(limit_price),
+                    "limit_buy_ioc_setup_failed",
+                    error=str(e),
+                    fallback="market_order",
                 )
                 result = self.client.market_buy(
                     self.settings.trading_pair,
                     position.size_quote,
-                )
-            else:
-                logger.info(
-                    "limit_buy_ioc_filled",
-                    limit_price=str(limit_price),
-                    filled_price=str(result.filled_price),
-                    size=str(result.size),
                 )
         else:
             result = self.client.market_buy(
@@ -1301,36 +1313,48 @@ class TradingDaemon:
 
         # Execute order (limit IOC with fallback to market)
         if self.settings.use_limit_orders:
-            # Get market data for limit price calculation
-            market_data = self.client.get_market_data(self.settings.trading_pair)
-            offset = Decimal(str(self.settings.limit_order_offset_percent)) / 100
-            limit_price = (market_data.bid * (1 - offset)).quantize(
-                Decimal("0.00000001"), rounding=ROUND_HALF_UP
-            ).normalize()
+            try:
+                # Get market data for limit price calculation
+                market_data = self.client.get_market_data(self.settings.trading_pair)
+                offset = Decimal(str(self.settings.limit_order_offset_percent)) / 100
+                limit_price = (market_data.bid * (1 - offset)).quantize(
+                    Decimal("0.00000001"), rounding=ROUND_HALF_UP
+                ).normalize()
 
-            result = self.client.limit_sell_ioc(
-                self.settings.trading_pair,
-                size_base,
-                limit_price,
-            )
+                result = self.client.limit_sell_ioc(
+                    self.settings.trading_pair,
+                    size_base,
+                    limit_price,
+                )
 
-            # Fall back to market order if limit didn't fill
-            if not result.success or result.size == Decimal("0"):
+                # Fall back to market order if limit didn't fill
+                if not result.success or result.size == Decimal("0"):
+                    logger.warning(
+                        "limit_sell_ioc_fallback",
+                        reason="unfilled" if result.success else result.error,
+                        limit_price=str(limit_price),
+                    )
+                    result = self.client.market_sell(
+                        self.settings.trading_pair,
+                        size_base,
+                    )
+                else:
+                    logger.info(
+                        "limit_sell_ioc_filled",
+                        limit_price=str(limit_price),
+                        filled_price=str(result.filled_price),
+                        size=str(result.size),
+                    )
+            except Exception as e:
+                # Fall back to market order if limit order setup fails
                 logger.warning(
-                    "limit_sell_ioc_fallback",
-                    reason="unfilled" if result.success else result.error,
-                    limit_price=str(limit_price),
+                    "limit_sell_ioc_setup_failed",
+                    error=str(e),
+                    fallback="market_order",
                 )
                 result = self.client.market_sell(
                     self.settings.trading_pair,
                     size_base,
-                )
-            else:
-                logger.info(
-                    "limit_sell_ioc_filled",
-                    limit_price=str(limit_price),
-                    filled_price=str(result.filled_price),
-                    size=str(result.size),
                 )
         else:
             result = self.client.market_sell(

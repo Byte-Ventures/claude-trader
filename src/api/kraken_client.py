@@ -597,7 +597,7 @@ class KrakenClient:
                 "ordertype": "limit",
                 "price": str(limit_price),
                 "volume": str(base_size),
-                "oflags": "ioc",  # Immediate-or-cancel
+                "timeinforce": "IOC",  # Immediate-or-cancel
             }
 
             result = self._private_request("AddOrder", order_data)
@@ -681,7 +681,7 @@ class KrakenClient:
                 "ordertype": "limit",
                 "price": str(limit_price),
                 "volume": str(base_size),
-                "oflags": "ioc",  # Immediate-or-cancel
+                "timeinforce": "IOC",  # Immediate-or-cancel
             }
 
             result = self._private_request("AddOrder", order_data)

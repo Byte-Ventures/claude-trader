@@ -410,7 +410,7 @@ class CoinbaseClient:
                 "product_id": product_id,
                 "side": "BUY",
                 "order_configuration": {
-                    "limit_limit_ioc": {
+                    "sor_limit_ioc": {
                         "base_size": str(base_size),
                         "limit_price": str(limit_price),
                     }
@@ -478,7 +478,7 @@ class CoinbaseClient:
                 "product_id": product_id,
                 "side": "SELL",
                 "order_configuration": {
-                    "limit_limit_ioc": {
+                    "sor_limit_ioc": {
                         "base_size": str(base_size),
                         "limit_price": str(limit_price),
                     }

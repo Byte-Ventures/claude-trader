@@ -375,8 +375,8 @@ class PaperTradingClient:
                 error=f"Insufficient {self._quote_currency} balance. Need {quote_needed}, have {self._quote_balance}",
             )
 
-        # Fill at limit price (limit orders fill at limit or better)
-        fill_price = min(limit_price, market_data.ask)
+        # IOC orders crossing spread fill at market price (no price improvement)
+        fill_price = market_data.ask
 
         # Calculate actual cost and fee
         gross_cost = base_size * fill_price
@@ -480,8 +480,8 @@ class PaperTradingClient:
                 error=f"Insufficient {self._base_currency} balance. Need {base_size}, have {self._base_balance}",
             )
 
-        # Fill at limit price (limit orders fill at limit or better)
-        fill_price = max(limit_price, market_data.bid)
+        # IOC orders crossing spread fill at market price (no price improvement)
+        fill_price = market_data.bid
 
         # Calculate quote received and fee
         gross_quote = base_size * fill_price
