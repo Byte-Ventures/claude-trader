@@ -1121,7 +1121,14 @@ class TradingDaemon:
             order_type="market",
         )
 
-        validation = self.validator.validate(order_request)
+        # Calculate stop distance for profit margin validation
+        stop_distance_percent = None
+        if current_price > 0 and position.stop_loss_price > 0:
+            stop_distance_percent = float(
+                abs(current_price - position.stop_loss_price) / current_price
+            )
+
+        validation = self.validator.validate(order_request, stop_distance_percent)
         if not validation.valid:
             logger.info("buy_rejected", reason=validation.reason)
             return
