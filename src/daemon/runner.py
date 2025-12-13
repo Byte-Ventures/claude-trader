@@ -1979,8 +1979,25 @@ class TradingDaemon:
             # Trailing distance is based on config multiplier
             distance = atr * Decimal(str(self.settings.trailing_stop_atr_multiplier))
 
-            # Hard stop: based on average cost, not latest entry
-            hard_stop = avg_cost - (atr * Decimal(str(self.settings.stop_loss_atr_multiplier)))
+            # Hard stop: based on MARKET entry price, NOT fee-inflated cost basis
+            # Using avg_cost caused immediate stop triggers because cost basis is ~0.6%
+            # higher than market price due to fee inclusion
+            #
+            # Use the LARGER of ATR-based distance or minimum percentage distance
+            # This ensures stop is never too tight on low-volatility timeframes
+            atr_stop_distance = atr * Decimal(str(self.settings.stop_loss_atr_multiplier))
+            min_pct_distance = entry_price * Decimal(str(self.settings.min_stop_loss_percent)) / Decimal("100")
+            stop_distance = max(atr_stop_distance, min_pct_distance)
+            hard_stop = entry_price - stop_distance
+
+            # Log which method determined the stop
+            if min_pct_distance > atr_stop_distance:
+                logger.info(
+                    "hard_stop_using_min_percent",
+                    atr_distance=str(atr_stop_distance),
+                    min_pct_distance=str(min_pct_distance),
+                    min_pct=self.settings.min_stop_loss_percent,
+                )
 
             # Check if we're DCA'ing (stop already exists)
             # If so, UPDATE the existing stop in-place to avoid any window
