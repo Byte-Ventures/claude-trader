@@ -13,14 +13,14 @@ import asyncio
 import math
 import signal
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from threading import Event
 from typing import Optional, Union
 
 import structlog
 
-from config.settings import Settings, TradingMode, VetoAction, request_reload, reload_pending, reload_settings
+from config.settings import Settings, TradingMode, VetoAction, AIFailureMode, request_reload, reload_pending, reload_settings
 from src.api.exchange_factory import create_exchange_client, get_exchange_name
 from src.api.exchange_protocol import ExchangeClient
 from src.api.paper_client import PaperTradingClient
@@ -73,6 +73,7 @@ class TradingDaemon:
         self._last_hourly_analysis: Optional[datetime] = None  # For hourly market analysis
         self._pending_post_volatility_analysis: bool = False  # Trigger analysis when volatility calms
         self._last_stop_check: Optional[datetime] = None  # For periodic stop protection checks
+        self._last_ai_failure_notification: Optional[datetime] = None  # Cooldown for AI failure notifications
 
         # Create persistent event loop for async operations (avoids repeated asyncio.run())
         self._loop = asyncio.new_event_loop()
@@ -985,8 +986,41 @@ class TradingDaemon:
                             return
 
                     except Exception as e:
-                        logger.error("claude_review_failed", error=str(e))
-                        # Continue with trade on review failure (fail open)
+                        logger.error("claude_review_failed", error=str(e), exc_info=True)
+
+                        # Check AI failure mode setting
+                        if self.settings.ai_failure_mode == AIFailureMode.SAFE:
+                            logger.warning(
+                                "trade_skipped_ai_unavailable",
+                                signal_score=signal_result.score,
+                                action=effective_action,
+                                failure_mode="safe",
+                            )
+
+                            # Rate-limit notifications to avoid spam (max once per 15 minutes)
+                            # Note: _last_ai_failure_notification is intentionally ephemeral (in-memory only)
+                            # It resets on bot restart, which is acceptable for notification cooldown
+                            now = datetime.now(timezone.utc)
+                            should_notify = (
+                                self._last_ai_failure_notification is None
+                                or (now - self._last_ai_failure_notification).total_seconds() >= 900  # 15 min
+                            )
+                            if should_notify:
+                                self._last_ai_failure_notification = now
+                                self.notifier.send_message(
+                                    f"⚠️ Trade skipped: AI review unavailable\n"
+                                    f"Signal: {effective_action} (score: {signal_result.score})"
+                                )
+
+                            return  # Skip this iteration
+
+                        # AIFailureMode.OPEN: Continue with trade (fail-open, current default)
+                        logger.info(
+                            "trade_proceeding_without_ai_review",
+                            signal_score=signal_result.score,
+                            action=effective_action,
+                            failure_mode="open",
+                        )
 
         # Execute trade if signal is strong enough (using regime-adjusted threshold)
         if effective_action == "hold":

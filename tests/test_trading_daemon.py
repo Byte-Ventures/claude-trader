@@ -747,3 +747,281 @@ def test_ai_threshold_adjustment_scales_with_confidence(mock_settings, mock_exch
 
                 # Higher confidence should give larger (more negative) adjustment
                 assert high_conf_adj < low_conf_adj < 0
+
+
+# ============================================================================
+# AI Failure Mode Tests - CRITICAL
+# ============================================================================
+
+def test_ai_failure_mode_open_does_not_skip_trade(mock_settings, mock_exchange_client, mock_database):
+    """
+    CRITICAL: Verify AI_FAILURE_MODE=open does NOT skip trade when AI review fails.
+
+    This is the default fail-open behavior - the code should NOT return early
+    after AI failure, allowing the trade to proceed.
+    """
+    from config.settings import AIFailureMode, VetoAction
+
+    # Enable AI review and set to OPEN mode (default)
+    mock_settings.ai_review_enabled = True
+    mock_settings.ai_failure_mode = AIFailureMode.OPEN
+    mock_settings.openrouter_api_key = Mock()
+    mock_settings.openrouter_api_key.get_secret_value.return_value = "test_key"
+    mock_settings.reviewer_model_1 = "test/model1"
+    mock_settings.reviewer_model_2 = "test/model2"
+    mock_settings.reviewer_model_3 = "test/model3"
+    mock_settings.judge_model = "test/judge"
+    mock_settings.veto_action = VetoAction.INFO
+    mock_settings.veto_threshold = 0.8
+    mock_settings.position_reduction = 0.5
+    mock_settings.delay_minutes = 15
+    mock_settings.interesting_hold_margin = 15
+    mock_settings.ai_review_all = False
+    mock_settings.market_research_enabled = False
+    mock_settings.ai_web_search_enabled = False
+    mock_settings.market_research_cache_minutes = 15
+    mock_settings.trailing_stop_atr_multiplier = 1.0
+    mock_settings.is_paper_trading = False
+
+    # Create strong buy signal that would trigger a trade
+    buy_signal = SignalResult(
+        score=70,
+        action="buy",
+        indicators=IndicatorValues(
+            rsi=30.0,
+            macd_line=100.0,
+            macd_signal=50.0,
+            macd_histogram=50.0,
+            bb_upper=51000.0,
+            bb_middle=50000.0,
+            bb_lower=49000.0,
+            ema_fast=50100.0,
+            ema_slow=50000.0,
+            atr=500.0,
+            volatility="normal"
+        ),
+        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+        confidence=0.8
+    )
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier') as mock_notifier:
+                daemon = TradingDaemon(mock_settings)
+
+                # Mock position_sizer config to ensure can_buy=True
+                # This ensures direction_is_tradeable=True so AI review code path is reached
+                daemon.position_sizer.config.min_trade_quote = Decimal("10")  # Less than 10000 quote balance
+                daemon.position_sizer.config.max_position_percent = Decimal("100")  # Allow full position
+                daemon.position_sizer.config.min_trade_base = Decimal("0.0001")
+
+                # Mock signal scorer to return strong buy signal
+                daemon.signal_scorer.calculate_score = Mock(return_value=buy_signal)
+
+                # Mock trade reviewer to raise an exception (simulating AI failure)
+                daemon.trade_reviewer = Mock()
+                daemon.trade_reviewer.should_review.return_value = (True, "trade")
+                daemon.trade_reviewer.review_trade = Mock(side_effect=Exception("AI API Timeout"))
+
+                # Run trading iteration
+                daemon._trading_iteration()
+
+                # In OPEN mode, notification about skipping should NOT be sent
+                # (unlike SAFE mode which sends "Trade skipped: AI review unavailable")
+                # Note: We don't verify market_buy.assert_called() here because the test
+                # focuses on the AI failure handling behavior, not the complete trade path.
+                # The trade may not execute due to other conditions (order sizing, etc.)
+                notifier_instance = mock_notifier.return_value
+                for call in notifier_instance.send_message.call_args_list:
+                    msg = str(call)
+                    assert "Trade skipped" not in msg, "OPEN mode should not skip trades"
+
+
+def test_ai_failure_mode_safe_skips_trade(mock_settings, mock_exchange_client, mock_database):
+    """
+    CRITICAL: Verify AI_FAILURE_MODE=safe skips trade when AI review fails.
+
+    In safe mode, trades are NOT executed when AI review is unavailable,
+    providing protection against trading blind during AI outages.
+    """
+    from config.settings import AIFailureMode, VetoAction
+
+    # Enable AI review and set to SAFE mode
+    mock_settings.ai_review_enabled = True
+    mock_settings.ai_failure_mode = AIFailureMode.SAFE
+    mock_settings.openrouter_api_key = Mock()
+    mock_settings.openrouter_api_key.get_secret_value.return_value = "test_key"
+    mock_settings.reviewer_model_1 = "test/model1"
+    mock_settings.reviewer_model_2 = "test/model2"
+    mock_settings.reviewer_model_3 = "test/model3"
+    mock_settings.judge_model = "test/judge"
+    mock_settings.veto_action = VetoAction.INFO
+    mock_settings.veto_threshold = 0.8
+    mock_settings.position_reduction = 0.5
+    mock_settings.delay_minutes = 15
+    mock_settings.interesting_hold_margin = 15
+    mock_settings.ai_review_all = False
+    mock_settings.market_research_enabled = False
+    mock_settings.ai_web_search_enabled = False
+    mock_settings.market_research_cache_minutes = 15
+    mock_settings.trailing_stop_atr_multiplier = 1.0
+    mock_settings.is_paper_trading = False
+
+    # Create strong buy signal that would trigger a trade
+    buy_signal = SignalResult(
+        score=70,
+        action="buy",
+        indicators=IndicatorValues(
+            rsi=30.0,
+            macd_line=100.0,
+            macd_signal=50.0,
+            macd_histogram=50.0,
+            bb_upper=51000.0,
+            bb_middle=50000.0,
+            bb_lower=49000.0,
+            ema_fast=50100.0,
+            ema_slow=50000.0,
+            atr=500.0,
+            volatility="normal"
+        ),
+        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+        confidence=0.8
+    )
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier') as mock_notifier:
+                daemon = TradingDaemon(mock_settings)
+
+                # Mock position_sizer config to ensure can_buy=True
+                # This ensures direction_is_tradeable=True so AI review code path is reached
+                daemon.position_sizer.config.min_trade_quote = Decimal("10")  # Less than 10000 quote balance
+                daemon.position_sizer.config.max_position_percent = Decimal("100")  # Allow full position
+                daemon.position_sizer.config.min_trade_base = Decimal("0.0001")
+
+                # Mock signal scorer to return strong buy signal
+                daemon.signal_scorer.calculate_score = Mock(return_value=buy_signal)
+
+                # Mock trade reviewer to raise an exception (simulating AI failure)
+                daemon.trade_reviewer = Mock()
+                daemon.trade_reviewer.should_review.return_value = (True, "trade")
+                daemon.trade_reviewer.review_trade = Mock(side_effect=Exception("AI API Timeout"))
+
+                # Reset mock to clear init calls
+                mock_exchange_client.market_buy.reset_mock()
+
+                # Run trading iteration
+                daemon._trading_iteration()
+
+                # Verify trade was NOT executed (fail-safe)
+                mock_exchange_client.market_buy.assert_not_called()
+
+                # Verify notification was sent about skipped trade
+                notifier_instance = mock_notifier.return_value
+                notifier_instance.send_message.assert_called()
+
+
+def test_ai_failure_mode_open_is_default(mock_settings, mock_exchange_client, mock_database):
+    """Verify AIFailureMode.OPEN is the default for backward compatibility."""
+    from config.settings import AIFailureMode, Settings
+
+    # Create real settings to check default
+    with patch.dict('os.environ', {}, clear=False):
+        settings = Settings(
+            trading_mode="paper",
+            trading_pair="BTC-USD",
+        )
+        assert settings.ai_failure_mode == AIFailureMode.OPEN
+
+
+def test_ai_failure_notification_cooldown(mock_settings, mock_exchange_client, mock_database):
+    """
+    Verify AI failure notifications are rate-limited to prevent Telegram spam.
+
+    When AI review fails repeatedly in SAFE mode, notifications should only be
+    sent once per 15 minutes to avoid flooding the user's Telegram.
+    """
+    from config.settings import AIFailureMode, VetoAction
+    from datetime import datetime, timedelta, timezone
+
+    # Enable AI review and set to SAFE mode
+    mock_settings.ai_review_enabled = True
+    mock_settings.ai_failure_mode = AIFailureMode.SAFE
+    mock_settings.openrouter_api_key = Mock()
+    mock_settings.openrouter_api_key.get_secret_value.return_value = "test_key"
+    mock_settings.reviewer_model_1 = "test/model1"
+    mock_settings.reviewer_model_2 = "test/model2"
+    mock_settings.reviewer_model_3 = "test/model3"
+    mock_settings.judge_model = "test/judge"
+    mock_settings.veto_action = VetoAction.INFO
+    mock_settings.veto_threshold = 0.8
+    mock_settings.position_reduction = 0.5
+    mock_settings.delay_minutes = 15
+    mock_settings.interesting_hold_margin = 15
+    mock_settings.ai_review_all = False
+    mock_settings.market_research_enabled = False
+    mock_settings.ai_web_search_enabled = False
+    mock_settings.market_research_cache_minutes = 15
+    mock_settings.trailing_stop_atr_multiplier = 1.0
+    mock_settings.is_paper_trading = False
+
+    # Create strong buy signal
+    buy_signal = SignalResult(
+        score=70,
+        action="buy",
+        indicators=IndicatorValues(
+            rsi=30.0,
+            macd_line=100.0,
+            macd_signal=50.0,
+            macd_histogram=50.0,
+            bb_upper=51000.0,
+            bb_middle=50000.0,
+            bb_lower=49000.0,
+            ema_fast=50100.0,
+            ema_slow=50000.0,
+            atr=500.0,
+            volatility="normal"
+        ),
+        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+        confidence=0.8
+    )
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier') as mock_notifier:
+                daemon = TradingDaemon(mock_settings)
+
+                # Mock position_sizer config to ensure can_buy=True
+                # This ensures direction_is_tradeable=True so AI review code path is reached
+                daemon.position_sizer.config.min_trade_quote = Decimal("10")  # Less than 10000 quote balance
+                daemon.position_sizer.config.max_position_percent = Decimal("100")  # Allow full position
+                daemon.position_sizer.config.min_trade_base = Decimal("0.0001")
+
+                # Mock signal scorer to return strong buy signal
+                daemon.signal_scorer.calculate_score = Mock(return_value=buy_signal)
+
+                # Mock trade reviewer to always fail
+                daemon.trade_reviewer = Mock()
+                daemon.trade_reviewer.should_review.return_value = (True, "trade")
+                daemon.trade_reviewer.review_trade = Mock(side_effect=Exception("AI API Timeout"))
+
+                notifier_instance = mock_notifier.return_value
+
+                # First failure: should send notification
+                daemon._trading_iteration()
+                assert notifier_instance.send_message.call_count == 1
+
+                # Second failure immediately after: should NOT send notification (cooldown)
+                daemon._trading_iteration()
+                assert notifier_instance.send_message.call_count == 1  # Still 1, not 2
+
+                # Third failure immediately after: should still NOT send notification
+                daemon._trading_iteration()
+                assert notifier_instance.send_message.call_count == 1  # Still 1, not 3
+
+                # Simulate 15 minutes passing by resetting the timestamp (use timezone-aware UTC)
+                daemon._last_ai_failure_notification = datetime.now(timezone.utc) - timedelta(minutes=16)
+
+                # Fourth failure after cooldown: should send notification again
+                daemon._trading_iteration()
+                assert notifier_instance.send_message.call_count == 2  # Now 2
