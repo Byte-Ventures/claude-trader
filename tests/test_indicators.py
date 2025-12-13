@@ -28,6 +28,8 @@ from src.indicators.rsi import (
 from src.indicators.macd import (
     calculate_macd,
     get_macd_signal_graduated,
+    get_histogram_scale_factor,
+    VALID_CANDLE_INTERVALS,
 )
 from src.indicators.bollinger import (
     calculate_bollinger_bands,
@@ -521,3 +523,51 @@ def test_indicators_with_flat_prices():
     atr_result = calculate_atr(df['high'], df['low'], df['close'])
     # True range should be zero after first value
     assert atr_result.atr.iloc[-1] == 0.0, "ATR should be zero for flat prices with no volatility"
+
+
+# ============================================================================
+# Adaptive MACD Scale Factor Tests
+# ============================================================================
+
+def test_get_histogram_scale_factor_valid_intervals():
+    """Test scale factor returns correct values for all valid intervals."""
+    expected = {
+        "ONE_MINUTE": 400,
+        "FIVE_MINUTE": 300,
+        "FIFTEEN_MINUTE": 200,
+        "THIRTY_MINUTE": 175,
+        "ONE_HOUR": 150,
+        "TWO_HOUR": 125,
+        "SIX_HOUR": 100,
+        "ONE_DAY": 75,
+    }
+    for interval, expected_value in expected.items():
+        assert get_histogram_scale_factor(interval) == expected_value
+
+
+def test_get_histogram_scale_factor_none_returns_default():
+    """Test None input returns default scale factor."""
+    assert get_histogram_scale_factor(None) == 200
+
+
+def test_get_histogram_scale_factor_invalid_returns_default():
+    """Test invalid interval returns default and logs warning."""
+    result = get_histogram_scale_factor("INVALID_INTERVAL")
+    assert result == 200  # Default value
+
+
+def test_get_histogram_scale_factor_case_sensitive():
+    """Test that interval matching is case-sensitive."""
+    # Lowercase should not match and return default
+    result = get_histogram_scale_factor("one_minute")
+    assert result == 200  # Default, not 400
+
+
+def test_valid_candle_intervals_constant():
+    """Test VALID_CANDLE_INTERVALS contains expected values."""
+    expected_intervals = {
+        "ONE_MINUTE", "FIVE_MINUTE", "FIFTEEN_MINUTE",
+        "THIRTY_MINUTE", "ONE_HOUR", "TWO_HOUR",
+        "SIX_HOUR", "ONE_DAY"
+    }
+    assert VALID_CANDLE_INTERVALS == expected_intervals

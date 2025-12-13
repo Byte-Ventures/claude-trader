@@ -288,9 +288,6 @@ function updateDashboard(state) {
     updateBreakdownBar('breakdown-ema', breakdown.ema || 0);
     updateBreakdownBar('breakdown-volume', breakdown.volume || 0);
 
-    // Update last update time
-    document.getElementById('last-update').textContent = `Last update: ${new Date(state.timestamp + 'Z').toLocaleTimeString()}`;
-
     // Update chart with new price (if we have a timestamp)
     if (state.timestamp && candleSeries) {
         const time = Math.floor(new Date(state.timestamp + 'Z').getTime() / 1000);

@@ -27,6 +27,7 @@ from src.strategy.signal_scorer import (
     SignalWeights,
     SignalResult,
     IndicatorValues,
+    get_recommended_threshold,
 )
 
 
@@ -1141,3 +1142,48 @@ def test_confluence_excludes_momentum_metadata(scorer, momentum_df):
         # Confidence should be based on 6 components max (rsi, macd, bollinger, ema, volume, trend_filter)
         # Not 7 (with momentum included)
         assert result.confidence <= 1.0
+
+
+# ============================================================================
+# Adaptive Threshold Tests
+# ============================================================================
+
+def test_get_recommended_threshold_valid_intervals():
+    """Test recommended threshold returns correct values for all valid intervals."""
+    expected = {
+        "ONE_MINUTE": 50,
+        "FIVE_MINUTE": 52,
+        "FIFTEEN_MINUTE": 55,
+        "THIRTY_MINUTE": 57,
+        "ONE_HOUR": 58,
+        "TWO_HOUR": 60,
+        "SIX_HOUR": 62,
+        "ONE_DAY": 65,
+    }
+    for interval, expected_value in expected.items():
+        assert get_recommended_threshold(interval) == expected_value
+
+
+def test_get_recommended_threshold_none_returns_default():
+    """Test None input returns default threshold."""
+    assert get_recommended_threshold(None) == 60
+
+
+def test_get_recommended_threshold_invalid_returns_default():
+    """Test invalid interval returns default and logs warning."""
+    result = get_recommended_threshold("INVALID_INTERVAL")
+    assert result == 60  # Default value
+
+
+def test_get_recommended_threshold_progression():
+    """Test that thresholds increase as intervals get longer."""
+    intervals = [
+        "ONE_MINUTE", "FIVE_MINUTE", "FIFTEEN_MINUTE",
+        "THIRTY_MINUTE", "ONE_HOUR", "TWO_HOUR",
+        "SIX_HOUR", "ONE_DAY"
+    ]
+    thresholds = [get_recommended_threshold(i) for i in intervals]
+    # Each threshold should be >= previous
+    for i in range(1, len(thresholds)):
+        assert thresholds[i] >= thresholds[i-1], \
+            f"Threshold for {intervals[i]} should be >= {intervals[i-1]}"

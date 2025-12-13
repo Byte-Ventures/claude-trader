@@ -14,6 +14,7 @@ from decimal import Decimal
 from typing import Optional
 
 import httpx
+import pandas as pd
 import structlog
 
 from src.ai.market_research import fetch_market_research, format_research_for_prompt, set_cache_ttl
@@ -590,6 +591,7 @@ class TradeReviewer:
         trading_pair: str,
         review_type: str = "trade",
         position_percent: float = 0.0,
+        candles: Optional[pd.DataFrame] = None,
     ) -> MultiAgentReviewResult:
         """
         Multi-agent review process.
@@ -600,6 +602,7 @@ class TradeReviewer:
             trading_pair: Trading pair (e.g., "BTC-USD")
             review_type: "trade" or "interesting_hold"
             position_percent: Current position as percentage of portfolio
+            candles: Optional DataFrame with OHLCV data for price action context
 
         Returns:
             MultiAgentReviewResult with all reviews and judge decision
@@ -611,7 +614,7 @@ class TradeReviewer:
         trade_summary = get_trade_summary(self.db, days=7)
         context = self._build_context(
             signal_result, current_price, trading_pair, fear_greed, trade_summary, review_type,
-            position_percent
+            position_percent, candles
         )
 
         # Multi-agent review for all decisions
@@ -821,6 +824,125 @@ class TradeReviewer:
             "recommendation": recommendation,
         }
 
+    def _get_timeframe_guidance(self, candle_interval: str) -> str:
+        """
+        Get timeframe-specific guidance for AI reviewers.
+
+        This helps AI reviewers understand what's normal behavior for the given
+        timeframe and adjust their analysis accordingly.
+
+        Args:
+            candle_interval: The candle interval string (e.g., "FIFTEEN_MINUTE")
+
+        Returns:
+            Guidance string appropriate for the timeframe
+        """
+        guidance = {
+            "ONE_MINUTE": (
+                "Timeframe Note: Ultra-short term (1-min candles). Momentum signals dominate, "
+                "noise is high. Prioritize quick moves over trend confirmation. False signals are common."
+            ),
+            "FIVE_MINUTE": (
+                "Timeframe Note: Very short term (5-min candles). Quick reversals expected. "
+                "Prioritize momentum over trend. Watch for whipsaws."
+            ),
+            "FIFTEEN_MINUTE": (
+                "Timeframe Note: Day trading (15-min candles). Balance momentum with short-term trend. "
+                "Signals should confirm within 2-4 candles. 1-3% moves are normal."
+            ),
+            "THIRTY_MINUTE": (
+                "Timeframe Note: Intraday swing (30-min candles). More patience required. "
+                "Watch for trend changes at key levels. 2-4% daily moves are common."
+            ),
+            "ONE_HOUR": (
+                "Timeframe Note: Swing trading (1-hour candles). Balance trend following with "
+                "mean reversion. Confirmation may take 4-8 candles. Allow for intraday volatility."
+            ),
+            "TWO_HOUR": (
+                "Timeframe Note: Swing trading (2-hour candles). Trend confirmation is important. "
+                "Don't overreact to single candle movements. Multi-day holds are normal."
+            ),
+            "SIX_HOUR": (
+                "Timeframe Note: Position trading (6-hour candles). Macro trend takes priority. "
+                "Ignore short-term noise. Focus on major support/resistance levels."
+            ),
+            "ONE_DAY": (
+                "Timeframe Note: Position trading (daily candles). Focus on fundamentals and "
+                "macro trends. Ignore intraday noise entirely. Weeks-long holds are expected."
+            ),
+        }
+        return guidance.get(candle_interval, "")
+
+    def _summarize_recent_candles(self, candles: pd.DataFrame, n: int = 5) -> str:
+        """
+        Summarize recent price action for AI context.
+
+        Provides a concise summary of the last N candles including:
+        - Overall direction (bullish/bearish/mixed)
+        - Number of green vs red candles
+        - Total price range
+
+        Args:
+            candles: DataFrame with OHLCV data
+            n: Number of recent candles to summarize (default: 5)
+
+        Returns:
+            Human-readable summary string
+        """
+        if candles is None or len(candles) < n:
+            return ""
+
+        recent = candles.tail(n)
+
+        # Check for NaN values in critical columns
+        critical_cols = ['open', 'high', 'low', 'close']
+        if recent[critical_cols].isna().any().any():
+            logger.warning(
+                "price_action_summary_nan_detected",
+                nan_counts=recent[critical_cols].isna().sum().to_dict()
+            )
+            return ""
+
+        # Count bullish (green) vs bearish (red) candles
+        up_candles = (recent['close'] > recent['open']).sum()
+        down_candles = n - up_candles
+
+        # Calculate price range
+        high = recent['high'].max()
+        low = recent['low'].min()
+        price_range = high - low
+        mid_price = (high + low) / 2
+        # Defensive check: mid_price > 0 and high >= low (handles corrupted data)
+        range_pct = (price_range / mid_price * 100) if mid_price > 0 and high >= low else 0
+
+        # Determine overall direction
+        if up_candles >= 4:
+            direction = "strongly bullish"
+        elif up_candles >= 3:
+            direction = "bullish"
+        elif down_candles >= 4:
+            direction = "strongly bearish"
+        elif down_candles >= 3:
+            direction = "bearish"
+        else:
+            direction = "mixed/choppy"
+
+        # Check for trend momentum (closes trending)
+        close_trend = recent['close'].diff().dropna()
+        consecutive_up = (close_trend > 0).sum()
+        consecutive_down = (close_trend < 0).sum()
+
+        momentum = ""
+        if consecutive_up >= 4:
+            momentum = " with strong upward momentum"
+        elif consecutive_down >= 4:
+            momentum = " with strong downward momentum"
+
+        return (
+            f"Recent Price Action: {direction}{momentum} "
+            f"({up_candles}/{n} green candles, {range_pct:.1f}% range)"
+        )
+
     def _build_context(
         self,
         signal_result: SignalResult,
@@ -830,9 +952,14 @@ class TradeReviewer:
         trade_summary: TradeSummary,
         review_type: str,
         position_percent: float = 0.0,
+        candles: Optional[pd.DataFrame] = None,
     ) -> dict:
         """Build context dict for prompts and Telegram."""
         trading_style, trading_style_desc = self._get_trading_style()
+
+        # Generate price action summary if candles available
+        price_action = self._summarize_recent_candles(candles) if candles is not None else ""
+
         return {
             "review_type": review_type,
             "action": signal_result.action,
@@ -852,11 +979,19 @@ class TradeReviewer:
             "trading_style_desc": trading_style_desc,
             "position_percent": position_percent,
             "threshold": self.signal_threshold,
+            "price_action": price_action,
         }
 
     def _build_reviewer_prompt(self, context: dict) -> str:
         """Build prompt for reviewer agents."""
         review_type = context.get("review_type", "trade")
+
+        # Get timeframe-specific guidance
+        timeframe_guidance = self._get_timeframe_guidance(context['candle_interval'])
+
+        # Get price action summary if available
+        price_action = context.get('price_action', '')
+        price_action_line = f"\n{price_action}" if price_action else ""
 
         # Build common context sections
         common_context = f"""Price: ${context['price']:,.2f}
@@ -865,6 +1000,7 @@ Signal Breakdown: {json.dumps(context['breakdown'])}
 
 Trading Style: {context['trading_style_desc']}
 Timeframe: {context['candle_interval']} candles
+{timeframe_guidance}{price_action_line}
 
 Portfolio:
 - Current Position: {context['position_percent']:.1f}% of portfolio
