@@ -607,6 +607,236 @@ def test_limit_sell_ioc_market_data_failure(paper_client, mock_exchange_client):
 
 
 # ============================================================================
+# Limit Post-Only Order Tests
+# ============================================================================
+
+def test_limit_buy_post_only_success(paper_client, mock_exchange_client):
+    """Test successful limit buy post-only order."""
+    initial_quote = paper_client._quote_balance  # 10000
+    base_size = Decimal("0.1")
+    limit_price = Decimal("49000")  # Below ask (50010), should fill as maker
+
+    result = paper_client.limit_buy_post_only("BTC-USD", base_size, limit_price)
+
+    # Verify order result
+    assert result.success is True
+    assert result.side == "buy"
+    assert result.status == "FILLED"
+    assert result.size == base_size
+    # Post-only fills at limit price (maker gets their price)
+    assert result.filled_price == limit_price
+
+    # Verify balances updated
+    assert paper_client._base_balance == base_size
+    assert paper_client._quote_balance < initial_quote
+
+
+def test_limit_buy_post_only_rejects_if_would_cross_spread(paper_client, mock_exchange_client):
+    """Test limit buy post-only rejected when limit >= ask."""
+    initial_quote = paper_client._quote_balance
+    initial_base = paper_client._base_balance
+    base_size = Decimal("0.1")
+    limit_price = Decimal("50010")  # At ask, would take liquidity
+
+    result = paper_client.limit_buy_post_only("BTC-USD", base_size, limit_price)
+
+    # Verify order rejected
+    assert result.success is False
+    assert result.status == "REJECTED"
+    assert result.size == Decimal("0")
+    assert "POST_ONLY" in result.error
+    assert "take liquidity" in result.error
+
+    # Verify balances unchanged
+    assert paper_client._quote_balance == initial_quote
+    assert paper_client._base_balance == initial_base
+
+
+def test_limit_buy_post_only_rejects_above_ask(paper_client, mock_exchange_client):
+    """Test limit buy post-only rejected when limit > ask."""
+    initial_quote = paper_client._quote_balance
+    base_size = Decimal("0.1")
+    limit_price = Decimal("51000")  # Above ask, would definitely take
+
+    result = paper_client.limit_buy_post_only("BTC-USD", base_size, limit_price)
+
+    assert result.success is False
+    assert result.status == "REJECTED"
+    assert "POST_ONLY" in result.error
+
+
+def test_limit_buy_post_only_insufficient_balance(paper_client):
+    """Test limit buy post-only with insufficient balance."""
+    base_size = Decimal("1000")  # Way more than we can afford
+    limit_price = Decimal("49000")
+
+    result = paper_client.limit_buy_post_only("BTC-USD", base_size, limit_price)
+
+    assert result.success is False
+    assert "Insufficient" in result.error
+
+
+def test_limit_buy_post_only_uses_maker_fee(paper_client, mock_exchange_client):
+    """Test that limit buy post-only uses maker fee (not taker fee)."""
+    base_size = Decimal("0.1")
+    limit_price = Decimal("49000")  # Below ask
+
+    result = paper_client.limit_buy_post_only("BTC-USD", base_size, limit_price)
+
+    # Post-only = maker fee (0.4%)
+    expected_fee = base_size * limit_price * paper_client.MAKER_FEE
+    assert result.fee == expected_fee
+    # Confirm maker fee is less than taker fee
+    taker_fee = base_size * limit_price * paper_client.TAKER_FEE
+    assert result.fee < taker_fee
+
+
+def test_limit_buy_post_only_market_data_failure(paper_client, mock_exchange_client):
+    """Test limit buy post-only when market data fetch fails."""
+    mock_exchange_client.get_market_data.side_effect = Exception("API error")
+
+    result = paper_client.limit_buy_post_only("BTC-USD", Decimal("0.1"), Decimal("49000"))
+
+    assert result.success is False
+    assert "Failed to get market data" in result.error
+
+
+def test_limit_sell_post_only_success(paper_client, mock_exchange_client):
+    """Test successful limit sell post-only order."""
+    # First buy some BTC
+    paper_client.market_buy("BTC-USD", Decimal("5000"))
+    initial_base = paper_client._base_balance
+    initial_quote = paper_client._quote_balance
+
+    base_size = initial_base / 2
+    limit_price = Decimal("51000")  # Above bid (49990), should fill as maker
+
+    result = paper_client.limit_sell_post_only("BTC-USD", base_size, limit_price)
+
+    # Verify order result
+    assert result.success is True
+    assert result.side == "sell"
+    assert result.status == "FILLED"
+    assert result.size == base_size
+    # Post-only fills at limit price (maker gets their price)
+    assert result.filled_price == limit_price
+
+    # Verify balances updated
+    assert paper_client._base_balance < initial_base
+    assert paper_client._quote_balance > initial_quote
+
+
+def test_limit_sell_post_only_rejects_if_would_cross_spread(paper_client, mock_exchange_client):
+    """Test limit sell post-only rejected when limit <= bid."""
+    # First buy some BTC
+    paper_client.market_buy("BTC-USD", Decimal("5000"))
+    initial_base = paper_client._base_balance
+    initial_quote = paper_client._quote_balance
+
+    base_size = initial_base / 2
+    limit_price = Decimal("49990")  # At bid, would take liquidity
+
+    result = paper_client.limit_sell_post_only("BTC-USD", base_size, limit_price)
+
+    # Verify order rejected
+    assert result.success is False
+    assert result.status == "REJECTED"
+    assert result.size == Decimal("0")
+    assert "POST_ONLY" in result.error
+    assert "take liquidity" in result.error
+
+    # Verify balances unchanged
+    assert paper_client._quote_balance == initial_quote
+    assert paper_client._base_balance == initial_base
+
+
+def test_limit_sell_post_only_rejects_below_bid(paper_client, mock_exchange_client):
+    """Test limit sell post-only rejected when limit < bid."""
+    # First buy some BTC
+    paper_client.market_buy("BTC-USD", Decimal("5000"))
+    base_size = paper_client._base_balance / 2
+    limit_price = Decimal("48000")  # Below bid, would definitely take
+
+    result = paper_client.limit_sell_post_only("BTC-USD", base_size, limit_price)
+
+    assert result.success is False
+    assert result.status == "REJECTED"
+    assert "POST_ONLY" in result.error
+
+
+def test_limit_sell_post_only_insufficient_balance(paper_client):
+    """Test limit sell post-only with insufficient balance."""
+    base_size = Decimal("1.0")  # Don't have any BTC
+    limit_price = Decimal("51000")
+
+    result = paper_client.limit_sell_post_only("BTC-USD", base_size, limit_price)
+
+    assert result.success is False
+    assert "Insufficient" in result.error
+
+
+def test_limit_sell_post_only_uses_maker_fee(paper_client, mock_exchange_client):
+    """Test that limit sell post-only uses maker fee (not taker fee)."""
+    # First buy some BTC
+    paper_client.market_buy("BTC-USD", Decimal("5000"))
+    base_size = paper_client._base_balance
+
+    limit_price = Decimal("51000")  # Above bid
+
+    result = paper_client.limit_sell_post_only("BTC-USD", base_size, limit_price)
+
+    # Post-only = maker fee (0.4%)
+    expected_fee = base_size * limit_price * paper_client.MAKER_FEE
+    assert result.fee == expected_fee
+    # Confirm maker fee is less than taker fee
+    taker_fee = base_size * limit_price * paper_client.TAKER_FEE
+    assert result.fee < taker_fee
+
+
+def test_limit_sell_post_only_market_data_failure(paper_client, mock_exchange_client):
+    """Test limit sell post-only when market data fetch fails."""
+    # First buy some BTC
+    mock_exchange_client.get_market_data.return_value = MarketData(
+        symbol="BTC-USD",
+        price=Decimal("50000"),
+        bid=Decimal("49990"),
+        ask=Decimal("50010"),
+        volume_24h=Decimal("1000"),
+        timestamp=datetime.now()
+    )
+    paper_client.market_buy("BTC-USD", Decimal("1000"))
+
+    # Now make market data fail
+    mock_exchange_client.get_market_data.side_effect = Exception("API error")
+
+    result = paper_client.limit_sell_post_only("BTC-USD", Decimal("0.01"), Decimal("51000"))
+
+    assert result.success is False
+    assert "Failed to get market data" in result.error
+
+
+def test_post_only_vs_ioc_fee_comparison(paper_client, mock_exchange_client):
+    """Test that post-only orders have lower fees than IOC orders."""
+    base_size = Decimal("0.1")
+
+    # Post-only buy (maker)
+    post_only_result = paper_client.limit_buy_post_only(
+        "BTC-USD", base_size, Decimal("49000")
+    )
+
+    # Reset and do IOC buy (taker)
+    paper_client.reset(initial_quote=10000.0)
+    ioc_result = paper_client.limit_buy_ioc(
+        "BTC-USD", base_size, Decimal("50050")  # Above ask to ensure fill
+    )
+
+    # Post-only should have lower fees
+    assert post_only_result.fee < ioc_result.fee
+    # Specifically: maker fee (0.4%) vs taker fee (0.6%)
+    assert paper_client.MAKER_FEE < paper_client.TAKER_FEE
+
+
+# ============================================================================
 # SymbolMapper Tests
 # ============================================================================
 

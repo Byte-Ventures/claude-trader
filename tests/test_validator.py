@@ -685,3 +685,136 @@ def test_validation_result_dataclass_defaults():
     assert result.valid is True
     assert result.reason is None
     assert result.warnings == []
+
+
+# ============================================================================
+# Check 8: Profit Margin Tests
+# ============================================================================
+
+def test_profit_margin_rejects_tight_stops(validator):
+    """Test order rejected when stop distance < 2x fees."""
+    # Default fee: 0.6% (0.006), so min stop = 1.2% (0.012)
+    order = OrderRequest(side="buy", size=Decimal("0.02"))
+
+    # Stop distance of 1% (0.01) is below 1.2% minimum
+    result = validator.validate(order, stop_distance_percent=0.01)
+
+    assert result.valid is False
+    assert "Stop too tight for fees" in result.reason
+    assert "1.00%" in result.reason  # Stop shown
+    assert "1.20%" in result.reason  # Min required shown
+
+
+def test_profit_margin_rejects_very_tight_stops(validator):
+    """Test order rejected when stop distance equals fees."""
+    order = OrderRequest(side="buy", size=Decimal("0.02"))
+
+    # Stop distance of 0.6% equals single-way fee, well below 2x (1.2%)
+    result = validator.validate(order, stop_distance_percent=0.006)
+
+    assert result.valid is False
+    assert "Stop too tight" in result.reason
+
+
+def test_profit_margin_warns_on_tight_margin(validator):
+    """Test warning when stop is adequate but tight (2x-3x fees)."""
+    order = OrderRequest(side="buy", size=Decimal("0.02"))
+
+    # Stop distance of 1.5% is above 1.2% min but below 1.8% (3x fees)
+    result = validator.validate(order, stop_distance_percent=0.015)
+
+    assert result.valid is True
+    assert any("Tight profit margin" in w for w in result.warnings)
+
+
+def test_profit_margin_passes_with_adequate_margin(validator):
+    """Test order passes when stop distance > 3x fees (no warning)."""
+    order = OrderRequest(side="buy", size=Decimal("0.02"))
+
+    # Stop distance of 2% is well above 1.8% (3x fees threshold)
+    result = validator.validate(order, stop_distance_percent=0.02)
+
+    assert result.valid is True
+    # No profit margin warnings
+    assert not any("profit margin" in w.lower() for w in result.warnings)
+
+
+def test_profit_margin_passes_with_large_margin(validator):
+    """Test order passes with large stop distance."""
+    order = OrderRequest(side="buy", size=Decimal("0.02"))
+
+    # Stop distance of 5% is very comfortable
+    result = validator.validate(order, stop_distance_percent=0.05)
+
+    assert result.valid is True
+    assert not any("profit margin" in w.lower() for w in result.warnings)
+
+
+def test_profit_margin_only_checked_for_buys(validator):
+    """Test profit margin check skipped for sell orders."""
+    order = OrderRequest(side="sell", size=Decimal("0.05"))
+
+    # Even with tight stop, sell order should pass this check
+    result = validator.validate(order, stop_distance_percent=0.005)
+
+    # Should not fail on profit margin (may pass or fail on other checks)
+    assert result.valid is True or "Stop too tight" not in result.reason
+
+
+def test_profit_margin_skipped_when_no_stop_distance(validator):
+    """Test profit margin check skipped when stop_distance not provided."""
+    order = OrderRequest(side="buy", size=Decimal("0.02"))
+
+    # Without stop_distance_percent parameter, check is skipped
+    result = validator.validate(order)
+
+    assert result.valid is True
+    # No profit margin related messages
+    assert "Stop too tight" not in (result.reason or "")
+
+
+def test_profit_margin_at_exact_boundary(validator):
+    """Test order at exactly 2x fees boundary (should pass)."""
+    order = OrderRequest(side="buy", size=Decimal("0.02"))
+
+    # Stop distance of exactly 1.2% (2x 0.6% fees)
+    result = validator.validate(order, stop_distance_percent=0.012)
+
+    # At boundary, should warn but pass
+    assert result.valid is True
+    assert any("Tight profit margin" in w for w in result.warnings)
+
+
+def test_profit_margin_custom_fee_config():
+    """Test profit margin check with custom fee configuration."""
+    # Higher fees (e.g., 1% round-trip)
+    config = ValidatorConfig(
+        min_trade_quote=10.0,
+        max_position_percent=80.0,
+        estimated_fee_percent=0.01,  # 1% round-trip
+    )
+    validator = OrderValidator(config=config)
+    validator.update_balances(
+        base_balance=Decimal("0.1"),
+        quote_balance=Decimal("5000"),
+        current_price=Decimal("50000")
+    )
+
+    order = OrderRequest(side="buy", size=Decimal("0.02"))
+
+    # 1.5% stop is below 2% minimum (2x 1% fees)
+    result = validator.validate(order, stop_distance_percent=0.015)
+
+    assert result.valid is False
+    assert "Stop too tight" in result.reason
+
+
+def test_profit_margin_with_safety_systems(validator_with_safety):
+    """Test profit margin check works with safety systems enabled."""
+    order = OrderRequest(side="buy", size=Decimal("0.02"))
+
+    # Tight stop should fail even with all safety systems active
+    result = validator_with_safety.validate(order, stop_distance_percent=0.005)
+
+    assert result.valid is False
+    assert "Stop too tight" in result.reason
