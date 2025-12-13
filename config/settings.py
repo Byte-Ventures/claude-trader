@@ -219,6 +219,16 @@ class Settings(BaseSettings):
         le=1.0,
         description="Move stop to break-even when profit reaches this ATR multiple"
     )
+    use_limit_orders: bool = Field(
+        default=True,
+        description="Use limit IOC orders instead of market orders to reduce slippage"
+    )
+    limit_order_offset_percent: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=1.0,
+        description="Offset from bid/ask for limit orders (0.1 = 0.1%)"
+    )
     max_daily_loss_percent: float = Field(
         default=10.0,
         ge=1.0,
