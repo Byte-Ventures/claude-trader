@@ -13,7 +13,7 @@ Tables:
 import json
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Generator, Optional
 
@@ -826,8 +826,8 @@ class Database:
             session.commit()
 
     def count_todays_trades(self, is_paper: bool = False, symbol: Optional[str] = None) -> int:
-        """Count trades executed today."""
-        today = date.today()
+        """Count trades executed today (UTC)."""
+        today = datetime.utcnow().date()
         today_start = datetime.combine(today, datetime.min.time())
         today_end = datetime.combine(today, datetime.max.time())
 
@@ -842,8 +842,8 @@ class Database:
             return query.count()
 
     def get_todays_realized_pnl(self, is_paper: bool = False, symbol: Optional[str] = None) -> Decimal:
-        """Sum realized P&L from today's trades using SQL aggregation."""
-        today = date.today()
+        """Sum realized P&L from today's trades (UTC) using SQL aggregation."""
+        today = datetime.utcnow().date()
         today_start = datetime.combine(today, datetime.min.time())
         today_end = datetime.combine(today, datetime.max.time())
 
@@ -859,7 +859,13 @@ class Database:
                 query = query.filter(Trade.symbol == symbol)
 
             result = query.scalar()
-            return Decimal(str(result)) if result else Decimal("0")
+            if result is None:
+                return Decimal("0")
+            try:
+                return Decimal(str(result))
+            except (InvalidOperation, ValueError) as e:
+                logger.error("invalid_pnl_sum", result=result, error=str(e))
+                return Decimal("0")
 
     def get_daily_stats(
         self, target_date: Optional[date] = None, is_paper: bool = False
