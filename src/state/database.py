@@ -813,9 +813,17 @@ class Database:
                 .first()
             )
 
-            if stats:
-                stats.total_trades = (stats.total_trades or 0) + 1
-                session.commit()
+            if not stats:
+                # Create the record if it doesn't exist
+                stats = DailyStats(
+                    date=today,
+                    is_paper=is_paper,
+                    total_trades=0,
+                )
+                session.add(stats)
+
+            stats.total_trades = (stats.total_trades or 0) + 1
+            session.commit()
 
     def count_todays_trades(self, is_paper: bool = False, symbol: Optional[str] = None) -> int:
         """Count trades executed today."""
