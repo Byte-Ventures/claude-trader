@@ -67,7 +67,6 @@ header h1 .subtitle {
 }
 
 .status {
-    margin-left: auto;
     padding: 0.25rem 0.75rem;
     border-radius: 0.25rem;
     font-size: 0.875rem;
@@ -595,6 +594,7 @@ footer {
 
 /* FAQ Button */
 .faq-btn {
+    margin-left: auto;
     background: transparent;
     border: 1px solid var(--border-color);
     color: var(--text-secondary);

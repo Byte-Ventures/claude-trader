@@ -302,6 +302,12 @@ function updateDashboard(state) {
             close: price,
         });
     }
+
+    // Update trades table if recent_trades included
+    if (state.recent_trades) {
+        updateTradesTable(state.recent_trades);
+        updateLastTradeTime(state.recent_trades);
+    }
 }
 
 // Update breakdown bar visualization

@@ -75,6 +75,25 @@ async def state_broadcaster(db: Database):
 
                     # Include new notifications in broadcast
                     state["new_notifications"] = new_notifications
+
+                    # Include recent trades in broadcast
+                    trades = db.get_recent_trades(
+                        symbol=settings.trading_pair,
+                        limit=20,
+                        is_paper=settings.is_paper_trading,
+                    )
+                    state["recent_trades"] = [
+                        {
+                            "id": t.id,
+                            "side": t.side,
+                            "size": str(t.size),
+                            "price": str(t.price),
+                            "pnl": str(t.pnl) if t.pnl else None,
+                            "created_at": t.created_at.isoformat() if t.created_at else "",
+                        }
+                        for t in trades
+                    ]
+
                     await manager.broadcast(state)
 
             # Reset error count on success
