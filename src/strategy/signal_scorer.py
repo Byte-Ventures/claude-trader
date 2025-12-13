@@ -24,6 +24,48 @@ from src.indicators.atr import calculate_atr, get_volatility_level
 logger = structlog.get_logger(__name__)
 
 
+# Recommended signal thresholds by candle interval
+# Shorter candles capture faster moves, so lower thresholds are appropriate
+# Longer candles require higher conviction, so higher thresholds are better
+_RECOMMENDED_THRESHOLDS = {
+    "ONE_MINUTE": 50,       # Ultra-short term - catch fast moves
+    "FIVE_MINUTE": 52,      # Very short term
+    "FIFTEEN_MINUTE": 55,   # Day trading
+    "THIRTY_MINUTE": 57,    # Intraday swing
+    "ONE_HOUR": 58,         # Swing trading
+    "TWO_HOUR": 60,         # Swing trading - balanced
+    "SIX_HOUR": 62,         # Position trading
+    "ONE_DAY": 65,          # Position trading - high conviction
+}
+_DEFAULT_THRESHOLD = 60
+
+
+def get_recommended_threshold(candle_interval: Optional[str] = None) -> int:
+    """
+    Get recommended signal threshold for the given candle interval.
+
+    Shorter candles have smaller price movements and faster reversals,
+    so lower thresholds help catch more opportunities. Longer candles
+    have more significant moves that warrant higher conviction thresholds.
+
+    Args:
+        candle_interval: Candle interval string (e.g., "FIFTEEN_MINUTE", "ONE_HOUR").
+                        If None, returns the default threshold.
+
+    Returns:
+        Recommended threshold value (50-65 depending on interval).
+
+    Example:
+        >>> get_recommended_threshold("FIFTEEN_MINUTE")
+        55
+        >>> get_recommended_threshold("ONE_DAY")
+        65
+    """
+    if candle_interval is None:
+        return _DEFAULT_THRESHOLD
+    return _RECOMMENDED_THRESHOLDS.get(candle_interval, _DEFAULT_THRESHOLD)
+
+
 @dataclass
 class SignalWeights:
     """Weights for each indicator in the composite score."""
@@ -97,6 +139,7 @@ class SignalScorer:
         momentum_rsi_candles: int = 3,
         momentum_price_candles: int = 12,
         momentum_penalty_reduction: float = 0.5,
+        candle_interval: Optional[str] = None,
     ):
         """
         Initialize signal scorer.
@@ -108,7 +151,14 @@ class SignalScorer:
             momentum_rsi_candles: Number of candles RSI must stay elevated (default: 3)
             momentum_price_candles: Number of candles to check for higher lows (default: 12)
             momentum_penalty_reduction: Factor to reduce overbought penalties (default: 0.5 = 50%)
+            candle_interval: Candle interval for adaptive MACD scaling
+                            (e.g., "FIFTEEN_MINUTE", "ONE_HOUR")
             *: Other indicator parameters
+
+        Recommended thresholds by candle interval:
+            - ONE_MINUTE to FIFTEEN_MINUTE (daytrading): 50-55 (catch faster moves)
+            - THIRTY_MINUTE to TWO_HOUR (swing): 55-60 (balanced)
+            - SIX_HOUR to ONE_DAY (position): 60-65 (higher conviction)
         """
         self.weights = weights or SignalWeights()
         self.threshold = threshold
@@ -128,6 +178,7 @@ class SignalScorer:
         self.ema_fast = ema_fast
         self.ema_slow_period = ema_slow
         self.atr_period = atr_period
+        self.candle_interval = candle_interval
 
         # Momentum mode parameters
         self.momentum_rsi_threshold = momentum_rsi_threshold
@@ -153,6 +204,7 @@ class SignalScorer:
         momentum_rsi_candles: Optional[int] = None,
         momentum_price_candles: Optional[int] = None,
         momentum_penalty_reduction: Optional[float] = None,
+        candle_interval: Optional[str] = None,
     ) -> None:
         """
         Update scorer settings at runtime.
@@ -191,6 +243,8 @@ class SignalScorer:
             self.momentum_price_candles = momentum_price_candles
         if momentum_penalty_reduction is not None:
             self.momentum_penalty_reduction = momentum_penalty_reduction
+        if candle_interval is not None:
+            self.candle_interval = candle_interval
 
         logger.info("signal_scorer_settings_updated")
 
@@ -354,8 +408,8 @@ class SignalScorer:
         rsi_signal = get_rsi_signal_graduated(indicators.rsi, self.rsi_oversold, self.rsi_overbought)
         rsi_score = int(rsi_signal * self.weights.rsi)
 
-        # MACD component (graduated: returns -1.0 to +1.0)
-        macd_signal = get_macd_signal_graduated(macd_result, price)
+        # MACD component (graduated: returns -1.0 to +1.0, adaptive to candle interval)
+        macd_signal = get_macd_signal_graduated(macd_result, price, self.candle_interval)
         macd_score = int(macd_signal * self.weights.macd)
 
         # Bollinger Bands component (graduated: returns -1.0 to +1.0)

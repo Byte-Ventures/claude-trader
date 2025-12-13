@@ -188,7 +188,8 @@ class TradingDaemon:
             ),
             on_trip=lambda level, reason: self.notifier.notify_circuit_breaker(
                 level.name.lower(), reason
-            )
+            ),
+            candle_interval=settings.candle_interval,
         )
 
         self.loss_limiter = LossLimiter(
@@ -222,6 +223,7 @@ class TradingDaemon:
             ema_fast=settings.ema_fast,
             ema_slow=settings.ema_slow,
             atr_period=settings.atr_period,
+            candle_interval=settings.candle_interval,
         )
 
         self.position_sizer = PositionSizer(
@@ -426,6 +428,7 @@ class TradingDaemon:
                 ema_fast=new_settings.ema_fast,
                 ema_slow=new_settings.ema_slow,
                 atr_period=new_settings.atr_period,
+                candle_interval=new_settings.candle_interval,
             )
 
             # Update PositionSizer
@@ -456,6 +459,9 @@ class TradingDaemon:
                 self.trade_reviewer.delay_minutes = new_settings.delay_minutes
                 self.trade_reviewer.interesting_hold_margin = new_settings.interesting_hold_margin
                 self.trade_reviewer.candle_interval = new_settings.candle_interval
+
+            # Update circuit breaker candle interval for adaptive flash crash detection
+            self.circuit_breaker.set_candle_interval(new_settings.candle_interval)
 
             # Update AI recommendation TTL
             self._ai_recommendation_ttl_minutes = new_settings.ai_recommendation_ttl_minutes
@@ -911,6 +917,7 @@ class TradingDaemon:
                                 trading_pair=self.settings.trading_pair,
                                 review_type=review_type,
                                 position_percent=position_percent,
+                                candles=candles,
                             ),
                             timeout=ASYNC_TIMEOUT_SECONDS,
                         )

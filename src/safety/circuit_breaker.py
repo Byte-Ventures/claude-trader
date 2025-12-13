@@ -73,6 +73,41 @@ class CircuitBreakerConfig:
     black_recovery_hours: Optional[int] = None
 
 
+# Adaptive flash crash detection parameters by candle interval
+# Format: (drop_threshold_percent, window_minutes)
+# Shorter candles need faster detection with lower thresholds
+RAPID_DROP_PARAMS = {
+    "ONE_MINUTE": (1.0, 2),      # 1% in 2 min
+    "FIVE_MINUTE": (2.0, 5),     # 2% in 5 min
+    "FIFTEEN_MINUTE": (3.0, 10),  # 3% in 10 min
+    "THIRTY_MINUTE": (4.0, 15),   # 4% in 15 min
+    "ONE_HOUR": (5.0, 20),        # 5% in 20 min
+    "TWO_HOUR": (6.0, 30),        # 6% in 30 min
+    "SIX_HOUR": (8.0, 60),        # 8% in 1 hour
+    "ONE_DAY": (10.0, 120),       # 10% in 2 hours
+}
+_DEFAULT_RAPID_DROP_PARAMS = (5.0, 20)  # Default: 5% in 20 minutes
+
+
+def get_rapid_drop_params(candle_interval: Optional[str] = None) -> tuple[float, int]:
+    """
+    Get flash crash detection parameters appropriate for the candle interval.
+
+    Shorter candles have smaller normal price movements, so flash crashes
+    are detected with smaller thresholds over shorter windows. Longer candles
+    expect larger normal movements, so thresholds are higher.
+
+    Args:
+        candle_interval: The candle interval string (e.g., "FIFTEEN_MINUTE")
+
+    Returns:
+        Tuple of (drop_threshold_percent, window_minutes)
+    """
+    if candle_interval is None:
+        return _DEFAULT_RAPID_DROP_PARAMS
+    return RAPID_DROP_PARAMS.get(candle_interval, _DEFAULT_RAPID_DROP_PARAMS)
+
+
 class CircuitBreaker:
     """
     Multi-level circuit breaker for trading protection.
@@ -88,6 +123,7 @@ class CircuitBreaker:
         self,
         config: Optional[CircuitBreakerConfig] = None,
         on_trip: Optional[Callable[[BreakerLevel, str], None]] = None,
+        candle_interval: Optional[str] = None,
     ):
         """
         Initialize circuit breaker.
@@ -95,9 +131,11 @@ class CircuitBreaker:
         Args:
             config: Circuit breaker configuration
             on_trip: Callback when breaker is tripped
+            candle_interval: Candle interval for adaptive flash crash detection
         """
         self.config = config or CircuitBreakerConfig()
         self._on_trip = on_trip
+        self._candle_interval = candle_interval
 
         # Current state
         self._level = BreakerLevel.GREEN
@@ -112,6 +150,19 @@ class CircuitBreaker:
         # Price history for change detection
         self._price_history: list[tuple[datetime, float]] = []
         self._price_history_24h: list[tuple[datetime, float]] = []
+        self._price_history_rapid: list[tuple[datetime, float]] = []  # For adaptive flash crash
+
+    def set_candle_interval(self, candle_interval: str) -> None:
+        """
+        Update the candle interval for adaptive flash crash detection.
+
+        Args:
+            candle_interval: The candle interval string (e.g., "FIFTEEN_MINUTE")
+        """
+        self._candle_interval = candle_interval
+        # Clear rapid price history on interval change to avoid false triggers
+        self._price_history_rapid = []
+        logger.debug("circuit_breaker_interval_updated", candle_interval=candle_interval)
 
     @property
     def level(self) -> BreakerLevel:
@@ -244,6 +295,7 @@ class CircuitBreaker:
         now = datetime.now()
         self._price_history.append((now, price))
         self._price_history_24h.append((now, price))
+        self._price_history_rapid.append((now, price))
 
         # Clean old entries (1-hour window)
         cutoff = now - timedelta(seconds=self.config.price_window)
@@ -255,6 +307,13 @@ class CircuitBreaker:
         cutoff_24h = now - timedelta(seconds=self.config.price_window_24h)
         self._price_history_24h = [
             (ts, p) for ts, p in self._price_history_24h if ts > cutoff_24h
+        ]
+
+        # Clean old entries (rapid window - adaptive based on candle interval)
+        _, rapid_window_minutes = get_rapid_drop_params(self._candle_interval)
+        cutoff_rapid = now - timedelta(minutes=rapid_window_minutes)
+        self._price_history_rapid = [
+            (ts, p) for ts, p in self._price_history_rapid if ts > cutoff_rapid
         ]
 
     def check_price_movement(self, current_price: float) -> Optional[BreakerStatus]:
@@ -285,6 +344,20 @@ class CircuitBreaker:
                 self.trip(BreakerLevel.RED, f"Price spiked {change_percent:.1f}% in {self.config.price_window // 60} minutes")
             elif change_percent >= self.config.price_spike_yellow:
                 self.trip(BreakerLevel.YELLOW, f"Price spiked {change_percent:.1f}% in {self.config.price_window // 60} minutes")
+
+        # Check rapid window (adaptive flash crash detection based on candle interval)
+        if len(self._price_history_rapid) >= 2:
+            drop_threshold, window_minutes = get_rapid_drop_params(self._candle_interval)
+            oldest_rapid_price = self._price_history_rapid[0][1]
+            rapid_change_percent = ((current_price - oldest_rapid_price) / oldest_rapid_price) * 100
+
+            # Rapid drop triggers YELLOW (early warning for flash crash)
+            if rapid_change_percent <= -drop_threshold:
+                self.trip(
+                    BreakerLevel.YELLOW,
+                    f"Rapid price drop: {abs(rapid_change_percent):.1f}% in {window_minutes} minutes "
+                    f"(threshold: {drop_threshold}% for {self._candle_interval or 'default'} interval)"
+                )
 
         # Check 24-hour window (sustained crash detection)
         if len(self._price_history_24h) >= 2:
