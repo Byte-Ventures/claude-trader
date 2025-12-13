@@ -88,6 +88,9 @@ RAPID_DROP_PARAMS = {
 }
 _DEFAULT_RAPID_DROP_PARAMS = (5.0, 20)  # Default: 5% in 20 minutes
 
+# Valid candle intervals for validation
+_VALID_CANDLE_INTERVALS = set(RAPID_DROP_PARAMS.keys())
+
 
 def get_rapid_drop_params(candle_interval: Optional[str] = None) -> tuple[float, int]:
     """
@@ -105,6 +108,13 @@ def get_rapid_drop_params(candle_interval: Optional[str] = None) -> tuple[float,
     """
     if candle_interval is None:
         return _DEFAULT_RAPID_DROP_PARAMS
+    if candle_interval not in _VALID_CANDLE_INTERVALS:
+        logger.warning(
+            "invalid_candle_interval",
+            interval=candle_interval,
+            using="default",
+            valid_intervals=list(_VALID_CANDLE_INTERVALS)
+        )
     return RAPID_DROP_PARAMS.get(candle_interval, _DEFAULT_RAPID_DROP_PARAMS)
 
 
@@ -159,10 +169,12 @@ class CircuitBreaker:
         Args:
             candle_interval: The candle interval string (e.g., "FIFTEEN_MINUTE")
         """
-        self._candle_interval = candle_interval
-        # Clear rapid price history on interval change to avoid false triggers
-        self._price_history_rapid = []
-        logger.debug("circuit_breaker_interval_updated", candle_interval=candle_interval)
+        # Only clear history and log if interval actually changed
+        if candle_interval != self._candle_interval:
+            self._candle_interval = candle_interval
+            # Clear rapid price history on interval change to avoid false triggers
+            self._price_history_rapid = []
+            logger.debug("circuit_breaker_interval_updated", candle_interval=candle_interval)
 
     @property
     def level(self) -> BreakerLevel:

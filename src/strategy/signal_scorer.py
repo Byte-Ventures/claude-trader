@@ -16,7 +16,7 @@ import pandas as pd
 import structlog
 
 from src.indicators.rsi import calculate_rsi, get_rsi_signal_graduated
-from src.indicators.macd import calculate_macd, get_macd_signal_graduated
+from src.indicators.macd import calculate_macd, get_macd_signal_graduated, VALID_CANDLE_INTERVALS
 from src.indicators.bollinger import calculate_bollinger_bands, get_bollinger_signal_graduated
 from src.indicators.ema import calculate_ema_crossover, get_ema_signal_graduated, get_ema_trend
 from src.indicators.atr import calculate_atr, get_volatility_level
@@ -63,6 +63,13 @@ def get_recommended_threshold(candle_interval: Optional[str] = None) -> int:
     """
     if candle_interval is None:
         return _DEFAULT_THRESHOLD
+    if candle_interval not in VALID_CANDLE_INTERVALS:
+        logger.warning(
+            "invalid_candle_interval",
+            interval=candle_interval,
+            using="default",
+            valid_intervals=list(VALID_CANDLE_INTERVALS)
+        )
     return _RECOMMENDED_THRESHOLDS.get(candle_interval, _DEFAULT_THRESHOLD)
 
 

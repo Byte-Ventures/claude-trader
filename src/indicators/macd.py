@@ -46,6 +46,16 @@ from typing import Optional
 
 import pandas as pd
 import numpy as np
+import structlog
+
+logger = structlog.get_logger(__name__)
+
+# Valid candle intervals (shared across adaptive functions)
+VALID_CANDLE_INTERVALS = {
+    "ONE_MINUTE", "FIVE_MINUTE", "FIFTEEN_MINUTE",
+    "THIRTY_MINUTE", "ONE_HOUR", "TWO_HOUR",
+    "SIX_HOUR", "ONE_DAY"
+}
 
 # Adaptive scale factors by candle interval
 # Shorter candles have smaller moves, need higher scale factors to produce signals
@@ -84,6 +94,13 @@ def get_histogram_scale_factor(candle_interval: Optional[str] = None) -> float:
     """
     if candle_interval is None:
         return _DEFAULT_HISTOGRAM_SCALE_FACTOR
+    if candle_interval not in VALID_CANDLE_INTERVALS:
+        logger.warning(
+            "invalid_candle_interval",
+            interval=candle_interval,
+            using="default",
+            valid_intervals=list(VALID_CANDLE_INTERVALS)
+        )
     return _HISTOGRAM_SCALE_FACTORS.get(candle_interval, _DEFAULT_HISTOGRAM_SCALE_FACTOR)
 
 

@@ -21,6 +21,7 @@ from src.safety.circuit_breaker import (
     BreakerLevel,
     BreakerStatus,
     CircuitBreakerOpenError,
+    get_rapid_drop_params,
 )
 
 
@@ -566,3 +567,67 @@ def test_callback_receives_correct_parameters(breaker_with_callback, callback_mo
 
     breaker_with_callback.trip(BreakerLevel.RED, "another reason")
     callback_mock.assert_called_once_with(BreakerLevel.RED, "another reason")
+
+
+# ============================================================================
+# Adaptive Flash Crash Detection Tests
+# ============================================================================
+
+def test_get_rapid_drop_params_valid_intervals():
+    """Test rapid drop params returns correct values for all valid intervals."""
+    expected = {
+        "ONE_MINUTE": (1.0, 2),
+        "FIVE_MINUTE": (2.0, 5),
+        "FIFTEEN_MINUTE": (3.0, 10),
+        "THIRTY_MINUTE": (4.0, 15),
+        "ONE_HOUR": (5.0, 20),
+        "TWO_HOUR": (6.0, 30),
+        "SIX_HOUR": (8.0, 60),
+        "ONE_DAY": (10.0, 120),
+    }
+    for interval, expected_value in expected.items():
+        assert get_rapid_drop_params(interval) == expected_value
+
+
+def test_get_rapid_drop_params_none_returns_default():
+    """Test None input returns default parameters."""
+    result = get_rapid_drop_params(None)
+    assert result == (5.0, 20)  # Default: 5% in 20 minutes
+
+
+def test_get_rapid_drop_params_invalid_returns_default():
+    """Test invalid interval returns default and logs warning."""
+    result = get_rapid_drop_params("INVALID_INTERVAL")
+    assert result == (5.0, 20)  # Default value
+
+
+def test_get_rapid_drop_params_threshold_progression():
+    """Test that thresholds increase as intervals get longer."""
+    intervals = [
+        "ONE_MINUTE", "FIVE_MINUTE", "FIFTEEN_MINUTE",
+        "THIRTY_MINUTE", "ONE_HOUR", "TWO_HOUR",
+        "SIX_HOUR", "ONE_DAY"
+    ]
+    params = [get_rapid_drop_params(i) for i in intervals]
+    # Threshold (first element) should increase
+    for i in range(1, len(params)):
+        assert params[i][0] >= params[i-1][0], \
+            f"Threshold for {intervals[i]} should be >= {intervals[i-1]}"
+
+
+def test_set_candle_interval_only_clears_on_change():
+    """Test that set_candle_interval only clears history when interval changes."""
+    breaker = CircuitBreaker(candle_interval="FIFTEEN_MINUTE")
+
+    # Add some price history
+    breaker.record_price(100.0)
+    breaker.record_price(99.0)
+    assert len(breaker._price_history_rapid) == 2
+
+    # Setting same interval should NOT clear history
+    breaker.set_candle_interval("FIFTEEN_MINUTE")
+    assert len(breaker._price_history_rapid) == 2
+
+    # Setting different interval SHOULD clear history
+    breaker.set_candle_interval("ONE_HOUR")
+    assert len(breaker._price_history_rapid) == 0

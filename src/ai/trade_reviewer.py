@@ -894,6 +894,15 @@ class TradeReviewer:
 
         recent = candles.tail(n)
 
+        # Check for NaN values in critical columns
+        critical_cols = ['open', 'high', 'low', 'close']
+        if recent[critical_cols].isna().any().any():
+            logger.warning(
+                "price_action_summary_nan_detected",
+                nan_counts=recent[critical_cols].isna().sum().to_dict()
+            )
+            return ""
+
         # Count bullish (green) vs bearish (red) candles
         up_candles = (recent['close'] > recent['open']).sum()
         down_candles = n - up_candles
