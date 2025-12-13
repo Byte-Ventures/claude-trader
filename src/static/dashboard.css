@@ -40,6 +40,14 @@ header h1 {
     font-weight: 600;
 }
 
+header h1 .subtitle {
+    font-size: 0.9rem;
+    font-weight: 400;
+    color: var(--text-secondary);
+    font-style: italic;
+    margin-left: 0.5rem;
+}
+
 .badge {
     padding: 0.25rem 0.75rem;
     border-radius: 9999px;
