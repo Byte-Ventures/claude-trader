@@ -68,6 +68,25 @@ def main() -> int:
         print(f"  Signal Threshold: {settings.signal_threshold}")
         print("=" * 50)
 
+        # Validate live trading confirmation
+        if settings.is_live_trading and not settings.i_understand_that_i_will_lose_all_my_money:
+            logger.critical(
+                "live_trading_not_confirmed",
+                message="Live trading requires explicit acknowledgment of financial risk",
+            )
+            print("\n" + "=" * 70)
+            print("ERROR: Live trading mode requires explicit acknowledgment.")
+            print("")
+            print("This bot was built by someone with zero fintech experience.")
+            print("It WILL lose your money. This is not financial advice.")
+            print("The author STRONGLY advises against using this bot for trading")
+            print("with real money. It's a horrible idea. Don't do it.")
+            print("")
+            print("If you still want to proceed, add to your .env file:")
+            print("  I_UNDERSTAND_THAT_I_WILL_LOSE_ALL_MY_MONEY=true")
+            print("=" * 70 + "\n")
+            return 1
+
         if settings.is_live_trading:
             print("\n⚠️  WARNING: LIVE TRADING MODE")
             print("  Real money will be used for trades!")

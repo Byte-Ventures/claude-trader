@@ -77,6 +77,8 @@ def mock_settings():
     settings.ema_fast = 12
     settings.ema_slow = 26
     settings.atr_period = 14
+    settings.candle_interval = "ONE_HOUR"
+    settings.candle_limit = 100
 
     # Safety config
     settings.black_recovery_hours = 24
@@ -167,6 +169,22 @@ def mock_database():
 
     # Return None for regime (no saved regime)
     db.get_last_regime.return_value = None
+
+    # Methods called during _trading_iteration()
+    db.record_rates_bulk.return_value = 0  # Number of inserted rows
+    db.get_current_position.return_value = None  # No open position
+    db.get_state.return_value = None  # No saved dashboard state
+    db.save_state.return_value = None  # Void method
+    db.get_daily_stats.return_value = None  # No daily stats
+    db.get_or_create_daily_stats.return_value = Mock(
+        date=date.today(),
+        starting_balance=Decimal("10000"),
+        ending_balance=Decimal("10000"),
+        realized_pnl=Decimal("0"),
+        total_trades=0,
+        is_paper=True,
+    )
+    db.save_regime.return_value = None  # Void method
 
     return db
 

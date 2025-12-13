@@ -529,6 +529,8 @@ function updatePerformanceChart(data) {
     if (portfolioData.length > 0) {
         portfolioSeries.setData(portfolioData);
         btcSeries.setData(btcData);
+        // Fit chart to show all data points properly
+        performanceChart.timeScale().fitContent();
     }
 }
 

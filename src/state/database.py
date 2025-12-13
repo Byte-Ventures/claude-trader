@@ -13,7 +13,7 @@ Tables:
 import json
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Generator, Optional
 
@@ -801,6 +801,73 @@ class Database:
                 stats.max_drawdown_percent = str(max_drawdown)
 
             session.commit()
+
+    def increment_daily_trade_count(self, is_paper: bool = False) -> None:
+        """Increment today's trade count by 1 (UTC)."""
+        today = datetime.utcnow().date()
+
+        with self.session() as session:
+            stats = (
+                session.query(DailyStats)
+                .filter(DailyStats.date == today, DailyStats.is_paper == is_paper)
+                .first()
+            )
+
+            if not stats:
+                # Create the record if it doesn't exist
+                stats = DailyStats(
+                    date=today,
+                    is_paper=is_paper,
+                    total_trades=0,
+                )
+                session.add(stats)
+
+            stats.total_trades = (stats.total_trades or 0) + 1
+            session.commit()
+
+    def count_todays_trades(self, is_paper: bool = False, symbol: Optional[str] = None) -> int:
+        """Count trades executed today (UTC)."""
+        today = datetime.utcnow().date()
+        today_start = datetime.combine(today, datetime.min.time())
+        today_end = datetime.combine(today, datetime.max.time())
+
+        with self.session() as session:
+            query = session.query(Trade).filter(
+                Trade.is_paper == is_paper,
+                Trade.executed_at >= today_start,
+                Trade.executed_at <= today_end,
+            )
+            if symbol:
+                query = query.filter(Trade.symbol == symbol)
+            return query.count()
+
+    def get_todays_realized_pnl(self, is_paper: bool = False, symbol: Optional[str] = None) -> Decimal:
+        """Sum realized P&L from today's trades (UTC) using SQL aggregation."""
+        today = datetime.utcnow().date()
+        today_start = datetime.combine(today, datetime.min.time())
+        today_end = datetime.combine(today, datetime.max.time())
+
+        with self.session() as session:
+            # Use SQL SUM with COALESCE for better performance with large trade histories
+            # COALESCE handles NULL values explicitly (buy orders have NULL realized_pnl)
+            query = session.query(
+                func.coalesce(func.sum(Trade.realized_pnl), 0)
+            ).filter(
+                Trade.is_paper == is_paper,
+                Trade.executed_at >= today_start,
+                Trade.executed_at <= today_end,
+            )
+            if symbol:
+                query = query.filter(Trade.symbol == symbol)
+
+            result = query.scalar()
+            if result is None or result == 0:
+                return Decimal("0")
+            try:
+                return Decimal(str(result))
+            except (InvalidOperation, ValueError) as e:
+                logger.error("invalid_pnl_sum", result=result, error=str(e))
+                return Decimal("0")
 
     def get_daily_stats(
         self, target_date: Optional[date] = None, is_paper: bool = False
