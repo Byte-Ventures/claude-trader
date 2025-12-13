@@ -1164,6 +1164,22 @@ class TradingDaemon:
                     )
                 else:
                     # Step 2: Post-only rejected/unfilled, try IOC at ask + offset (taker)
+                    # Cancel any resting GTC order before placing IOC to avoid duplicate fills
+                    if result.order_id:
+                        try:
+                            self.client.cancel_order(result.order_id)
+                            logger.info(
+                                "limit_buy_post_only_cancelled",
+                                order_id=result.order_id,
+                                reason="unfilled_fallback_to_ioc",
+                            )
+                        except Exception as cancel_err:
+                            logger.warning(
+                                "limit_buy_post_only_cancel_failed",
+                                order_id=result.order_id,
+                                error=str(cancel_err),
+                            )
+
                     logger.info(
                         "limit_buy_post_only_fallback",
                         reason=result.error or "unfilled",
@@ -1389,6 +1405,22 @@ class TradingDaemon:
                     )
                 else:
                     # Step 2: Post-only rejected/unfilled, try IOC at bid - offset (taker)
+                    # Cancel any resting GTC order before placing IOC to avoid duplicate fills
+                    if result.order_id:
+                        try:
+                            self.client.cancel_order(result.order_id)
+                            logger.info(
+                                "limit_sell_post_only_cancelled",
+                                order_id=result.order_id,
+                                reason="unfilled_fallback_to_ioc",
+                            )
+                        except Exception as cancel_err:
+                            logger.warning(
+                                "limit_sell_post_only_cancel_failed",
+                                order_id=result.order_id,
+                                error=str(cancel_err),
+                            )
+
                     logger.info(
                         "limit_sell_post_only_fallback",
                         reason=result.error or "unfilled",
