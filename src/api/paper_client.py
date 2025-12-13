@@ -44,8 +44,7 @@ class PaperTradingClient:
     - Identical interface to exchange clients for easy switching
     """
 
-    # Simulated trading fees (Coinbase Advanced is typically 0.5%)
-    MAKER_FEE = Decimal("0.004")  # 0.4%
+    # Simulated trading fee (Coinbase Advanced taker fee)
     TAKER_FEE = Decimal("0.006")  # 0.6%
 
     # Simulated slippage for market orders

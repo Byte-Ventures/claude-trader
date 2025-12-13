@@ -5,6 +5,7 @@ Validates all orders before execution to ensure they pass safety checks.
 All checks must pass for an order to be executed.
 """
 
+import math
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
@@ -51,6 +52,9 @@ class ValidatorConfig:
     # Two-tier design: sizer targets 40%, validator enforces 80% hard stop.
     max_position_percent: float = 80.0
     price_sanity_percent: float = 5.0  # Max deviation from market price
+    # Estimated round-trip fee for profit margin check (buy + sell fees)
+    # Coinbase Advanced: ~0.6% (0.3% each way), Kraken: ~0.5%
+    estimated_fee_percent: float = 0.006
 
 
 class OrderValidator:
@@ -65,6 +69,7 @@ class OrderValidator:
     5. Within position limits
     6. Price sanity check
     7. Minimum size check
+    8. Profit margin check (stop > 2x fees for positive EV)
     """
 
     def __init__(
@@ -125,12 +130,18 @@ class OrderValidator:
         self._quote_balance = quote_balance
         self._current_price = current_price
 
-    def validate(self, order: OrderRequest) -> ValidationResult:
+    def validate(
+        self,
+        order: OrderRequest,
+        stop_distance_percent: Optional[float] = None,
+    ) -> ValidationResult:
         """
         Validate an order against all safety checks.
 
         Args:
             order: Order to validate
+            stop_distance_percent: Stop-loss distance as percentage of price (e.g., 0.02 = 2%).
+                                   If provided, validates that trade has positive expected value.
 
         Returns:
             ValidationResult with valid=True if all checks pass
@@ -177,6 +188,14 @@ class OrderValidator:
         result = self._check_minimum_size(order)
         if not result.valid:
             return result
+
+        # Check 8: Profit margin (only for buys with stop distance provided)
+        if order.side == "buy" and stop_distance_percent is not None:
+            result = self._check_profit_margin(stop_distance_percent)
+            if not result.valid:
+                return result
+            if result.warnings:
+                warnings.extend(result.warnings)
 
         logger.info(
             "order_validated",
@@ -320,6 +339,50 @@ class OrderValidator:
             )
 
         return ValidationResult(valid=True)
+
+    def _check_profit_margin(self, stop_distance_percent: float) -> ValidationResult:
+        """
+        Check if trade has positive expected value after fees.
+
+        A trade needs the stop distance to be at least 2x the round-trip fees,
+        otherwise even a 50% win rate results in net loss due to fees.
+
+        Args:
+            stop_distance_percent: Stop-loss distance as percentage (e.g., 0.02 = 2%)
+
+        Returns:
+            ValidationResult with valid=True if profit margin is sufficient
+        """
+        # Defensive input validation
+        if not isinstance(stop_distance_percent, (int, float)):
+            return ValidationResult(
+                valid=False,
+                reason=f"Invalid stop distance type: {type(stop_distance_percent).__name__}",
+            )
+
+        if math.isnan(stop_distance_percent) or stop_distance_percent <= 0:
+            return ValidationResult(
+                valid=False,
+                reason=f"Invalid stop distance: {stop_distance_percent}",
+            )
+
+        # Minimum required margin is 2x round-trip fees for break-even at 50% win rate
+        min_margin = self.config.estimated_fee_percent * 2
+
+        if stop_distance_percent < min_margin:
+            return ValidationResult(
+                valid=False,
+                reason=f"Stop too tight for fees. Stop: {stop_distance_percent:.2%}, min required: {min_margin:.2%}",
+            )
+
+        # Warn if margin is tight (between 2x and 3x fees)
+        warnings = []
+        if stop_distance_percent < min_margin * 1.5:
+            warnings.append(
+                f"Tight profit margin: {stop_distance_percent:.2%} stop vs {self.config.estimated_fee_percent:.2%} fees"
+            )
+
+        return ValidationResult(valid=True, warnings=warnings)
 
     def get_position_multiplier(self) -> float:
         """
