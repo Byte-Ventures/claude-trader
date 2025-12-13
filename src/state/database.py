@@ -802,6 +802,59 @@ class Database:
 
             session.commit()
 
+    def increment_daily_trade_count(self, is_paper: bool = False) -> None:
+        """Increment today's trade count by 1."""
+        today = date.today()
+
+        with self.session() as session:
+            stats = (
+                session.query(DailyStats)
+                .filter(DailyStats.date == today, DailyStats.is_paper == is_paper)
+                .first()
+            )
+
+            if stats:
+                stats.total_trades = (stats.total_trades or 0) + 1
+                session.commit()
+
+    def count_todays_trades(self, is_paper: bool = False, symbol: Optional[str] = None) -> int:
+        """Count trades executed today."""
+        today = date.today()
+        today_start = datetime.combine(today, datetime.min.time())
+        today_end = datetime.combine(today, datetime.max.time())
+
+        with self.session() as session:
+            query = session.query(Trade).filter(
+                Trade.is_paper == is_paper,
+                Trade.executed_at >= today_start,
+                Trade.executed_at <= today_end,
+            )
+            if symbol:
+                query = query.filter(Trade.symbol == symbol)
+            return query.count()
+
+    def get_todays_realized_pnl(self, is_paper: bool = False, symbol: Optional[str] = None) -> Decimal:
+        """Sum realized P&L from today's trades."""
+        today = date.today()
+        today_start = datetime.combine(today, datetime.min.time())
+        today_end = datetime.combine(today, datetime.max.time())
+
+        with self.session() as session:
+            query = session.query(Trade).filter(
+                Trade.is_paper == is_paper,
+                Trade.executed_at >= today_start,
+                Trade.executed_at <= today_end,
+            )
+            if symbol:
+                query = query.filter(Trade.symbol == symbol)
+
+            trades = query.all()
+            total_pnl = Decimal("0")
+            for t in trades:
+                if t.realized_pnl:
+                    total_pnl += Decimal(t.realized_pnl)
+            return total_pnl
+
     def get_daily_stats(
         self, target_date: Optional[date] = None, is_paper: bool = False
     ) -> Optional[DailyStats]:

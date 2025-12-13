@@ -80,6 +80,12 @@ class Settings(BaseSettings):
         description="Trading mode: paper (simulated) or live (real money)"
     )
 
+    # Live Trading Confirmation (must be True to run in live mode)
+    i_understand_that_i_will_lose_all_my_money: bool = Field(
+        default=False,
+        description="Must be set to True to acknowledge the risks of live trading"
+    )
+
     # Paper Trading Initial Balances (default: ~50/50 split)
     paper_initial_quote: float = Field(
         default=5000.0,

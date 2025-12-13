@@ -681,6 +681,11 @@ class TradingDaemon:
         portfolio_value = quote_balance + base_value
         position_percent = float(base_value / portfolio_value * 100) if portfolio_value > 0 else 0
 
+        # Determine which trade directions are possible
+        min_quote = Decimal(str(self.position_sizer.config.min_trade_quote))
+        can_buy = quote_balance > min_quote and position_percent < self.position_sizer.config.max_position_percent
+        can_sell = base_balance > Decimal("0.0001")
+
         # Calculate signal
         signal_result = self.signal_scorer.calculate_score(candles, current_price)
 
@@ -872,97 +877,115 @@ class TradingDaemon:
         # Claude AI trade review (if enabled)
         claude_veto_multiplier = 1.0  # Default: no reduction
         if self.trade_reviewer:
-            should_review, review_type = self.trade_reviewer.should_review(
-                signal_result, self.settings.signal_threshold
+            # Determine signal direction from score
+            signal_direction = "buy" if signal_result.score > 0 else "sell" if signal_result.score < 0 else None
+
+            # Check if this direction is tradeable
+            direction_is_tradeable = (
+                (signal_direction == "buy" and can_buy) or
+                (signal_direction == "sell" and can_sell) or
+                signal_direction is None  # Neutral score, no direction
             )
 
-            if should_review:
-                try:
-                    # Run async multi-agent review with timeout protection
-                    review = self._run_async_with_timeout(
-                        self.trade_reviewer.review_trade(
-                            signal_result=signal_result,
-                            current_price=current_price,
-                            trading_pair=self.settings.trading_pair,
+            if not direction_is_tradeable:
+                logger.info(
+                    "ai_review_skipped",
+                    signal_direction=signal_direction,
+                    reason="no_position" if signal_direction == "sell" else "fully_allocated",
+                )
+            else:
+                should_review, review_type = self.trade_reviewer.should_review(
+                    signal_result, self.settings.signal_threshold
+                )
+
+                if should_review:
+                    try:
+                        # Run async multi-agent review with timeout protection
+                        review = self._run_async_with_timeout(
+                            self.trade_reviewer.review_trade(
+                                signal_result=signal_result,
+                                current_price=current_price,
+                                trading_pair=self.settings.trading_pair,
+                                review_type=review_type,
+                                position_percent=position_percent,
+                            ),
+                            timeout=ASYNC_TIMEOUT_SECONDS,
+                        )
+                        if review is None:
+                            logger.warning("trade_review_timeout")
+                            # Continue with trade on timeout (fail open)
+                            raise TimeoutError("Trade review timed out")
+
+                        # Always notify Telegram
+                        self.notifier.notify_trade_review(review, review_type)
+
+                        # Log multi-agent review summary
+                        agent_summary = [
+                            {
+                                "model": r.model.split("/")[-1],
+                                "stance": r.stance,
+                                "approved": r.approved,
+                                "confidence": f"{r.confidence:.2f}",
+                                "summary": getattr(r, 'summary', '')[:50],
+                            }
+                            for r in review.reviews
+                        ]
+                        logger.info(
+                            "multi_agent_trade_review",
                             review_type=review_type,
-                        ),
-                        timeout=ASYNC_TIMEOUT_SECONDS,
-                    )
-                    if review is None:
-                        logger.warning("trade_review_timeout")
-                        # Continue with trade on timeout (fail open)
-                        raise TimeoutError("Trade review timed out")
-
-                    # Always notify Telegram
-                    self.notifier.notify_trade_review(review, review_type)
-
-                    # Log multi-agent review summary
-                    agent_summary = [
-                        {
-                            "model": r.model.split("/")[-1],
-                            "stance": r.stance,
-                            "approved": r.approved,
-                            "confidence": f"{r.confidence:.2f}",
-                            "summary": getattr(r, 'summary', '')[:50],
-                        }
-                        for r in review.reviews
-                    ]
-                    logger.info(
-                        "multi_agent_trade_review",
-                        review_type=review_type,
-                        agents=agent_summary,
-                        judge_decision="APPROVED" if review.judge_decision else "REJECTED",
-                        judge_confidence=f"{review.judge_confidence:.2f}",
-                        judge_recommendation=review.judge_recommendation,
-                        judge_reasoning=review.judge_reasoning,
-                        veto_action=review.final_veto_action or "none",
-                    )
-
-                    # Log full reasoning for each agent (separate entries for readability)
-                    for r in review.reviews:
-                        logger.debug(
-                            "agent_full_reasoning",
-                            model=r.model.split("/")[-1],
-                            stance=r.stance,
-                            reasoning=r.reasoning,
+                            agents=agent_summary,
+                            judge_decision="APPROVED" if review.judge_decision else "REJECTED",
+                            judge_confidence=f"{review.judge_confidence:.2f}",
+                            judge_recommendation=review.judge_recommendation,
+                            judge_reasoning=review.judge_reasoning,
+                            veto_action=review.final_veto_action or "none",
                         )
 
-                    # Handle veto (only for actual trades, not interesting holds)
-                    if review_type == "trade" and not review.judge_decision:
-                        if review.final_veto_action == VetoAction.SKIP.value:
-                            logger.info("trade_vetoed", reason=review.judge_reasoning)
-                            return  # Skip this iteration
-                        elif review.final_veto_action == VetoAction.REDUCE.value:
-                            claude_veto_multiplier = self.settings.position_reduction
-                            logger.info(
-                                "trade_reduced_by_review",
-                                multiplier=f"{claude_veto_multiplier:.2f}",
+                        # Log full reasoning for each agent (separate entries for readability)
+                        for r in review.reviews:
+                            logger.debug(
+                                "agent_full_reasoning",
+                                model=r.model.split("/")[-1],
+                                stance=r.stance,
+                                reasoning=r.reasoning,
                             )
-                        elif review.final_veto_action == VetoAction.DELAY.value:
-                            logger.info(
-                                "trade_delayed_by_review",
-                                delay_minutes=self.settings.delay_minutes,
-                            )
-                            return  # Skip this iteration (user can check Telegram)
-                        # VetoAction.INFO: log but proceed with trade
 
-                    # For interesting holds, store recommendation for threshold adjustment
-                    if review_type == "interesting_hold":
-                        if review.judge_recommendation in ("accumulate", "reduce"):
-                            self._ai_recommendation = review.judge_recommendation
-                            self._ai_recommendation_confidence = review.judge_confidence
-                            self._ai_recommendation_time = datetime.utcnow()
-                            logger.info(
-                                "ai_recommendation_stored",
-                                recommendation=review.judge_recommendation,
-                                confidence=f"{review.judge_confidence:.2f}",
-                                ttl_minutes=self._ai_recommendation_ttl_minutes,
-                            )
-                        return
+                        # Handle veto (only for actual trades, not interesting holds)
+                        if review_type == "trade" and not review.judge_decision:
+                            if review.final_veto_action == VetoAction.SKIP.value:
+                                logger.info("trade_vetoed", reason=review.judge_reasoning)
+                                return  # Skip this iteration
+                            elif review.final_veto_action == VetoAction.REDUCE.value:
+                                claude_veto_multiplier = self.settings.position_reduction
+                                logger.info(
+                                    "trade_reduced_by_review",
+                                    multiplier=f"{claude_veto_multiplier:.2f}",
+                                )
+                            elif review.final_veto_action == VetoAction.DELAY.value:
+                                logger.info(
+                                    "trade_delayed_by_review",
+                                    delay_minutes=self.settings.delay_minutes,
+                                )
+                                return  # Skip this iteration (user can check Telegram)
+                            # VetoAction.INFO: log but proceed with trade
 
-                except Exception as e:
-                    logger.error("claude_review_failed", error=str(e))
-                    # Continue with trade on review failure (fail open)
+                        # For interesting holds, store recommendation for threshold adjustment
+                        if review_type == "interesting_hold":
+                            if review.judge_recommendation in ("accumulate", "reduce"):
+                                self._ai_recommendation = review.judge_recommendation
+                                self._ai_recommendation_confidence = review.judge_confidence
+                                self._ai_recommendation_time = datetime.utcnow()
+                                logger.info(
+                                    "ai_recommendation_stored",
+                                    recommendation=review.judge_recommendation,
+                                    confidence=f"{review.judge_confidence:.2f}",
+                                    ttl_minutes=self._ai_recommendation_ttl_minutes,
+                                )
+                            return
+
+                    except Exception as e:
+                        logger.error("claude_review_failed", error=str(e))
+                        # Continue with trade on review failure (fail open)
 
         # Execute trade if signal is strong enough (using regime-adjusted threshold)
         if effective_action == "hold":
@@ -978,7 +1001,7 @@ class TradingDaemon:
         safety_multiplier = self.validator.get_position_multiplier() * claude_veto_multiplier * regime.position_multiplier
 
         if effective_action == "buy":
-            if quote_balance > Decimal("10"):
+            if can_buy:
                 logger.info(
                     "decision",
                     action="buy",
@@ -996,12 +1019,12 @@ class TradingDaemon:
                 logger.info(
                     "decision",
                     action="skip_buy",
-                    reason=f"insufficient_quote_balance ({quote_balance})",
+                    reason=f"insufficient_balance_or_position_limit (quote={quote_balance}, position={position_percent:.1f}%)",
                     signal_score=signal_result.score,
                 )
 
         elif effective_action == "sell":
-            if base_balance > Decimal("0.0001"):
+            if can_sell:
                 logger.info(
                     "decision",
                     action="sell",
@@ -1080,11 +1103,13 @@ class TradingDaemon:
                 size=result.size,
                 price=filled_price,
                 fee=result.fee,
+                symbol=self.settings.trading_pair,
                 is_paper=is_paper,
                 quote_balance_after=new_quote_balance,
                 base_balance_after=new_base_balance,
                 spot_rate=current_price,
             )
+            self.db.increment_daily_trade_count(is_paper=is_paper)
 
             # Update position tracking and create stop protection
             # CRITICAL: If stop creation fails, immediately close position (fail-safe)
@@ -1233,11 +1258,13 @@ class TradingDaemon:
                 price=filled_price,
                 fee=result.fee,
                 realized_pnl=realized_pnl,
+                symbol=self.settings.trading_pair,
                 is_paper=is_paper,
                 quote_balance_after=new_quote_balance,
                 base_balance_after=new_base_balance,
                 spot_rate=current_price,
             )
+            self.db.increment_daily_trade_count(is_paper=is_paper)
 
             # Update loss limiter with actual PnL
             self.loss_limiter.record_trade(

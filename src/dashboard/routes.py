@@ -146,7 +146,7 @@ async def get_trades(
             id=t.id,
             side=t.side,
             size=t.size,
-            price=t.filled_price or t.price or "0",
+            price=t.price or "0",
             fee=t.fee or "0",
             realized_pnl=t.realized_pnl,
             executed_at=t.executed_at.isoformat() if t.executed_at else "",
@@ -186,14 +186,23 @@ async def get_daily_stats(request: Request) -> Optional[DailyStatsInfo]:
     db = get_db()
 
     stats = db.get_daily_stats(is_paper=settings.is_paper_trading)
+    # Calculate from trades table (more reliable than stored values)
+    trade_count = db.count_todays_trades(
+        is_paper=settings.is_paper_trading,
+        symbol=settings.trading_pair,
+    )
+    realized_pnl = db.get_todays_realized_pnl(
+        is_paper=settings.is_paper_trading,
+        symbol=settings.trading_pair,
+    )
 
     if stats:
         return DailyStatsInfo(
             date=str(stats.date),
             starting_balance=stats.starting_balance or "0",
             ending_balance=stats.ending_balance or "0",
-            realized_pnl=stats.realized_pnl or "0",
-            total_trades=stats.total_trades or 0,
+            realized_pnl=str(realized_pnl),
+            total_trades=trade_count,
             is_paper=stats.is_paper,
         )
     return None

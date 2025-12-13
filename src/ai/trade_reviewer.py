@@ -587,6 +587,7 @@ class TradeReviewer:
         current_price: Decimal,
         trading_pair: str,
         review_type: str = "trade",
+        position_percent: float = 0.0,
     ) -> MultiAgentReviewResult:
         """
         Multi-agent review process.
@@ -596,6 +597,7 @@ class TradeReviewer:
             current_price: Current market price
             trading_pair: Trading pair (e.g., "BTC-USD")
             review_type: "trade" or "interesting_hold"
+            position_percent: Current position as percentage of portfolio
 
         Returns:
             MultiAgentReviewResult with all reviews and judge decision
@@ -606,7 +608,8 @@ class TradeReviewer:
         fear_greed = await fetch_fear_greed_index()
         trade_summary = get_trade_summary(self.db, days=7)
         context = self._build_context(
-            signal_result, current_price, trading_pair, fear_greed, trade_summary, review_type
+            signal_result, current_price, trading_pair, fear_greed, trade_summary, review_type,
+            position_percent
         )
 
         # Multi-agent review for all decisions
@@ -824,6 +827,7 @@ class TradeReviewer:
         fear_greed: FearGreedResult,
         trade_summary: TradeSummary,
         review_type: str,
+        position_percent: float = 0.0,
     ) -> dict:
         """Build context dict for prompts and Telegram."""
         trading_style, trading_style_desc = self._get_trading_style()
@@ -844,6 +848,7 @@ class TradeReviewer:
             "candle_interval": self.candle_interval,
             "trading_style": trading_style,
             "trading_style_desc": trading_style_desc,
+            "position_percent": position_percent,
         }
 
     def _build_reviewer_prompt(self, context: dict) -> str:
@@ -857,6 +862,9 @@ Signal Breakdown: {json.dumps(context['breakdown'])}
 
 Trading Style: {context['trading_style_desc']}
 Timeframe: {context['candle_interval']} candles
+
+Portfolio:
+- Current Position: {context['position_percent']:.1f}% of portfolio
 
 Market Context:
 - Fear & Greed Index: {context['fear_greed']} ({context['fear_greed_class']})
