@@ -912,7 +912,8 @@ class TradeReviewer:
         low = recent['low'].min()
         price_range = high - low
         mid_price = (high + low) / 2
-        range_pct = (price_range / mid_price * 100) if mid_price > 0 else 0
+        # Defensive check: mid_price > 0 and high >= low (handles corrupted data)
+        range_pct = (price_range / mid_price * 100) if mid_price > 0 and high >= low else 0
 
         # Determine overall direction
         if up_candles >= 4:
