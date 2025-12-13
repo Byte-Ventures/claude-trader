@@ -124,7 +124,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Claude Trader Dashboard",
+    title="Claude Bitcoin Trader",
     description="Live trading dashboard with real-time updates",
     lifespan=lifespan,
 )

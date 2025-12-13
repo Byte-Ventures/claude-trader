@@ -1,6 +1,6 @@
 # Claude Bitcoin Trader
 
-*Get Rich or Vibe Trying*
+*Get Rich or Vibe Tryin'*
 
 An automated Bitcoin trading bot supporting **Coinbase** and **Kraken** exchanges with multi-indicator confluence strategy, AI-powered trade review, comprehensive safety systems, and paper trading mode.
 
