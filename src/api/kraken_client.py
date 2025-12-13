@@ -570,6 +570,11 @@ class KrakenClient:
                 error=str(e),
             )
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        retry=retry_if_exception_type(RETRY_EXCEPTIONS),
+    )
     def limit_buy_ioc(
         self,
         product_id: str,
@@ -654,6 +659,11 @@ class KrakenClient:
                 error=str(e),
             )
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        retry=retry_if_exception_type(RETRY_EXCEPTIONS),
+    )
     def limit_sell_ioc(
         self,
         product_id: str,
