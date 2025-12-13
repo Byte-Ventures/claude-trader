@@ -34,6 +34,12 @@ class VetoAction(str, Enum):
     INFO = "info"      # Log but proceed with trade
 
 
+class AIFailureMode(str, Enum):
+    """Behavior when AI trade review fails or times out."""
+    OPEN = "open"    # Proceed with trade (current behavior, fail-open)
+    SAFE = "safe"    # Skip trade if AI unreachable (fail-safe)
+
+
 class Settings(BaseSettings):
     """Main application settings with validation."""
 
@@ -310,6 +316,10 @@ class Settings(BaseSettings):
     ai_review_all: bool = Field(
         default=False,
         description="Review ALL decisions with AI (for debugging/testing)"
+    )
+    ai_failure_mode: AIFailureMode = Field(
+        default=AIFailureMode.OPEN,
+        description="Behavior when AI review fails: open (proceed with trade) or safe (skip trade)"
     )
 
     # Hourly Market Analysis (uses same multi-agent system as trade reviews)
