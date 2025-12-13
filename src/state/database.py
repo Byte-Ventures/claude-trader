@@ -803,8 +803,8 @@ class Database:
             session.commit()
 
     def increment_daily_trade_count(self, is_paper: bool = False) -> None:
-        """Increment today's trade count by 1."""
-        today = date.today()
+        """Increment today's trade count by 1 (UTC)."""
+        today = datetime.utcnow().date()
 
         with self.session() as session:
             stats = (
