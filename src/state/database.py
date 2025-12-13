@@ -848,9 +848,11 @@ class Database:
         today_end = datetime.combine(today, datetime.max.time())
 
         with self.session() as session:
-            # Use SQL SUM for better performance with large trade histories
-            # SQLite coerces string values to numeric for SUM
-            query = session.query(func.sum(Trade.realized_pnl)).filter(
+            # Use SQL SUM with COALESCE for better performance with large trade histories
+            # COALESCE handles NULL values explicitly (buy orders have NULL realized_pnl)
+            query = session.query(
+                func.coalesce(func.sum(Trade.realized_pnl), 0)
+            ).filter(
                 Trade.is_paper == is_paper,
                 Trade.executed_at >= today_start,
                 Trade.executed_at <= today_end,
@@ -859,7 +861,7 @@ class Database:
                 query = query.filter(Trade.symbol == symbol)
 
             result = query.scalar()
-            if result is None:
+            if result is None or result == 0:
                 return Decimal("0")
             try:
                 return Decimal(str(result))
