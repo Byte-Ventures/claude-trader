@@ -842,13 +842,15 @@ class Database:
             return query.count()
 
     def get_todays_realized_pnl(self, is_paper: bool = False, symbol: Optional[str] = None) -> Decimal:
-        """Sum realized P&L from today's trades."""
+        """Sum realized P&L from today's trades using SQL aggregation."""
         today = date.today()
         today_start = datetime.combine(today, datetime.min.time())
         today_end = datetime.combine(today, datetime.max.time())
 
         with self.session() as session:
-            query = session.query(Trade).filter(
+            # Use SQL SUM for better performance with large trade histories
+            # SQLite coerces string values to numeric for SUM
+            query = session.query(func.sum(Trade.realized_pnl)).filter(
                 Trade.is_paper == is_paper,
                 Trade.executed_at >= today_start,
                 Trade.executed_at <= today_end,
@@ -856,12 +858,8 @@ class Database:
             if symbol:
                 query = query.filter(Trade.symbol == symbol)
 
-            trades = query.all()
-            total_pnl = Decimal("0")
-            for t in trades:
-                if t.realized_pnl:
-                    total_pnl += Decimal(t.realized_pnl)
-            return total_pnl
+            result = query.scalar()
+            return Decimal(str(result)) if result else Decimal("0")
 
     def get_daily_stats(
         self, target_date: Optional[date] = None, is_paper: bool = False

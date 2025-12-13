@@ -9,8 +9,6 @@ Tests cover:
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 
-from config.settings import TradingMode
-
 
 class TestLiveTradingConfirmation:
     """Tests for the live trading confirmation requirement."""
