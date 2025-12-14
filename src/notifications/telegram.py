@@ -587,14 +587,42 @@ class TelegramNotifier:
 
             # Veto action explanation
             veto_action = review.final_veto_action
+            # Build trade size section FIRST - THIS IS THE MOST IMPORTANT INFO
+            estimated_size = ctx.get('estimated_size')
+            trading_pair = ctx.get('trading_pair', 'BTC-USD')
+            parts = trading_pair.split('-')
+            base_symbol = parts[0] if len(parts) >= 1 else 'BTC'
+            quote_symbol = parts[1] if len(parts) >= 2 else 'USD'
+
+            trade_size_section = ""
+            size_base = 0
+            size_quote = 0
+            if estimated_size:
+                size_base = estimated_size.get('size_base', 0)
+                size_quote = estimated_size.get('size_quote', 0)
+                trade_size_section = (
+                    f"\n<b>📦 Trade Size</b>:\n"
+                    f"  {size_base:.6f} {base_symbol} (¤{size_quote:,.2f} {quote_symbol})\n"
+                )
+
+            # Build veto explanation with actual amounts
             if veto_action:
-                veto_explanations = {
-                    "skip": "🚫 TRADE CANCELLED",
-                    "reduce": "⚠️ POSITION REDUCED TO 50%",
-                    "delay": "⏸️ TRADE DELAYED 15 MIN",
-                    "info": "ℹ️ WARNING LOGGED, TRADE PROCEEDS",
-                }
-                veto_text = f"\n\n<b>Veto Action</b>: {veto_explanations.get(veto_action, veto_action.upper())}"
+                if veto_action == "reduce" and size_base > 0:
+                    reduced_base = size_base * 0.5
+                    reduced_quote = size_quote * 0.5
+                    veto_text = (
+                        f"\n\n<b>Veto Action</b>: ⚠️ POSITION REDUCED TO 50%\n"
+                        f"  Original: {size_base:.6f} {base_symbol} (¤{size_quote:,.2f})\n"
+                        f"  Reduced: {reduced_base:.6f} {base_symbol} (¤{reduced_quote:,.2f})"
+                    )
+                else:
+                    veto_explanations = {
+                        "skip": "🚫 TRADE CANCELLED",
+                        "reduce": "⚠️ POSITION REDUCED TO 50%",
+                        "delay": "⏸️ TRADE DELAYED 15 MIN",
+                        "info": "ℹ️ WARNING LOGGED, TRADE PROCEEDS",
+                    }
+                    veto_text = f"\n\n<b>Veto Action</b>: {veto_explanations.get(veto_action, veto_action.upper())}"
             else:
                 veto_text = ""
 
@@ -618,12 +646,6 @@ class TelegramNotifier:
             position_pct = ctx.get('position_percent', 0)
 
             if quote_balance is not None and base_balance is not None:
-                # Parse trading pair to get currency symbols
-                trading_pair = ctx.get('trading_pair', 'BTC-USD')
-                parts = trading_pair.split('-')
-                base_symbol = parts[0] if len(parts) >= 1 else 'BTC'
-                quote_symbol = parts[1] if len(parts) >= 2 else 'USD'
-
                 portfolio_section = (
                     f"\n<b>Portfolio</b>:\n"
                     f"  💰 Available: ¤{quote_balance:,.2f} {quote_symbol}\n"
@@ -638,6 +660,7 @@ class TelegramNotifier:
                 f"📊 <b>Trade</b>: {action} @ ¤{ctx.get('price', 0):,.2f}\n"
                 f"Signal Score: {ctx.get('score', 0)}/100\n"
                 f"Fear & Greed: {ctx.get('fear_greed', 'N/A')} ({ctx.get('fear_greed_class', '')})"
+                f"{trade_size_section}"
                 f"{portfolio_section}\n"
                 f"<b>Agent Reviews</b>:\n{agents_text}\n\n"
                 f"<b>━━━ Judge Decision ━━━</b>\n"

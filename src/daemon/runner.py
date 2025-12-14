@@ -1050,6 +1050,34 @@ class TradingDaemon:
 
                 if should_review:
                     try:
+                        # Estimate trade size for context (before AI veto adjustments)
+                        # This gives users visibility into what the trade would be
+                        estimated_size = None
+                        if signal_result.action == "buy":
+                            est_position = self.position_sizer.calculate_size(
+                                df=candles,
+                                current_price=current_price,
+                                quote_balance=quote_balance,
+                                base_balance=base_balance,
+                                signal_strength=signal_result.score,
+                                side="buy",
+                                safety_multiplier=safety_check.position_multiplier,
+                            )
+                            if est_position.size_quote > 0:
+                                estimated_size = {
+                                    "side": "buy",
+                                    "size_base": float(est_position.size_base),
+                                    "size_quote": float(est_position.size_quote),
+                                }
+                        elif signal_result.action == "sell":
+                            # For sells, estimate based on position
+                            sell_size = base_balance if abs(signal_result.score) >= 80 else base_balance * Decimal("0.5")
+                            estimated_size = {
+                                "side": "sell",
+                                "size_base": float(sell_size),
+                                "size_quote": float(sell_size * current_price),
+                            }
+
                         # Run async multi-agent review with timeout protection
                         review = self._run_async_with_timeout(
                             self.trade_reviewer.review_trade(
@@ -1061,6 +1089,7 @@ class TradingDaemon:
                                 candles=candles,
                                 quote_balance=quote_balance,
                                 base_balance=base_balance,
+                                estimated_size=estimated_size,
                             ),
                             timeout=ASYNC_TIMEOUT_SECONDS,
                         )

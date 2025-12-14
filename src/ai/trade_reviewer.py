@@ -594,6 +594,7 @@ class TradeReviewer:
         candles: Optional[pd.DataFrame] = None,
         quote_balance: Optional[Decimal] = None,
         base_balance: Optional[Decimal] = None,
+        estimated_size: Optional[dict] = None,
     ) -> MultiAgentReviewResult:
         """
         Multi-agent review process.
@@ -607,6 +608,7 @@ class TradeReviewer:
             candles: Optional DataFrame with OHLCV data for price action context
             quote_balance: Available quote currency balance for buying
             base_balance: Current base currency holdings for selling
+            estimated_size: Estimated trade size dict with side, size_base, size_quote
 
         Returns:
             MultiAgentReviewResult with all reviews and judge decision
@@ -618,7 +620,7 @@ class TradeReviewer:
         trade_summary = get_trade_summary(self.db, days=7)
         context = self._build_context(
             signal_result, current_price, trading_pair, fear_greed, trade_summary, review_type,
-            position_percent, candles, quote_balance, base_balance
+            position_percent, candles, quote_balance, base_balance, estimated_size
         )
 
         # Multi-agent review for all decisions
@@ -959,6 +961,7 @@ class TradeReviewer:
         candles: Optional[pd.DataFrame] = None,
         quote_balance: Optional[Decimal] = None,
         base_balance: Optional[Decimal] = None,
+        estimated_size: Optional[dict] = None,
     ) -> dict:
         """Build context dict for prompts and Telegram."""
         trading_style, trading_style_desc = self._get_trading_style()
@@ -994,6 +997,7 @@ class TradeReviewer:
             "quote_balance": float(quote_balance) if quote_balance is not None else None,
             "base_balance": float(base_balance) if base_balance is not None else None,
             "portfolio_value": portfolio_value,
+            "estimated_size": estimated_size,
         }
 
     def _build_reviewer_prompt(self, context: dict) -> str:
