@@ -750,8 +750,24 @@ class TradingDaemon:
         # Determine which trade directions are possible
         min_quote = Decimal(str(self.position_sizer.config.min_trade_quote))
         min_base = Decimal(str(self.position_sizer.config.min_trade_base))
-        can_buy = quote_balance > min_quote and position_percent < self.position_sizer.config.max_position_percent
+        max_position_pct = self.position_sizer.config.max_position_percent
+
+        # Check if there's meaningful room to buy (at least 1% of portfolio or min_trade_quote)
+        # This prevents running AI review when position is nearly at limit
+        available_room_pct = max_position_pct - position_percent
+        min_room_pct = max(1.0, float(min_quote / portfolio_value * 100)) if portfolio_value > 0 else 1.0
+        has_room = available_room_pct >= min_room_pct
+        can_buy = quote_balance > min_quote and has_room
         can_sell = base_balance > min_base
+
+        if not has_room and quote_balance > min_quote:
+            logger.info(
+                "buy_blocked_insufficient_room",
+                position_pct=f"{position_percent:.1f}%",
+                max_position_pct=f"{max_position_pct:.1f}%",
+                available_room_pct=f"{available_room_pct:.2f}%",
+                min_room_pct=f"{min_room_pct:.2f}%",
+            )
 
         # Calculate signal
         signal_result = self.signal_scorer.calculate_score(candles, current_price)
