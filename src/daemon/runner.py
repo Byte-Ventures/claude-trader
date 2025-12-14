@@ -824,15 +824,18 @@ class TradingDaemon:
 
         # Record whale activity to database if detected
         if signal_result.breakdown.get("_whale_activity"):
-            self.db.record_whale_event(
-                symbol=self.settings.trading_pair,
-                volume_ratio=signal_result.breakdown.get("_volume_ratio", 0),
-                direction=signal_result.breakdown.get("_whale_direction", "unknown"),
-                price_change_pct=None,  # Could be calculated from candles if needed
-                signal_score=signal_result.score,
-                signal_action=signal_result.action,
-                is_paper=self.settings.is_paper_trading,
-            )
+            try:
+                self.db.record_whale_event(
+                    symbol=self.settings.trading_pair,
+                    volume_ratio=signal_result.breakdown.get("_volume_ratio", 0),
+                    direction=signal_result.breakdown.get("_whale_direction", "unknown"),
+                    price_change_pct=signal_result.breakdown.get("_price_change_pct"),
+                    signal_score=signal_result.score,
+                    signal_action=signal_result.action,
+                    is_paper=self.settings.is_paper_trading,
+                )
+            except Exception as e:
+                logger.warning("whale_event_record_failed", error=str(e))
 
         # Track volatility for adaptive interval and post-volatility analysis
         if ind.volatility:

@@ -580,6 +580,55 @@ def test_whale_metadata_on_zero_volume():
     assert result.breakdown.get("volume") == 0
 
 
+def test_whale_metadata_on_nan_volume():
+    """Test that whale metadata is properly set when volume contains NaN values.
+
+    This verifies the division-by-zero protection when volume_sma is NaN.
+    """
+    scorer = SignalScorer()
+
+    # Create data with NaN volume values - will cause volume_sma to be NaN
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': [50500] * 100,
+        'volume': [float('nan')] * 100  # NaN volume triggers pd.isna check
+    })
+
+    result = scorer.calculate_score(df)
+
+    # Should handle NaN gracefully without crashing
+    assert result.breakdown.get("_whale_activity") is False
+    assert result.breakdown.get("_volume_ratio") is None
+    assert result.breakdown.get("volume") == 0
+
+
+def test_whale_price_change_pct_stored():
+    """Test that price_change_pct is stored in breakdown for whale events."""
+    scorer = SignalScorer()
+
+    # Create data with whale volume and clear price movement
+    base_volume = 1000
+    prices = [50000] * 99 + [50500]  # 1% price increase on last candle
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': prices,
+        'volume': [base_volume] * 99 + [base_volume * 5]  # 5x spike
+    })
+
+    result = scorer.calculate_score(df)
+
+    # Should have whale activity with price_change_pct stored
+    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_price_change_pct") is not None
+    # Price change should be ~1% (0.01)
+    pct = result.breakdown.get("_price_change_pct")
+    assert 0.009 <= pct <= 0.011, f"Expected ~0.01 (1%), got {pct}"
+
+
 def test_whale_activity_on_neutral_signal():
     """Test that whale activity is flagged even when signal score is low.
 
