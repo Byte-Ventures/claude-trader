@@ -908,7 +908,7 @@ def main() -> int:
         return 0
 
     except subprocess.TimeoutExpired:
-        print("[ERROR] Claude CLI timed out after 10 minutes")
+        print("[ERROR] Claude CLI timed out after 15 minutes")
         return 1
     except FileNotFoundError as e:
         if "claude" in str(e):
