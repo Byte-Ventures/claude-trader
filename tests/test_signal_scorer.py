@@ -580,6 +580,53 @@ def test_whale_metadata_on_zero_volume():
     assert result.breakdown.get("volume") == 0
 
 
+def test_whale_activity_on_neutral_signal():
+    """Test that whale activity is flagged even when signal score is low.
+
+    This validates the intentional behavior where whale activity is recorded
+    even when indicators give weak signals, providing valuable information for AI reviewers.
+    The key point is that _whale_activity is always set to True when volume exceeds threshold.
+    """
+    scorer = SignalScorer()
+
+    # Create data with whale volume spike on last candle
+    # The actual signal score doesn't matter - what matters is that whale is flagged
+    base_volume = 1000
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [50100] * 100,  # Very tight range
+        'low': [49900] * 100,
+        'close': [50000] * 100,  # Close equals open
+        'volume': [base_volume] * 99 + [base_volume * 5]  # 5x spike on last candle
+    })
+
+    result = scorer.calculate_score(df)
+
+    # Whale activity should be detected regardless of signal strength
+    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_volume_ratio") >= 3.0
+    assert result.breakdown.get("_whale_direction") in ("bullish", "bearish", "neutral")
+    # Volume boost should be proportional to score (30% of score)
+    # If score is small, boost will be small but may not be 0
+    expected_boost = int(abs(result.score - result.breakdown.get("volume", 0)) * 0.3)
+    actual_boost = abs(result.breakdown.get("volume", 0))
+    assert actual_boost <= expected_boost + 5  # Allow small margin
+
+
+def test_update_settings_whale_threshold():
+    """Test that whale_volume_threshold can be updated at runtime."""
+    scorer = SignalScorer(whale_volume_threshold=3.0)
+    assert scorer.whale_volume_threshold == 3.0
+
+    # Update the threshold
+    scorer.update_settings(whale_volume_threshold=5.0)
+    assert scorer.whale_volume_threshold == 5.0
+
+    # Update with None should not change the value
+    scorer.update_settings(whale_volume_threshold=None)
+    assert scorer.whale_volume_threshold == 5.0
+
+
 # ============================================================================
 # Crash Protection Tests
 # ============================================================================

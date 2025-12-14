@@ -252,6 +252,9 @@ class TradingDaemon:
             atr_period=settings.atr_period,
             candle_interval=settings.candle_interval,
             whale_volume_threshold=settings.whale_volume_threshold,
+            whale_direction_threshold=settings.whale_direction_threshold,
+            whale_boost_percent=settings.whale_boost_percent,
+            high_volume_boost_percent=settings.high_volume_boost_percent,
         )
 
         self.position_sizer = PositionSizer(
@@ -818,6 +821,18 @@ class TradingDaemon:
             ema_gap=f"{((ind.ema_fast - ind.ema_slow) / ind.ema_slow * 100):.3f}%" if ind.ema_fast and ind.ema_slow else "N/A",
             volatility=ind.volatility,
         )
+
+        # Record whale activity to database if detected
+        if signal_result.breakdown.get("_whale_activity"):
+            self.db.record_whale_event(
+                symbol=self.settings.trading_pair,
+                volume_ratio=signal_result.breakdown.get("_volume_ratio", 0),
+                direction=signal_result.breakdown.get("_whale_direction", "unknown"),
+                price_change_pct=None,  # Could be calculated from candles if needed
+                signal_score=signal_result.score,
+                signal_action=signal_result.action,
+                is_paper=self.settings.is_paper_trading,
+            )
 
         # Track volatility for adaptive interval and post-volatility analysis
         if ind.volatility:

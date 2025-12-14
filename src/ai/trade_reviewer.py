@@ -1016,7 +1016,7 @@ class TradeReviewer:
         whale_activity_line = ""
         if breakdown.get("_whale_activity"):
             whale_direction = breakdown.get("_whale_direction", "unknown").upper()
-            whale_activity_line = f"\n⚠️ WHALE ACTIVITY ({whale_direction}): Volume {breakdown.get('_volume_ratio', 0)}x average - {whale_direction.lower()} pressure detected"
+            whale_activity_line = f"\n⚠️ WHALE ACTIVITY ({whale_direction}): Volume {breakdown.get('_volume_ratio', 0)}x average"
 
         # Build common context sections
         common_context = f"""Price: ¤{context['price']:,.2f}
