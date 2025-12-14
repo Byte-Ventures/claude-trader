@@ -165,7 +165,26 @@ Then, do ONE of the following:
 
 1. **Fix it** - Commit a fix addressing the issue
 2. **Document why it's not an issue** - Add a code comment explaining why the concern doesn't apply
-3. **Plan to fix later** - Create a TODO comment or issue tracking the fix for a future PR
+3. **Defer to GitHub issue** - Create a GitHub issue to track the fix for a future PR (use `gh issue create`)
 4. **Explicitly decline** - Document in PR comments why the suggestion won't be implemented
 
 No issue should be left unacknowledged. When summarizing PR reviews, create a checklist showing how each issue was handled.
+
+### Deferred Issues MUST Become GitHub Issues
+
+**Any PR review issue that is not fixed in the current PR MUST have a GitHub issue created.**
+
+This ensures:
+- Nothing falls through the cracks
+- Issues are tracked and searchable
+- Future work is documented with full context
+
+When creating issues for deferred PR review items:
+```bash
+gh issue create --title "Brief description" --body "## Summary
+...
+## Context
+From PR #XX review (bot review, YYYY-MM-DD)
+## Priority
+Low/Medium/High"
+```
