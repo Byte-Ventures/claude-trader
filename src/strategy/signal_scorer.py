@@ -478,6 +478,7 @@ class SignalScorer:
         total_score += ema_score
 
         # Volume confirmation (boost on high volume, penalty on low volume)
+        # Includes whale activity detection for extreme volume spikes
         if volume is not None and len(volume) >= 20:
             volume_sma = volume.rolling(window=20).mean().iloc[-1]
             current_volume = volume.iloc[-1]
@@ -485,7 +486,21 @@ class SignalScorer:
             if not pd.isna(volume_sma) and volume_sma > 0:
                 volume_ratio = current_volume / volume_sma
 
-                if volume_ratio > 1.5:
+                if volume_ratio > 3.0:
+                    # WHALE ACTIVITY: Extreme volume spike (3x+ average)
+                    # Apply 30% boost - stronger signal than normal high volume
+                    volume_boost = int(abs(total_score) * 0.3)
+                    if total_score > 0:
+                        breakdown["volume"] = volume_boost
+                        total_score += volume_boost
+                    elif total_score < 0:
+                        breakdown["volume"] = -volume_boost
+                        total_score -= volume_boost
+                    else:
+                        breakdown["volume"] = 0
+                    breakdown["_whale_activity"] = True
+                    breakdown["_volume_ratio"] = round(volume_ratio, 2)
+                elif volume_ratio > 1.5:
                     # High volume: boost signal by 20%
                     volume_boost = int(abs(total_score) * 0.2)
                     if total_score > 0:
@@ -496,6 +511,8 @@ class SignalScorer:
                         total_score -= volume_boost
                     else:
                         breakdown["volume"] = 0
+                    breakdown["_whale_activity"] = False
+                    breakdown["_volume_ratio"] = round(volume_ratio, 2)
                 elif volume_ratio < 0.7:
                     # Low volume: fixed 10-point penalty (consistent behavior)
                     if total_score > 0:
@@ -506,12 +523,25 @@ class SignalScorer:
                         total_score += 10
                     else:
                         breakdown["volume"] = 0
+                    breakdown["_whale_activity"] = False
+                    breakdown["_volume_ratio"] = round(volume_ratio, 2)
                 else:
                     breakdown["volume"] = 0
+                    breakdown["_whale_activity"] = False
+                    breakdown["_volume_ratio"] = round(volume_ratio, 2)
             else:
                 breakdown["volume"] = 0
         else:
             breakdown["volume"] = 0
+
+        # Log whale activity detection
+        if breakdown.get("_whale_activity"):
+            logger.info(
+                "whale_activity_detected",
+                volume_ratio=breakdown["_volume_ratio"],
+                volume_boost=breakdown["volume"],
+                signal_direction="bullish" if total_score > 0 else "bearish" if total_score < 0 else "neutral",
+            )
 
         # Trend filter: penalize counter-trend trades (scaled by signal strength)
         # Skip penalty for extreme RSI (mean-reversion zones) with crash protection

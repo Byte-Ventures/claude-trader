@@ -418,6 +418,51 @@ def test_normal_volume_neutral():
     assert result.breakdown.get("volume", 0) == 0
 
 
+def test_whale_activity_detection():
+    """Test that extreme volume (3x+) triggers whale activity detection."""
+    scorer = SignalScorer()
+
+    # Create data with 5x volume spike (whale activity)
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': [50500] * 100,  # Slight uptrend for bullish signal
+        'volume': [10000] * 99 + [50000]  # 5x spike on last candle
+    })
+
+    result = scorer.calculate_score(df)
+
+    # Should have whale activity flag
+    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_volume_ratio") >= 3.0
+    # Volume boost should be present (30% of signal for whale vs 20% for normal high)
+    if result.score != 0:
+        assert result.breakdown.get("volume", 0) != 0
+
+
+def test_high_volume_not_whale():
+    """Test that high volume (1.5-3x) does not trigger whale activity."""
+    scorer = SignalScorer()
+
+    # Create data with 2x volume spike (high but not whale)
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': [50500] * 100,
+        'volume': [10000] * 99 + [20000]  # 2x spike - high but not whale
+    })
+
+    result = scorer.calculate_score(df)
+
+    # Should NOT have whale activity flag
+    assert result.breakdown.get("_whale_activity") is False
+    # But should have volume ratio recorded
+    assert result.breakdown.get("_volume_ratio") is not None
+    assert result.breakdown.get("_volume_ratio") < 3.0
+
+
 # ============================================================================
 # Crash Protection Tests
 # ============================================================================
