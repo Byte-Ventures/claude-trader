@@ -1415,7 +1415,7 @@ def test_signal_history_record_creation(db):
             htf_bias_adj=20.0,
             htf_bias="bullish",
             htf_daily_trend="bullish",
-            htf_6h_trend="bullish",
+            htf_4h_trend="bullish",
             raw_score=45,
             final_score=55,
             action="hold",
@@ -1502,7 +1502,7 @@ def test_signal_history_htf_fields(db):
             volume_score=4.0,
             htf_bias="bullish",
             htf_daily_trend="bullish",
-            htf_6h_trend="neutral",
+            htf_4h_trend="neutral",
             htf_bias_adj=20.0,
             raw_score=45,
             final_score=65,  # 45 + 20 from HTF
@@ -1519,7 +1519,7 @@ def test_signal_history_htf_fields(db):
 
         assert retrieved.htf_bias == "bullish"
         assert retrieved.htf_daily_trend == "bullish"
-        assert retrieved.htf_6h_trend == "neutral"
+        assert retrieved.htf_4h_trend == "neutral"
         assert retrieved.htf_bias_adj == 20.0
 
 
@@ -1675,7 +1675,7 @@ def test_signal_history_null_htf_values(db):
             volume_score=4.0,
             htf_bias=None,  # MTF disabled
             htf_daily_trend=None,
-            htf_6h_trend=None,
+            htf_4h_trend=None,
             htf_bias_adj=0.0,
             raw_score=45,
             final_score=45,
@@ -1691,4 +1691,4 @@ def test_signal_history_null_htf_values(db):
 
         assert retrieved.htf_bias is None
         assert retrieved.htf_daily_trend is None
-        assert retrieved.htf_6h_trend is None
+        assert retrieved.htf_4h_trend is None

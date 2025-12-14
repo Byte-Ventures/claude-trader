@@ -1565,7 +1565,7 @@ class TestHTFBiasModifier:
             bullish_signal_df,
             htf_bias="bullish",
             htf_daily="bullish",
-            htf_6h="bullish",
+            htf_4h="bullish",
         )
 
         # Only applies if signal is positive (bullish)
@@ -1583,7 +1583,7 @@ class TestHTFBiasModifier:
             bullish_signal_df,
             htf_bias="bearish",
             htf_daily="bearish",
-            htf_6h="bearish",
+            htf_4h="bearish",
         )
 
         # Only applies if signal is positive (bullish)
@@ -1601,7 +1601,7 @@ class TestHTFBiasModifier:
             bearish_signal_df,
             htf_bias="bearish",
             htf_daily="bearish",
-            htf_6h="bearish",
+            htf_4h="bearish",
         )
 
         # Only applies if signal is negative (bearish)
@@ -1619,7 +1619,7 @@ class TestHTFBiasModifier:
             bearish_signal_df,
             htf_bias="bullish",
             htf_daily="bullish",
-            htf_6h="bullish",
+            htf_4h="bullish",
         )
 
         # Only applies if signal is negative (bearish)
@@ -1637,7 +1637,7 @@ class TestHTFBiasModifier:
             bullish_signal_df,
             htf_bias="neutral",
             htf_daily="neutral",
-            htf_6h="neutral",
+            htf_4h="neutral",
         )
 
         # Neutral bias should add 0
@@ -1652,7 +1652,7 @@ class TestHTFBiasModifier:
             bullish_signal_df,
             htf_bias=None,
             htf_daily=None,
-            htf_6h=None,
+            htf_4h=None,
         )
 
         # None bias should add 0
@@ -1665,13 +1665,13 @@ class TestHTFBiasModifier:
             bullish_signal_df,
             htf_bias="bullish",
             htf_daily="bullish",
-            htf_6h="neutral",
+            htf_4h="neutral",
         )
 
         # Should contain underscore-prefixed metadata
         assert result.breakdown.get("_htf_trend") == "bullish"
         assert result.breakdown.get("_htf_daily") == "bullish"
-        assert result.breakdown.get("_htf_6h") == "neutral"
+        assert result.breakdown.get("_htf_4h") == "neutral"
 
     def test_htf_breakdown_defaults_when_none(self, mtf_scorer, bullish_signal_df):
         """Test breakdown defaults to 'neutral' when HTF params are None."""
@@ -1679,7 +1679,7 @@ class TestHTFBiasModifier:
 
         assert result.breakdown.get("_htf_trend") == "neutral"
         assert result.breakdown.get("_htf_daily") == "neutral"
-        assert result.breakdown.get("_htf_6h") == "neutral"
+        assert result.breakdown.get("_htf_4h") == "neutral"
 
     def test_htf_custom_boost_values(self, bullish_signal_df):
         """Test custom aligned_boost and counter_penalty values work."""

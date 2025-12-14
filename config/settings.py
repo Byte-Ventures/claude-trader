@@ -489,11 +489,11 @@ class Settings(BaseSettings):
         le=240,
         description="Cache duration for daily candle data (minutes)"
     )
-    mtf_6h_cache_minutes: int = Field(
+    mtf_4h_cache_minutes: int = Field(
         default=30,
         ge=10,
         le=120,
-        description="Cache duration for 6-hour candle data (minutes)"
+        description="Cache duration for 4-hour candle data (minutes)"
     )
     mtf_aligned_boost: int = Field(
         default=20,

@@ -373,7 +373,7 @@ class SignalHistory(Base):
     # HTF context
     htf_bias = Column(String(10), nullable=True)  # combined: bullish/bearish/neutral
     htf_daily_trend = Column(String(10), nullable=True)
-    htf_6h_trend = Column(String(10), nullable=True)
+    htf_4h_trend = Column(String(10), nullable=True)
 
     # Final result
     raw_score = Column(Float, nullable=False)  # Before adjustments
@@ -685,6 +685,22 @@ class Database:
                     logger.info("migrated_whale_events_to_float_columns")
             except Exception as e:
                 logger.debug("whale_events_float_migration_skipped", reason=str(e))
+
+            # Rename htf_6h_trend to htf_4h_trend in signal_history (v1.28.13)
+            # Code now uses 4-hour candles, variable name should match
+            try:
+                result = conn.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type='table' AND name='signal_history'")
+                )
+                sh_schema = result.scalar()
+                if sh_schema and "htf_6h_trend" in sh_schema:
+                    conn.execute(
+                        text("ALTER TABLE signal_history RENAME COLUMN htf_6h_trend TO htf_4h_trend")
+                    )
+                    logger.info("migrated_signal_history_column", old="htf_6h_trend", new="htf_4h_trend")
+                    conn.commit()
+            except Exception as e:
+                logger.debug("signal_history_htf_migration_skipped", reason=str(e))
 
     @contextmanager
     def session(self) -> Generator[Session, None, None]:
