@@ -254,51 +254,67 @@ class WeightProfileSelector:
             indicators, volatility, trend, current_price, fear_greed
         )
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": self.config.model,
-                    "max_tokens": 200,
-                    "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt},
-                    ],
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": self.config.model,
+                        "max_tokens": 200,
+                        "messages": [
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": prompt},
+                        ],
+                    },
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code
+            if status == 401 or status == 403:
+                logger.error("ai_api_auth_error", status=status, model=self.config.model)
+            elif status == 404:
+                logger.error("ai_api_model_not_found", status=status, model=self.config.model)
+            elif status == 429:
+                logger.warning("ai_api_rate_limited", status=status)
+            else:
+                logger.error("ai_api_http_error", status=status, error=str(e))
+            raise
+        except httpx.TimeoutException as e:
+            logger.warning("ai_api_timeout", timeout=30.0, error=str(e))
+            raise
 
-            # Validate response structure
-            if not data.get("choices") or not isinstance(data["choices"], list):
-                raise ValueError("Invalid API response: missing 'choices' array")
-            if len(data["choices"]) == 0:
-                raise ValueError("Invalid API response: empty 'choices' array")
-            if not data["choices"][0].get("message"):
-                raise ValueError("Invalid API response: missing 'message' in choice")
-            if "content" not in data["choices"][0]["message"]:
-                raise ValueError("Invalid API response: missing 'content' in message")
+        data = response.json()
 
-            content = data["choices"][0]["message"]["content"]
-            result = self._parse_response(content)
+        # Validate response structure
+        if not data.get("choices") or not isinstance(data["choices"], list):
+            raise ValueError("Invalid API response: missing 'choices' array")
+        if len(data["choices"]) == 0:
+            raise ValueError("Invalid API response: empty 'choices' array")
+        if not data["choices"][0].get("message"):
+            raise ValueError("Invalid API response: missing 'message' in choice")
+        if "content" not in data["choices"][0]["message"]:
+            raise ValueError("Invalid API response: missing 'content' in message")
 
-            return ProfileSelection(
-                profile_name=result["profile"],
-                weights=WEIGHT_PROFILES[result["profile"]],
-                confidence=result["confidence"],
-                reasoning=result["reasoning"],
-                selected_at=datetime.now(timezone.utc),
-                market_context={
-                    "volatility": volatility,
-                    "trend": trend,
-                    "rsi": indicators.get("rsi"),
-                    "fear_greed": fear_greed,
-                },
-            )
+        content = data["choices"][0]["message"]["content"]
+        result = self._parse_response(content)
+
+        return ProfileSelection(
+            profile_name=result["profile"],
+            weights=WEIGHT_PROFILES[result["profile"]],
+            confidence=result["confidence"],
+            reasoning=result["reasoning"],
+            selected_at=datetime.now(timezone.utc),
+            market_context={
+                "volatility": volatility,
+                "trend": trend,
+                "rsi": indicators.get("rsi"),
+                "fear_greed": fear_greed,
+            },
+        )
 
     def _build_prompt(
         self,

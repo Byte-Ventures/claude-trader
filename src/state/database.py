@@ -50,8 +50,8 @@ class Position(Base):
     quantity = Column(String(50), nullable=False)  # Stored as string for Decimal precision
     average_cost = Column(String(50), nullable=False)
     unrealized_pnl = Column(String(50), default="0")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     is_current = Column(Boolean, default=True)
     is_paper = Column(Boolean, default=False)
 
@@ -81,8 +81,8 @@ class Order(Base):
     filled_size = Column(String(50), default="0")
     filled_price = Column(String(50), nullable=True)
     fee = Column(String(50), default="0")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     error_message = Column(Text, nullable=True)
     is_paper = Column(Boolean, default=False)
 
@@ -101,7 +101,7 @@ class Trade(Base):
     price = Column(String(50), nullable=False)
     fee = Column(String(50), default="0")
     realized_pnl = Column(String(50), default="0")
-    executed_at = Column(DateTime, default=datetime.utcnow)
+    executed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_paper = Column(Boolean, default=False)
     # Balance snapshot after trade
     quote_balance_after = Column(String(50), nullable=True)
@@ -135,7 +135,7 @@ class SystemState(Base):
 
     key = Column(String(100), primary_key=True)
     value = Column(Text, nullable=False)  # JSON-encoded
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class Notification(Base):
@@ -147,7 +147,7 @@ class Notification(Base):
     type = Column(String(50), nullable=False)  # trade, error, circuit_breaker, etc.
     title = Column(String(200), nullable=False)
     message = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_paper = Column(Boolean, default=False)
 
 
@@ -164,7 +164,7 @@ class RegimeHistory(Base):
     sentiment_category = Column(String(30), nullable=True)
     volatility_level = Column(String(20), nullable=True)
     trend_direction = Column(String(20), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_paper = Column(Boolean, default=False)
 
 
@@ -178,7 +178,7 @@ class WeightProfileHistory(Base):
     confidence = Column(String(10), nullable=False)  # AI confidence 0.0-1.0
     reasoning = Column(Text, nullable=True)  # AI reasoning
     market_context = Column(Text, nullable=True)  # JSON with market data
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_paper = Column(Boolean, default=False)
 
 
@@ -198,8 +198,8 @@ class TrailingStop(Base):
     breakeven_triggered = Column(Boolean, default=False)  # True when stop moved to break-even
     is_active = Column(Boolean, default=False)
     is_paper = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     def get_entry_price(self) -> Decimal:
         return Decimal(self.entry_price)
@@ -245,7 +245,7 @@ class RateHistory(Base):
     close_price = Column(String(50), nullable=False)
     volume = Column(String(50), nullable=False)
     is_paper = Column(Boolean, nullable=False, default=False)  # Paper vs live data
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Unique constraint: one candle per symbol/exchange/interval/timestamp/is_paper
     __table_args__ = (
