@@ -668,6 +668,11 @@ class TradingDaemon:
             # Fail-open: return cached trend or neutral, never block trading
             logger.warning("htf_fetch_failed", timeframe=granularity, error=str(e), error_type=type(e).__name__)
             return cached_trend or "neutral"
+        except Exception as e:
+            # Unexpected errors - log at error level but still fail-open
+            # Financial bot should never crash due to HTF analysis failure
+            logger.error("htf_fetch_unexpected_error", timeframe=granularity, error=str(e), error_type=type(e).__name__)
+            return cached_trend or "neutral"
 
     def _get_htf_bias(self) -> tuple[str, str, str]:
         """
