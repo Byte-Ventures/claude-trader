@@ -89,7 +89,7 @@ async def state_broadcaster(db: Database):
                             "size": str(t.size),
                             "price": str(t.price),
                             "pnl": str(t.realized_pnl) if t.realized_pnl else None,
-                            "created_at": t.executed_at.isoformat() if t.executed_at else "",
+                            "executed_at": t.executed_at.isoformat() if t.executed_at else "",
                         }
                         for t in trades
                     ]
