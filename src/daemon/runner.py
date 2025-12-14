@@ -262,6 +262,8 @@ class TradingDaemon:
         # Initialize AI weight profile selector (optional, requires OpenRouter key)
         self.weight_profile_selector: Optional[WeightProfileSelector] = None
         self._last_weight_profile: str = "default"
+        self._last_weight_profile_confidence: float = 0.0
+        self._last_weight_profile_reasoning: str = ""
         if settings.ai_weight_profile_enabled and settings.openrouter_api_key:
             self.weight_profile_selector = WeightProfileSelector(
                 api_key=settings.openrouter_api_key.get_secret_value(),
@@ -899,7 +901,35 @@ class TradingDaemon:
                             is_paper=self.settings.is_paper_trading,
                         )
 
+                        # Send Telegram notification
+                        profile_emoji = {
+                            "trending": "📈",
+                            "ranging": "↔️",
+                            "volatile": "⚡",
+                            "default": "⚖️",
+                        }.get(selection.profile_name, "🔄")
+
+                        confidence_pct = int(selection.confidence * 100)
+                        notification_msg = (
+                            f"{profile_emoji} <b>Weight Profile Changed</b>\n\n"
+                            f"<b>Profile:</b> {self._last_weight_profile} → {selection.profile_name}\n"
+                            f"<b>Confidence:</b> {confidence_pct}%\n\n"
+                            f"<b>AI Reasoning:</b>\n{selection.reasoning}"
+                        )
+                        self.notifier.send_message_sync(notification_msg)
+
+                        # Save notification to database for dashboard
+                        self.db.save_notification(
+                            notification_type="weight_profile",
+                            title=f"Weight Profile: {selection.profile_name}",
+                            message=f"{self._last_weight_profile} → {selection.profile_name} ({confidence_pct}% confidence)\n{selection.reasoning}",
+                            is_paper=self.settings.is_paper_trading,
+                        )
+
+                        # Update stored profile info
                         self._last_weight_profile = selection.profile_name
+                        self._last_weight_profile_confidence = selection.confidence
+                        self._last_weight_profile_reasoning = selection.reasoning
 
             except Exception as e:
                 logger.warning("weight_profile_update_failed", error=str(e))
@@ -984,6 +1014,11 @@ class TradingDaemon:
                 "position_percent": position_percent,
             },
             "regime": regime.regime_name,
+            "weight_profile": {
+                "name": self._last_weight_profile,
+                "confidence": self._last_weight_profile_confidence,
+                "reasoning": self._last_weight_profile_reasoning,
+            } if self.weight_profile_selector else None,
             "safety": {
                 "circuit_breaker": self.circuit_breaker.level.name,
                 "can_trade": self.circuit_breaker.can_trade,

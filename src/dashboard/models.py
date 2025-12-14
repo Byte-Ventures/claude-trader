@@ -48,6 +48,14 @@ class SafetyStatus(BaseModel):
     can_trade: bool
 
 
+class WeightProfileInfo(BaseModel):
+    """Weight profile information."""
+
+    name: str
+    confidence: float = 0.0
+    reasoning: str = ""
+
+
 class DashboardState(BaseModel):
     """Complete dashboard state for WebSocket broadcast."""
 
@@ -57,6 +65,7 @@ class DashboardState(BaseModel):
     indicators: IndicatorValues
     portfolio: PortfolioInfo
     regime: str
+    weight_profile: Optional[WeightProfileInfo] = None
     safety: SafetyStatus
     trading_pair: str
     is_paper: bool
