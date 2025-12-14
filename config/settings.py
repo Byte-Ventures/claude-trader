@@ -366,6 +366,21 @@ class Settings(BaseSettings):
         description="Cache duration for research data (minutes)"
     )
 
+    # AI Weight Profile Selection
+    ai_weight_profile_enabled: bool = Field(
+        default=False,
+        description="Enable AI-driven indicator weight profile selection (requires OpenRouter API key)"
+    )
+    ai_weight_fallback_profile: str = Field(
+        default="default",
+        pattern="^(trending|ranging|volatile|default)$",
+        description="Fallback weight profile when AI unavailable (trending/ranging/volatile/default)"
+    )
+    ai_weight_profile_model: str = Field(
+        default="openai/gpt-5.2",
+        description="Model for weight profile selection (fast/cheap preferred)"
+    )
+
     # Market Regime Adaptation
     regime_adaptation_enabled: bool = Field(
         default=True,

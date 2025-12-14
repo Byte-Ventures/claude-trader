@@ -168,6 +168,20 @@ class RegimeHistory(Base):
     is_paper = Column(Boolean, default=False)
 
 
+class WeightProfileHistory(Base):
+    """Historical record of AI weight profile selections."""
+
+    __tablename__ = "weight_profile_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    profile_name = Column(String(20), nullable=False)  # trending, ranging, volatile, default
+    confidence = Column(String(10), nullable=False)  # AI confidence 0.0-1.0
+    reasoning = Column(Text, nullable=True)  # AI reasoning
+    market_context = Column(Text, nullable=True)  # JSON with market data
+    created_at = Column(DateTime, default=datetime.utcnow)
+    is_paper = Column(Boolean, default=False)
+
+
 class TrailingStop(Base):
     """Trailing stop tracking for open positions."""
 
@@ -1201,6 +1215,47 @@ class Database:
                 .order_by(RegimeHistory.created_at.desc())
                 .all()
             )
+
+    # Weight profile history methods
+    def record_weight_profile_change(
+        self,
+        profile_name: str,
+        confidence: float,
+        reasoning: str,
+        market_context: dict,
+        is_paper: bool = False,
+    ) -> WeightProfileHistory:
+        """Record an AI weight profile selection."""
+        import json
+
+        with self.session() as session:
+            record = WeightProfileHistory(
+                profile_name=profile_name,
+                confidence=str(confidence),
+                reasoning=reasoning,
+                market_context=json.dumps(market_context),
+                is_paper=is_paper,
+            )
+            session.add(record)
+            session.flush()
+
+            logger.info(
+                "weight_profile_recorded",
+                profile=profile_name,
+                confidence=confidence,
+            )
+            return record
+
+    def get_last_weight_profile(self, is_paper: bool = False) -> Optional[str]:
+        """Get the last recorded weight profile name for session recovery."""
+        with self.session() as session:
+            record = (
+                session.query(WeightProfileHistory)
+                .filter(WeightProfileHistory.is_paper == is_paper)
+                .order_by(WeightProfileHistory.created_at.desc())
+                .first()
+            )
+            return record.profile_name if record else None
 
     # Rate history methods
     def record_rate(

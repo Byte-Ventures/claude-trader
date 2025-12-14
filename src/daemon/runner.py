@@ -31,6 +31,11 @@ from src.safety.loss_limiter import LossLimiter
 from src.safety.validator import OrderValidator, OrderRequest, ValidatorConfig
 from src.state.database import Database
 from src.strategy.signal_scorer import SignalScorer
+from src.strategy.weight_profile_selector import (
+    WeightProfileSelector,
+    ProfileSelectorConfig,
+    WEIGHT_PROFILES,
+)
 from src.strategy.position_sizer import PositionSizer, PositionSizeConfig
 from src.strategy.regime import MarketRegime, RegimeConfig, RegimeAdjustments, get_cached_sentiment
 from src.indicators.ema import get_ema_trend_from_values
@@ -254,6 +259,33 @@ class TradingDaemon:
                 logger.info("regime_restored_from_db", regime=last_regime)
             logger.info("market_regime_initialized", scale=settings.regime_adjustment_scale)
 
+        # Initialize AI weight profile selector (optional, requires OpenRouter key)
+        self.weight_profile_selector: Optional[WeightProfileSelector] = None
+        self._last_weight_profile: str = "default"
+        if settings.ai_weight_profile_enabled and settings.openrouter_api_key:
+            self.weight_profile_selector = WeightProfileSelector(
+                api_key=settings.openrouter_api_key.get_secret_value(),
+                config=ProfileSelectorConfig(
+                    enabled=settings.ai_weight_profile_enabled,
+                    cache_minutes=self._get_candle_interval_minutes(),
+                    fallback_profile=settings.ai_weight_fallback_profile,
+                    model=settings.ai_weight_profile_model,
+                ),
+            )
+            # Restore last weight profile from database
+            last_profile = self.db.get_last_weight_profile(is_paper=settings.is_paper_trading)
+            if last_profile and last_profile in WEIGHT_PROFILES:
+                self._last_weight_profile = last_profile
+                self.signal_scorer.update_weights(WEIGHT_PROFILES[last_profile])
+                logger.info("weight_profile_restored_from_db", profile=last_profile)
+            logger.info(
+                "ai_weight_profile_selector_initialized",
+                model=settings.ai_weight_profile_model,
+                fallback=settings.ai_weight_fallback_profile,
+            )
+        else:
+            logger.info("ai_weight_profile_selector_disabled")
+
         # AI recommendation state (for threshold adjustments from interesting holds)
         self._ai_recommendation: Optional[str] = None  # "accumulate", "reduce", "wait"
         self._ai_recommendation_confidence: float = 0.0
@@ -296,6 +328,28 @@ class TradingDaemon:
                 return default
 
         return self._loop.run_until_complete(_with_timeout())
+
+    def _get_candle_interval_minutes(self) -> int:
+        """Convert candle interval string to minutes."""
+        interval_map = {
+            "ONE_MINUTE": 1,
+            "FIVE_MINUTE": 5,
+            "FIFTEEN_MINUTE": 15,
+            "THIRTY_MINUTE": 30,
+            "ONE_HOUR": 60,
+            "TWO_HOUR": 120,
+            "SIX_HOUR": 360,
+            "ONE_DAY": 1440,
+        }
+        return interval_map.get(self.settings.candle_interval, 60)
+
+    def _calculate_bb_percent_b(self, price: Decimal, indicators) -> Optional[float]:
+        """Calculate Bollinger %B for weight profile selection."""
+        if indicators.bb_upper and indicators.bb_lower:
+            bb_range = indicators.bb_upper - indicators.bb_lower
+            if bb_range > 0:
+                return (float(price) - indicators.bb_lower) / bb_range
+        return None
 
     def _validate_trading_pair(self, trading_pair: str) -> None:
         """
@@ -795,6 +849,60 @@ class TradingDaemon:
             )
 
             self._last_regime = regime.regime_name
+
+        # Update weight profile if AI selector enabled and should update
+        if self.weight_profile_selector and self.weight_profile_selector.should_update():
+            try:
+                # Build indicator context for AI profile selection
+                indicator_context = {
+                    "rsi": ind.rsi,
+                    "macd_histogram": ind.macd_histogram,
+                    "bb_percent_b": self._calculate_bb_percent_b(current_price, ind),
+                }
+
+                # Get Fear & Greed value for context
+                fear_greed_value = None
+                if sentiment:
+                    fear_greed_value = sentiment.value
+
+                selection = self._run_async_with_timeout(
+                    self.weight_profile_selector.select_profile(
+                        indicators=indicator_context,
+                        volatility=ind.volatility or "normal",
+                        trend=trend,
+                        current_price=current_price,
+                        fear_greed=fear_greed_value,
+                    ),
+                    timeout=30,
+                    default=None,
+                )
+
+                if selection:
+                    # Update weights in signal scorer
+                    self.signal_scorer.update_weights(selection.weights)
+
+                    # Log and record profile change
+                    if selection.profile_name != self._last_weight_profile:
+                        logger.info(
+                            "weight_profile_changed",
+                            old=self._last_weight_profile,
+                            new=selection.profile_name,
+                            confidence=selection.confidence,
+                        )
+
+                        # Record to database
+                        self.db.record_weight_profile_change(
+                            profile_name=selection.profile_name,
+                            confidence=selection.confidence,
+                            reasoning=selection.reasoning,
+                            market_context=selection.market_context,
+                            is_paper=self.settings.is_paper_trading,
+                        )
+
+                        self._last_weight_profile = selection.profile_name
+
+            except Exception as e:
+                logger.warning("weight_profile_update_failed", error=str(e))
 
         # Apply regime and AI threshold adjustments to determine effective action
         base_threshold = self.settings.signal_threshold + regime.threshold_adjustment

@@ -98,6 +98,11 @@ def mock_settings():
     settings.regime_trend_enabled = False
     settings.regime_adjustment_scale = 0.5
 
+    # AI Weight Profile config
+    settings.ai_weight_profile_enabled = False
+    settings.ai_weight_fallback_profile = "default"
+    settings.ai_weight_profile_model = "openai/gpt-5.2"
+
     # Safety systems
     settings.circuit_breaker_enabled = True
     settings.kill_switch_enabled = True
