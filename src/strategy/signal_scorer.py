@@ -489,6 +489,9 @@ class SignalScorer:
                 if volume_ratio > 3.0:
                     # WHALE ACTIVITY: Extreme volume spike (3x+ average)
                     # Apply 30% boost - stronger signal than normal high volume
+                    # Note: On neutral signals (total_score=0), boost is 0 but _whale_activity
+                    # is still set True. This is intentional - whale activity on neutral signals
+                    # is valuable information for AI reviewers even without directional bias.
                     volume_boost = int(abs(total_score) * 0.3)
                     if total_score > 0:
                         breakdown["volume"] = volume_boost
@@ -530,9 +533,15 @@ class SignalScorer:
                     breakdown["_whale_activity"] = False
                     breakdown["_volume_ratio"] = round(volume_ratio, 2)
             else:
+                # Invalid volume SMA (NaN or zero)
                 breakdown["volume"] = 0
+                breakdown["_whale_activity"] = False
+                breakdown["_volume_ratio"] = None
         else:
+            # Insufficient volume data (< 20 candles)
             breakdown["volume"] = 0
+            breakdown["_whale_activity"] = False
+            breakdown["_volume_ratio"] = None
 
         # Log whale activity detection
         if breakdown.get("_whale_activity"):

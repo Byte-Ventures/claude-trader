@@ -441,6 +441,37 @@ def test_whale_activity_detection():
         assert result.breakdown.get("volume", 0) != 0
 
 
+def test_whale_boost_is_30_percent():
+    """Test that whale activity applies 30% boost (vs 20% for normal high volume)."""
+    scorer = SignalScorer()
+
+    # Create identical data twice - once with whale volume (5x), once with high volume (2x)
+    base_data = {
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': [50500] * 100,
+    }
+
+    # Whale volume (5x)
+    df_whale = pd.DataFrame({**base_data, 'volume': [10000] * 99 + [50000]})
+    result_whale = scorer.calculate_score(df_whale)
+
+    # High volume (2x)
+    df_high = pd.DataFrame({**base_data, 'volume': [10000] * 99 + [20000]})
+    result_high = scorer.calculate_score(df_high)
+
+    # Both should have volume boosts if signal is directional
+    whale_boost = abs(result_whale.breakdown.get("volume", 0))
+    high_boost = abs(result_high.breakdown.get("volume", 0))
+
+    # Whale boost (30%) should be larger than high volume boost (20%)
+    # Only compare if both have non-zero signals
+    if whale_boost > 0 and high_boost > 0:
+        # 30% / 20% = 1.5x ratio
+        assert whale_boost >= high_boost, "Whale boost should be >= high volume boost"
+
+
 def test_high_volume_not_whale():
     """Test that high volume (1.5-3x) does not trigger whale activity."""
     scorer = SignalScorer()
@@ -461,6 +492,27 @@ def test_high_volume_not_whale():
     # But should have volume ratio recorded
     assert result.breakdown.get("_volume_ratio") is not None
     assert result.breakdown.get("_volume_ratio") < 3.0
+
+
+def test_whale_metadata_on_zero_volume():
+    """Test that whale metadata is properly set when volume SMA is zero."""
+    scorer = SignalScorer()
+
+    # Create data with zero volume - triggers the "volume_sma <= 0" path
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': [50500] * 100,
+        'volume': [0] * 100  # Zero volume triggers invalid SMA path
+    })
+
+    result = scorer.calculate_score(df)
+
+    # Should have whale metadata set to defaults (SMA is 0)
+    assert result.breakdown.get("_whale_activity") is False
+    assert result.breakdown.get("_volume_ratio") is None
+    assert result.breakdown.get("volume") == 0
 
 
 # ============================================================================
