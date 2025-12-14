@@ -693,7 +693,9 @@ class TradingDaemon:
             return "neutral", "neutral", "neutral"
 
         daily = self._get_timeframe_trend("ONE_DAY", self.settings.mtf_daily_cache_minutes)
-        six_hour = self._get_timeframe_trend("SIX_HOUR", self.settings.mtf_6h_cache_minutes)
+        # Use FOUR_HOUR instead of SIX_HOUR for broader exchange compatibility
+        # (Kraken doesn't support 6-hour candles, only 4-hour)
+        six_hour = self._get_timeframe_trend("FOUR_HOUR", self.settings.mtf_6h_cache_minutes)
 
         # Combine: both must agree for strong bias
         if daily == "bullish" and six_hour == "bullish":
@@ -736,7 +738,7 @@ class TradingDaemon:
         """
         try:
             breakdown = signal_result.breakdown
-            with self.db.get_session() as session:
+            with self.db.session() as session:
                 history = SignalHistory(
                     symbol=self.settings.trading_pair,
                     is_paper=self.settings.is_paper_trading,
@@ -786,7 +788,7 @@ class TradingDaemon:
             return
 
         try:
-            with self.db.get_session() as session:
+            with self.db.session() as session:
                 session.query(SignalHistory).filter(
                     SignalHistory.id == signal_id
                 ).update({"trade_executed": True})
