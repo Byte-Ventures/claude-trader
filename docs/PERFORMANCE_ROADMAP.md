@@ -1,7 +1,7 @@
 # Performance Improvement Roadmap
 
 > Analysis Date: 2025-12-13 | Bot Version: 1.25.4
-> Last Updated: 2025-12-14
+> Last Updated: 2025-12-14 (v1.27.33)
 
 This roadmap documents gaps identified compared to professional trading systems, prioritized by **P&L impact** rather than institutional features.
 
@@ -62,9 +62,11 @@ AI-driven weight profile selection that adapts indicator weights to market condi
 - `runner.py:1444-1467` moves stop to break-even when profit threshold reached
 - Missing: Multi-level scale-out and partial sells
 
-### Basic Volume Confirmation (part of 2.3)
-- `signal_scorer.py:481-514` checks volume_ratio > 1.5x
-- Missing: 3x+ whale activity detection
+### Volume Analysis with Whale Detection (2.3) - DONE
+- `signal_scorer.py:481-544` checks volume_ratio thresholds
+- 1.5-3x: High volume (20% signal boost)
+- 3x+: Whale activity (30% signal boost, `_whale_activity` flag)
+- Whale alerts integrated into AI reviewer/judge prompts
 
 ### Fear & Greed Sentiment (part of 2.2)
 - `src/ai/sentiment.py` fetches Fear & Greed Index
@@ -275,27 +277,7 @@ if funding_rate > 0.001:  # 0.1%
 
 ### 2.3 Volume Spike Detection
 
-**Problem:** Current volume analysis only checks if volume > 1.5x average. Missing whale activity detection.
-
-**Solution:**
-```python
-# Enhanced volume analysis in signal_scorer.py
-def detect_volume_anomaly(volume: pd.Series, threshold: float = 3.0) -> dict:
-    """Detect abnormal volume spikes indicating whale activity."""
-    avg_volume = volume.rolling(20).mean()
-    current = volume.iloc[-1]
-    ratio = current / avg_volume.iloc[-1]
-
-    return {
-        'is_spike': ratio > threshold,
-        'ratio': ratio,
-        'interpretation': 'whale_activity' if ratio > threshold else 'normal'
-    }
-```
-
-**Expected Impact:** Identify when "smart money" is moving
-
-**Effort:** Low
+**Status:** DONE (v1.27.33) - See Partial Implementations section above for details.
 
 ---
 
@@ -451,7 +433,8 @@ elif self._ai_strategy_mode == "wait":
 | **Phase 1a** | 4.1 Maker fees | REVERTED (v1.25.4) - race conditions |
 | **Phase 1b** | 4.3 AI regime setter | DEFERRED (needs metrics) |
 | **Phase 1c** | 1.2 Adaptive weights | DONE (v1.27.x) |
-| **Phase 2** | 1.1 Multi-timeframe, 2.3 Volume spikes | Pending |
+| **Phase 1d** | 2.3 Volume spikes / Whale detection | DONE (v1.27.33) |
+| **Phase 2** | 1.1 Multi-timeframe | Pending |
 | **Phase 3** | 1.3 S/R awareness | Pending |
 | **Phase 4** | 3.1 Scale-out exits, 2.1 Divergence | Pending |
 | **Phase 5** | 2.2 Crypto sentiment APIs, 3.2 Time exits | Pending |
