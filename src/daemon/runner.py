@@ -580,7 +580,7 @@ class TradingDaemon:
 
             # Invalidate HTF cache if MTF settings changed
             mtf_settings = {"mtf_enabled", "mtf_candle_limit", "mtf_daily_cache_minutes",
-                           "mtf_6h_cache_minutes", "mtf_aligned_boost", "mtf_counter_penalty"}
+                           "mtf_4h_cache_minutes", "mtf_aligned_boost", "mtf_counter_penalty"}
             if mtf_settings & set(changes.keys()):
                 self._invalidate_htf_cache()
 
@@ -696,17 +696,17 @@ class TradingDaemon:
         daily = self._get_timeframe_trend("ONE_DAY", self.settings.mtf_daily_cache_minutes)
         # Use FOUR_HOUR instead of SIX_HOUR for broader exchange compatibility
         # (Kraken doesn't support 6-hour candles, only 4-hour)
-        six_hour = self._get_timeframe_trend("FOUR_HOUR", self.settings.mtf_6h_cache_minutes)
+        four_hour = self._get_timeframe_trend("FOUR_HOUR", self.settings.mtf_4h_cache_minutes)
 
         # Combine: both must agree for strong bias
-        if daily == "bullish" and six_hour == "bullish":
+        if daily == "bullish" and four_hour == "bullish":
             combined = "bullish"
-        elif daily == "bearish" and six_hour == "bearish":
+        elif daily == "bearish" and four_hour == "bearish":
             combined = "bearish"
         else:
             combined = "neutral"
 
-        return combined, daily, six_hour
+        return combined, daily, four_hour
 
     def _invalidate_htf_cache(self) -> None:
         """
@@ -725,7 +725,7 @@ class TradingDaemon:
         current_price: Decimal,
         htf_bias: str,
         daily_trend: str,
-        six_hour_trend: str,
+        four_hour_trend: str,
         threshold: int,
         trade_executed: bool = False,
     ) -> Optional[int]:
@@ -760,7 +760,7 @@ class TradingDaemon:
                     htf_bias_adj=breakdown.get("htf_bias", 0),
                     htf_bias=htf_bias,
                     htf_daily_trend=daily_trend,
-                    htf_6h_trend=six_hour_trend,
+                    htf_4h_trend=four_hour_trend,
                     raw_score=breakdown.get("_raw_score", signal_result.score),
                     final_score=signal_result.score,
                     action=signal_result.action,
@@ -1033,14 +1033,14 @@ class TradingDaemon:
             )
 
         # Get HTF bias for multi-timeframe confirmation
-        htf_bias, daily_trend, six_hour_trend = self._get_htf_bias()
+        htf_bias, daily_trend, four_hour_trend = self._get_htf_bias()
 
         # Calculate signal with HTF context
         signal_result = self.signal_scorer.calculate_score(
             candles, current_price,
             htf_bias=htf_bias,
             htf_daily=daily_trend,
-            htf_6h=six_hour_trend,
+            htf_4h=four_hour_trend,
         )
 
         # Log indicator values for debugging
@@ -1322,7 +1322,7 @@ class TradingDaemon:
             current_price=current_price,
             htf_bias=htf_bias,
             daily_trend=daily_trend,
-            six_hour_trend=six_hour_trend,
+            four_hour_trend=four_hour_trend,
             threshold=effective_threshold,
             trade_executed=False,  # Will be updated if trade executes
         )

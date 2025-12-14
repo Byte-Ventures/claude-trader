@@ -305,7 +305,7 @@ Checks Daily + 4-hour trends before trading. Both must agree for strong bias.
 | `MTF_ENABLED` | `true` | Enable higher timeframe confirmation |
 | `MTF_CANDLE_LIMIT` | `50` | Candles to fetch for HTF trend |
 | `MTF_DAILY_CACHE_MINUTES` | `60` | Cache duration for daily candles |
-| `MTF_6H_CACHE_MINUTES` | `30` | Cache duration for 4H candles |
+| `MTF_4H_CACHE_MINUTES` | `30` | Cache duration for 4H candles |
 | `MTF_ALIGNED_BOOST` | `20` | Score boost when aligned with HTF trend |
 | `MTF_COUNTER_PENALTY` | `20` | Score penalty when against HTF trend |
 

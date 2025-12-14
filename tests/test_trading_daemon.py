@@ -128,7 +128,7 @@ def mock_settings():
     settings.mtf_enabled = False
     settings.mtf_candle_limit = 50
     settings.mtf_daily_cache_minutes = 60
-    settings.mtf_6h_cache_minutes = 30
+    settings.mtf_4h_cache_minutes = 30
     settings.mtf_aligned_boost = 20
     settings.mtf_counter_penalty = 20
 
@@ -1409,7 +1409,7 @@ def htf_mock_settings(mock_settings):
     mock_settings.mtf_enabled = True
     mock_settings.mtf_candle_limit = 50
     mock_settings.mtf_daily_cache_minutes = 60
-    mock_settings.mtf_6h_cache_minutes = 30
+    mock_settings.mtf_4h_cache_minutes = 30
     mock_settings.mtf_aligned_boost = 20
     mock_settings.mtf_counter_penalty = 20
     return mock_settings
@@ -1598,7 +1598,7 @@ def test_store_signal_history_returns_id(htf_mock_settings, mock_exchange_client
                         current_price=Decimal("50000"),
                         htf_bias="bullish",
                         daily_trend="bullish",
-                        six_hour_trend="bullish",
+                        four_hour_trend="bullish",
                         threshold=60,
                     )
 
@@ -1640,7 +1640,7 @@ def test_store_signal_history_handles_db_error(htf_mock_settings, mock_exchange_
                     current_price=Decimal("50000"),
                     htf_bias="bullish",
                     daily_trend="bullish",
-                    six_hour_trend="bullish",
+                    four_hour_trend="bullish",
                     threshold=60,
                 )
 
@@ -1686,7 +1686,7 @@ def test_store_signal_history_alerts_after_repeated_failures(htf_mock_settings, 
                         current_price=Decimal("50000"),
                         htf_bias="bullish",
                         daily_trend="bullish",
-                        six_hour_trend="bullish",
+                        four_hour_trend="bullish",
                         threshold=60,
                     )
                 mock_notifier.notify_error.assert_not_called()
@@ -1697,7 +1697,7 @@ def test_store_signal_history_alerts_after_repeated_failures(htf_mock_settings, 
                     current_price=Decimal("50000"),
                     htf_bias="bullish",
                     daily_trend="bullish",
-                    six_hour_trend="bullish",
+                    four_hour_trend="bullish",
                     threshold=60,
                 )
                 mock_notifier.notify_error.assert_called_once()
@@ -1744,7 +1744,7 @@ def test_store_signal_history_alerts_every_50_after_initial(htf_mock_settings, m
                         current_price=Decimal("50000"),
                         htf_bias="bullish",
                         daily_trend="bullish",
-                        six_hour_trend="bullish",
+                        four_hour_trend="bullish",
                         threshold=60,
                     )
 
@@ -1806,7 +1806,7 @@ def test_store_signal_history_resets_failure_counter_on_success(htf_mock_setting
                             current_price=Decimal("50000"),
                             htf_bias="bullish",
                             daily_trend="bullish",
-                            six_hour_trend="bullish",
+                            four_hour_trend="bullish",
                             threshold=60,
                         )
 
@@ -1823,7 +1823,7 @@ def test_store_signal_history_resets_failure_counter_on_success(htf_mock_setting
                         current_price=Decimal("50000"),
                         htf_bias="bullish",
                         daily_trend="bullish",
-                        six_hour_trend="bullish",
+                        four_hour_trend="bullish",
                         threshold=60,
                     )
 

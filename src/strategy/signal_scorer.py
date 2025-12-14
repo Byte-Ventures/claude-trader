@@ -412,7 +412,7 @@ class SignalScorer:
         current_price: Optional[Decimal] = None,
         htf_bias: Optional[str] = None,
         htf_daily: Optional[str] = None,
-        htf_6h: Optional[str] = None,
+        htf_4h: Optional[str] = None,
     ) -> SignalResult:
         """
         Calculate composite signal score from OHLCV data.
@@ -422,7 +422,7 @@ class SignalScorer:
             current_price: Current price (uses latest close if not provided)
             htf_bias: Combined HTF bias ("bullish", "bearish", "neutral", or None)
             htf_daily: Daily timeframe trend (for AI context)
-            htf_6h: 6-hour timeframe trend (for AI context)
+            htf_4h: 4-hour timeframe trend (for AI context)
 
         Returns:
             SignalResult with score, action, and breakdown
@@ -706,7 +706,7 @@ class SignalScorer:
                     "htf_bias_applied",
                     htf_bias=htf_bias,
                     htf_daily=htf_daily,
-                    htf_6h=htf_6h,
+                    htf_4h=htf_4h,
                     signal_direction="bullish" if total_score > 0 else "bearish",
                     adjustment=htf_adjustment,
                 )
@@ -714,7 +714,7 @@ class SignalScorer:
         breakdown["htf_bias"] = htf_adjustment
         breakdown["_htf_trend"] = htf_bias or "neutral"
         breakdown["_htf_daily"] = htf_daily or "neutral"
-        breakdown["_htf_6h"] = htf_6h or "neutral"
+        breakdown["_htf_4h"] = htf_4h or "neutral"
 
         # Clamp score to -100 to +100
         total_score = max(-100, min(100, total_score))
