@@ -735,7 +735,7 @@ class SignalScorer:
                 1 for key, score in breakdown.items()
                 if score != 0 and not key.startswith("_")
             )
-            confluence_factor = confluence_count / 6  # 6 components including trend_filter
+            confluence_factor = confluence_count / 7  # 7 components: rsi, macd, bollinger, ema, volume, trend_filter, htf_bias
 
             # Combine magnitude and confluence (equally weighted)
             magnitude_confidence = abs(total_score) / 100
