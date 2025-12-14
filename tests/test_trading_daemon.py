@@ -211,6 +211,12 @@ def mock_database():
     )
     db.save_regime.return_value = None  # Void method
 
+    # Default session context manager for signal history operations
+    mock_session = MagicMock()
+    mock_session.__enter__ = Mock(return_value=mock_session)
+    mock_session.__exit__ = Mock(return_value=False)
+    db.session.return_value = mock_session
+
     return db
 
 
@@ -1563,7 +1569,7 @@ def test_store_signal_history_returns_id(htf_mock_settings, mock_exchange_client
     mock_session.__exit__ = Mock(return_value=False)
     mock_session.add = Mock()
     mock_session.commit = Mock(side_effect=lambda: setattr(mock_history, 'id', 42))
-    mock_database.get_session.return_value = mock_session
+    mock_database.session.return_value = mock_session
 
     with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
         with patch('src.daemon.runner.Database', return_value=mock_database):
@@ -1604,8 +1610,11 @@ def test_store_signal_history_handles_db_error(htf_mock_settings, mock_exchange_
     from src.strategy.signal_scorer import SignalResult, IndicatorValues
     from sqlalchemy.exc import SQLAlchemyError
 
-    # Mock database to raise error
-    mock_database.get_session.side_effect = SQLAlchemyError("Database locked")
+    # Mock database session to raise error when entering context
+    mock_session = MagicMock()
+    mock_session.__enter__ = Mock(side_effect=SQLAlchemyError("Database locked"))
+    mock_session.__exit__ = Mock(return_value=False)
+    mock_database.session.return_value = mock_session
 
     with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
         with patch('src.daemon.runner.Database', return_value=mock_database):
@@ -1638,6 +1647,131 @@ def test_store_signal_history_handles_db_error(htf_mock_settings, mock_exchange_
                 assert signal_id is None
 
 
+def test_store_signal_history_alerts_after_repeated_failures(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test signal history storage alerts after 10 consecutive failures."""
+    from src.strategy.signal_scorer import SignalResult, IndicatorValues
+    from sqlalchemy.exc import SQLAlchemyError
+
+    # Mock database session to raise error when entering context
+    mock_session = MagicMock()
+    mock_session.__enter__ = Mock(side_effect=SQLAlchemyError("Database locked"))
+    mock_session.__exit__ = Mock(return_value=False)
+    mock_database.session.return_value = mock_session
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier') as mock_notifier_class:
+                mock_notifier = Mock()
+                mock_notifier_class.return_value = mock_notifier
+
+                daemon = TradingDaemon(htf_mock_settings)
+
+                signal_result = SignalResult(
+                    score=65,
+                    action="buy",
+                    indicators=IndicatorValues(
+                        rsi=35.0, macd_line=100.0, macd_signal=50.0,
+                        macd_histogram=50.0, bb_upper=51000.0, bb_middle=50000.0,
+                        bb_lower=49000.0, ema_fast=50100.0, ema_slow=50000.0,
+                        volatility="normal"
+                    ),
+                    breakdown={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                    confidence=0.8,
+                )
+
+                # Call 9 times - should NOT alert yet
+                for _ in range(9):
+                    daemon._store_signal_history(
+                        signal_result=signal_result,
+                        current_price=Decimal("50000"),
+                        htf_bias="bullish",
+                        daily_trend="bullish",
+                        six_hour_trend="bullish",
+                        threshold=60,
+                    )
+                mock_notifier.notify_error.assert_not_called()
+
+                # 10th failure should trigger alert
+                daemon._store_signal_history(
+                    signal_result=signal_result,
+                    current_price=Decimal("50000"),
+                    htf_bias="bullish",
+                    daily_trend="bullish",
+                    six_hour_trend="bullish",
+                    threshold=60,
+                )
+                mock_notifier.notify_error.assert_called_once()
+                error_msg = mock_notifier.notify_error.call_args[0][0].lower()
+                assert "signal history storage" in error_msg
+                assert "10" in error_msg  # Verify failure count is included
+
+
+def test_store_signal_history_resets_failure_counter_on_success(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test signal history storage resets failure counter on success."""
+    from src.strategy.signal_scorer import SignalResult, IndicatorValues
+    from sqlalchemy.exc import SQLAlchemyError
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier') as mock_notifier_class:
+                with patch('src.daemon.runner.SignalHistory') as mock_signal_history_class:
+                    mock_notifier = Mock()
+                    mock_notifier_class.return_value = mock_notifier
+                    mock_history = Mock()
+                    mock_history.id = 1
+                    mock_signal_history_class.return_value = mock_history
+
+                    daemon = TradingDaemon(htf_mock_settings)
+
+                    signal_result = SignalResult(
+                        score=65,
+                        action="buy",
+                        indicators=IndicatorValues(
+                            rsi=35.0, macd_line=100.0, macd_signal=50.0,
+                            macd_histogram=50.0, bb_upper=51000.0, bb_middle=50000.0,
+                            bb_lower=49000.0, ema_fast=50100.0, ema_slow=50000.0,
+                            volatility="normal"
+                        ),
+                        breakdown={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                        confidence=0.8,
+                    )
+
+                    # Simulate 5 failures
+                    mock_session_fail = MagicMock()
+                    mock_session_fail.__enter__ = Mock(side_effect=SQLAlchemyError("Database locked"))
+                    mock_session_fail.__exit__ = Mock(return_value=False)
+                    mock_database.session.return_value = mock_session_fail
+
+                    for _ in range(5):
+                        daemon._store_signal_history(
+                            signal_result=signal_result,
+                            current_price=Decimal("50000"),
+                            htf_bias="bullish",
+                            daily_trend="bullish",
+                            six_hour_trend="bullish",
+                            threshold=60,
+                        )
+
+                    assert daemon._signal_history_failures == 5
+
+                    # One successful call should reset counter
+                    mock_session_success = MagicMock()
+                    mock_session_success.__enter__ = Mock(return_value=mock_session_success)
+                    mock_session_success.__exit__ = Mock(return_value=False)
+                    mock_database.session.return_value = mock_session_success
+
+                    daemon._store_signal_history(
+                        signal_result=signal_result,
+                        current_price=Decimal("50000"),
+                        htf_bias="bullish",
+                        daily_trend="bullish",
+                        six_hour_trend="bullish",
+                        threshold=60,
+                    )
+
+                    assert daemon._signal_history_failures == 0
+
+
 def test_mark_signal_trade_executed_with_none_id(htf_mock_settings, mock_exchange_client, mock_database):
     """Test marking trade executed handles None signal_id gracefully."""
     with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
@@ -1645,11 +1779,14 @@ def test_mark_signal_trade_executed_with_none_id(htf_mock_settings, mock_exchang
             with patch('src.daemon.runner.TelegramNotifier'):
                 daemon = TradingDaemon(htf_mock_settings)
 
+                # Reset the mock to clear any calls from initialization
+                mock_database.session.reset_mock()
+
                 # Should not raise or call database
                 daemon._mark_signal_trade_executed(None)
 
                 # Verify no database session was requested
-                mock_database.get_session.assert_not_called()
+                mock_database.session.assert_not_called()
 
 
 def test_mark_signal_trade_executed_with_valid_id(htf_mock_settings, mock_exchange_client, mock_database):
@@ -1661,7 +1798,7 @@ def test_mark_signal_trade_executed_with_valid_id(htf_mock_settings, mock_exchan
     mock_session.query.return_value = mock_query
     mock_query.filter.return_value = mock_query
     mock_query.update = Mock()
-    mock_database.get_session.return_value = mock_session
+    mock_database.session.return_value = mock_session
 
     with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
         with patch('src.daemon.runner.Database', return_value=mock_database):
