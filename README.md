@@ -12,6 +12,10 @@ Works with any trading pair (BTC-USD, BTC-EUR, ETH-USD, etc.).
 - **Multi-Indicator Strategy**: Combines RSI, MACD, Bollinger Bands, EMA crossover, and ATR
 - **Multi-Agent AI Review**: 3 reviewers (Pro/Neutral/Opposing) + judge for trade decisions
 - **Hourly Market Analysis**: AI-powered analysis during volatile conditions
+- **Multi-Timeframe Confirmation**: Daily + 4-hour trend alignment before trading
+- **Market Regime Adaptation**: Fear & Greed Index, volatility, and trend-aware adjustments
+- **Whale Detection**: Boosts signal confidence on high-volume institutional activity
+- **Trade Cooldown**: Prevents rapid consecutive trades (falling knife protection)
 - **Live Dashboard**: Real-time web dashboard with charts, signals, and trade history
 - **Safety Systems**: Kill switch, circuit breaker, loss limits, order validation
 - **Paper Trading**: Test strategies with virtual money using real market data
@@ -99,6 +103,11 @@ Uses 3 reviewer agents with different stances (Pro, Neutral, Opposing) plus a ju
 | `JUDGE_MODEL` | `deepseek/deepseek-chat-v3.1` | Judge model for final decision |
 | `VETO_ACTION` | `info` | `skip`, `reduce`, `delay`, or `info` |
 | `AI_REVIEW_ALL` | `false` | Review ALL decisions (debug mode) |
+| `AI_FAILURE_MODE` | `open` | `open` (proceed) or `safe` (skip) on failure |
+| `AI_RECOMMENDATION_TTL_MINUTES` | `20` | How long AI recs influence thresholds |
+| `AI_MAX_TOKENS` | `4000` | Max tokens for AI responses |
+
+**AI Recommendations**: When the judge issues "accumulate", "reduce", or "wait" recommendations, they influence signal thresholds for `AI_RECOMMENDATION_TTL_MINUTES`. Effect decays linearly to zero over this period.
 
 ### Hourly Market Analysis (Optional)
 
@@ -141,6 +150,16 @@ Signal Score: 72/100
   📈 Volume: +7    (1.6x average volume boost)
   ➖ Trend Filter: 0
 ```
+
+### Fear & Greed Index Integration
+
+The bot fetches the [Bitcoin Fear & Greed Index](https://alternative.me/crypto/fear-and-greed-index/) and uses it for:
+
+- **Regime Adaptation**: Fear lowers buy thresholds (easier to buy dips), greed raises them
+- **Position Sizing**: Fear increases position multiplier, greed decreases it
+- **AI Context**: Index value included in AI market analysis prompts
+
+Categories: Extreme Fear (0-25), Fear (25-45), Neutral (45-55), Greed (55-75), Extreme Greed (75-100)
 
 ## Tuning Guide
 
@@ -204,6 +223,104 @@ The bot can adjust check frequency based on market volatility:
 
 **Requires restart:** exchange, trading_pair, trading_mode, database_path
 
+## Advanced Configuration
+
+All settings below are documented in `.env.example` with detailed comments. Most users won't need to change these.
+
+### Paper Trading Initial Balances
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PAPER_INITIAL_QUOTE` | `5000` | Starting quote currency (USD/EUR) |
+| `PAPER_INITIAL_BASE` | `0.05` | Starting base currency (BTC) |
+
+### Indicator Parameters
+
+| Indicator | Parameters | Defaults |
+|-----------|------------|----------|
+| RSI | `RSI_PERIOD`, `RSI_OVERSOLD`, `RSI_OVERBOUGHT` | 14, 35, 65 |
+| MACD | `MACD_FAST`, `MACD_SLOW`, `MACD_SIGNAL` | 12, 26, 9 |
+| EMA | `EMA_FAST`, `EMA_SLOW` | 9, 21 |
+| Bollinger | `BOLLINGER_PERIOD`, `BOLLINGER_STD` | 20, 2.0 |
+| ATR | `ATR_PERIOD` | 14 |
+
+### Trade Cooldown
+
+Prevents rapid consecutive trades (averaging into falling knives, excessive fees).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TRADE_COOLDOWN_ENABLED` | `true` | Enable cooldown between same-direction trades |
+| `BUY_COOLDOWN_MINUTES` | `15` | Minimum minutes between buy trades |
+| `SELL_COOLDOWN_MINUTES` | `0` | Minutes between sells (0 = disabled for safety) |
+| `BUY_PRICE_CHANGE_PERCENT` | `1.0` | Price must drop X% to buy again |
+| `SELL_PRICE_CHANGE_PERCENT` | `0` | Price must rise X% to sell again (0 = disabled) |
+
+### Whale Detection
+
+Detects large volume spikes indicating institutional activity, boosting signal confidence.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WHALE_VOLUME_THRESHOLD` | `3.0` | Volume ratio for whale detection (3x average) |
+| `WHALE_DIRECTION_THRESHOLD` | `0.003` | Price change % to classify whale direction |
+| `WHALE_BOOST_PERCENT` | `0.30` | Signal boost for whale activity (30%) |
+| `HIGH_VOLUME_BOOST_PERCENT` | `0.20` | Signal boost for high volume (20%) |
+
+### Order Execution
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `USE_LIMIT_ORDERS` | `true` | Use IOC limit orders (reduces slippage) |
+| `LIMIT_ORDER_OFFSET_PERCENT` | `0.1` | Offset from best bid/ask (0.1%) |
+
+**Note**: IOC (Immediate-Or-Cancel) orders fill immediately or cancel unfilled portions.
+
+### Trailing Stop & Breakeven
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TRAILING_STOP_ATR_MULTIPLIER` | `1.0` | Trailing stop distance (1x ATR) |
+| `BREAKEVEN_ATR_MULTIPLIER` | `0.5` | Profit needed to activate trailing (0.5x ATR) |
+| `MIN_STOP_LOSS_PERCENT` | `1.5` | Minimum stop loss floor (% of price) |
+
+### Market Regime Adaptation
+
+Dynamically adjusts strategy based on Fear & Greed Index, volatility, and trend.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REGIME_ADAPTATION_ENABLED` | `true` | Enable regime-based adjustments |
+| `REGIME_SENTIMENT_ENABLED` | `true` | Use Fear & Greed Index |
+| `REGIME_VOLATILITY_ENABLED` | `true` | Use ATR-based volatility |
+| `REGIME_TREND_ENABLED` | `true` | Use EMA trend direction |
+| `REGIME_ADJUSTMENT_SCALE` | `1.0` | Intensity (0=off, 1=normal, 2=aggressive) |
+
+### Multi-Timeframe Confirmation (MTF)
+
+Checks Daily + 4-hour trends before trading. Both must agree for strong bias.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MTF_ENABLED` | `true` | Enable higher timeframe confirmation |
+| `MTF_CANDLE_LIMIT` | `50` | Candles to fetch for HTF trend |
+| `MTF_DAILY_CACHE_MINUTES` | `60` | Cache duration for daily candles |
+| `MTF_6H_CACHE_MINUTES` | `30` | Cache duration for 4H candles |
+| `MTF_ALIGNED_BOOST` | `20` | Score boost when aligned with HTF trend |
+| `MTF_COUNTER_PENALTY` | `20` | Score penalty when against HTF trend |
+
+### AI Weight Profile Selection
+
+AI analyzes market conditions to select optimal indicator weights per candle.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AI_WEIGHT_PROFILE_ENABLED` | `false` | Enable AI-driven weight selection |
+| `AI_WEIGHT_FALLBACK_PROFILE` | `default` | Fallback when AI unavailable |
+| `AI_WEIGHT_PROFILE_MODEL` | `openai/gpt-5.2` | Model for profile selection |
+
+**Profiles**: `trending` (MACD/EMA heavy), `ranging` (RSI/BB heavy), `volatile`, `default`
+
 ## Safety Systems
 
 ### Kill Switch
@@ -220,6 +337,10 @@ The bot can adjust check frequency based on market volatility:
 - Daily: 10% max loss → trading stops for the day
 - Hourly: 3% max loss → 1 hour pause
 - Progressive throttling as limits approach
+
+### Signal History Monitoring
+
+The bot tracks signal history in the database. If storage fails 10 consecutive times, a Telegram alert is sent. Additional alerts at every 50 failures thereafter (60, 110, 160...). Trading continues even if history storage fails (non-blocking).
 
 ## Performance Reports
 
@@ -275,27 +396,38 @@ claude-trader/
 │   ├── settings.py          # Pydantic configuration
 │   └── logging_config.py    # Structured logging
 ├── src/
+│   ├── main.py              # Entry point
+│   ├── version.py           # Version string
 │   ├── api/
 │   │   ├── exchange_protocol.py # Unified exchange interface
 │   │   ├── exchange_factory.py  # Exchange client factory
 │   │   ├── coinbase_client.py   # Coinbase API
+│   │   ├── coinbase_auth.py     # Coinbase JWT authentication
 │   │   ├── kraken_client.py     # Kraken API
-│   │   └── paper_client.py      # Paper trading
+│   │   ├── kraken_auth.py       # Kraken request signing
+│   │   ├── paper_client.py      # Paper trading
+│   │   └── symbol_mapper.py     # Exchange symbol normalization
 │   ├── indicators/
 │   │   ├── rsi.py, macd.py, bollinger.py, ema.py, atr.py
 │   ├── strategy/
 │   │   ├── signal_scorer.py     # Confluence scoring
-│   │   └── position_sizer.py    # ATR-based sizing
+│   │   ├── position_sizer.py    # ATR-based sizing
+│   │   ├── regime.py            # Market regime detection
+│   │   └── weight_profile_selector.py # AI-driven indicator weights
 │   ├── safety/
 │   │   ├── kill_switch.py
 │   │   ├── circuit_breaker.py
 │   │   ├── loss_limiter.py
+│   │   ├── trade_cooldown.py    # Consecutive trade prevention
 │   │   └── validator.py
 │   ├── notifications/
 │   │   └── telegram.py
 │   ├── ai/
 │   │   ├── trade_reviewer.py    # Multi-agent AI trade review
-│   │   └── market_analyzer.py   # Hourly AI market analysis
+│   │   ├── market_analyzer.py   # Hourly AI market analysis
+│   │   ├── market_research.py   # News and on-chain data fetching
+│   │   ├── sentiment.py         # Fear & Greed Index integration
+│   │   └── web_search.py        # DuckDuckGo search for AI agents
 │   ├── state/
 │   │   └── database.py          # SQLite persistence
 │   ├── daemon/
@@ -311,8 +443,11 @@ claude-trader/
 │   └── templates/
 │       └── index.html           # Dashboard HTML
 ├── scripts/
-│   ├── claude-trader.service    # systemd service file
-│   └── install-service.sh       # Ubuntu install script
+│   ├── claude-trader.service    # Main bot systemd service
+│   ├── claude-trader-dashboard.service # Dashboard systemd service
+│   ├── install-service.sh       # Ubuntu install script
+│   ├── reload-config.sh         # Hot-reload .env settings
+│   └── update.sh                # Git pull + restart deployment
 ├── data/                        # SQLite database
 ├── logs/                        # Log files
 └── .env                         # Configuration
@@ -374,7 +509,7 @@ Create `~/Library/LaunchAgents/com.btc-bot.plist`:
         <string>src.main</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/path/to/coinbase-trader</string>
+    <string>/path/to/claude-trader</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
