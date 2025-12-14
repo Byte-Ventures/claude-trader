@@ -9,6 +9,7 @@ Profiles are designed for different market regimes:
 - default: Balanced weights for uncertain conditions
 """
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -254,38 +255,76 @@ class WeightProfileSelector:
             indicators, volatility, trend, current_price, fear_greed
         )
 
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": self.config.model,
-                        "max_tokens": 2000,
-                        "messages": [
-                            {"role": "system", "content": SYSTEM_PROMPT},
-                            {"role": "user", "content": prompt},
-                        ],
-                    },
+        # Retry logic with exponential backoff for transient failures
+        max_retries = 3
+        base_delay = 1.0  # seconds
+        last_exception = None
+
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {self.api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": self.config.model,
+                            "max_tokens": 2000,
+                            "messages": [
+                                {"role": "system", "content": SYSTEM_PROMPT},
+                                {"role": "user", "content": prompt},
+                            ],
+                        },
+                    )
+                    response.raise_for_status()
+                    break  # Success, exit retry loop
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code
+                last_exception = e
+                # Non-retryable errors - fail immediately
+                if status in (401, 403):
+                    logger.error("ai_api_auth_error", status=status, model=self.config.model)
+                    raise
+                elif status == 404:
+                    logger.error("ai_api_model_not_found", status=status, model=self.config.model)
+                    raise
+                # Retryable errors - 429 rate limit, 5xx server errors
+                elif status == 429 or status >= 500:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(
+                        "ai_api_retryable_error",
+                        status=status,
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                        retry_delay=delay,
+                    )
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(delay)
+                        continue
+                    raise
+                else:
+                    logger.error("ai_api_http_error", status=status, error=str(e))
+                    raise
+            except httpx.TimeoutException as e:
+                last_exception = e
+                delay = base_delay * (2 ** attempt)
+                logger.warning(
+                    "ai_api_timeout",
+                    timeout=30.0,
+                    attempt=attempt + 1,
+                    max_retries=max_retries,
+                    retry_delay=delay,
                 )
-                response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            status = e.response.status_code
-            if status == 401 or status == 403:
-                logger.error("ai_api_auth_error", status=status, model=self.config.model)
-            elif status == 404:
-                logger.error("ai_api_model_not_found", status=status, model=self.config.model)
-            elif status == 429:
-                logger.warning("ai_api_rate_limited", status=status)
-            else:
-                logger.error("ai_api_http_error", status=status, error=str(e))
-            raise
-        except httpx.TimeoutException as e:
-            logger.warning("ai_api_timeout", timeout=30.0, error=str(e))
-            raise
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+        else:
+            # All retries exhausted
+            if last_exception:
+                raise last_exception
 
         try:
             data = response.json()
