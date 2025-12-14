@@ -89,23 +89,28 @@ When creating new configuration parameters:
 3. Push and create PR to `develop`
 4. After review, merge to `develop`
 5. When ready for release, create PR from `develop` to `main`
-6. **After every PR merge to `main`**, merge `main` back into `develop`:
+6. **After every PR merge to `main`**, rebase `develop` onto `main`:
    ```bash
+   git checkout develop
    git fetch origin main
-   git merge origin/main
-   git push origin develop
+   git rebase origin/main
+   git push --force-with-lease origin develop
    ```
+
+**Why rebase instead of merge?** Merging main back into develop creates merge commits that pollute the commit history. This causes PRs to show dozens of "commits" even when only a few files changed. Rebasing keeps the history linear and PRs clean.
 
 ### Creating PRs to Main
 
-**Before creating a PR from `develop` to `main`, always pull main first:**
+**Before creating a PR from `develop` to `main`:**
 
 ```bash
 git fetch origin main
+git rebase origin/main           # Ensure develop is up-to-date with main
+git push --force-with-lease      # Update remote develop
 git log origin/main..develop --oneline  # See actual new commits
 ```
 
-This ensures the PR description only includes commits not already in main.
+This ensures the PR only shows commits that are actually new.
 
 ### Rules
 
