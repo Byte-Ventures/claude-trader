@@ -75,7 +75,7 @@ class MarketResearch:
     """Combined market research data."""
     news: list[NewsItem] = field(default_factory=list)
     onchain: Optional[OnChainData] = None
-    fetched_at: datetime = field(default_factory=datetime.now)
+    fetched_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     errors: list[str] = field(default_factory=list)
 
 
@@ -123,7 +123,7 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
                 title=item.get("title", "")[:100],
                 source=item.get("source", "Unknown"),
                 url=item.get("url", ""),
-                published_at=datetime.fromtimestamp(item.get("published_on", 0)),
+                published_at=datetime.fromtimestamp(item.get("published_on", 0), tz=timezone.utc),
                 # sentiment defaults to "neutral" - AI analyzes actual sentiment
             ))
 
