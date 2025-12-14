@@ -342,6 +342,11 @@ class TradingDaemon:
         self._ai_recommendation_time: Optional[datetime] = None
         self._ai_recommendation_ttl_minutes: int = settings.ai_recommendation_ttl_minutes
 
+        # Check postmortem requirements if enabled
+        self._postmortem_available = False
+        if settings.postmortem_enabled:
+            self._postmortem_available = self._check_postmortem_requirements()
+
         # Register shutdown handlers
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -349,6 +354,43 @@ class TradingDaemon:
         # Register SIGUSR2 for config hot-reload
         signal.signal(signal.SIGUSR2, self._handle_reload_signal)
         logger.info("config_reload_signal_registered", signal="SIGUSR2")
+
+    def _check_postmortem_requirements(self) -> bool:
+        """
+        Check if postmortem analysis requirements are met.
+
+        Returns True if Claude CLI is accessible, False otherwise.
+        Logs warnings if requirements are not met.
+        """
+        try:
+            result = subprocess.run(
+                ["claude", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                logger.info("postmortem_claude_cli_available", version=result.stdout.strip())
+                return True
+            else:
+                logger.warning(
+                    "postmortem_claude_cli_error",
+                    error="Claude CLI returned non-zero exit code",
+                    stderr=result.stderr[:200] if result.stderr else None,
+                )
+                return False
+        except FileNotFoundError:
+            logger.warning(
+                "postmortem_disabled_claude_not_found",
+                hint="Install Claude CLI or disable POSTMORTEM_ENABLED",
+            )
+            return False
+        except subprocess.TimeoutExpired:
+            logger.warning("postmortem_disabled_claude_timeout")
+            return False
+        except Exception as e:
+            logger.warning("postmortem_disabled_error", error=str(e))
+            return False
 
     def _run_async_with_timeout(self, coro, timeout: int = ASYNC_TIMEOUT_SECONDS, default=None):
         """
@@ -824,12 +866,12 @@ class TradingDaemon:
         Run post-mortem analysis asynchronously after a trade.
 
         Spawns a background thread to run the postmortem script without blocking trading.
-        Only runs if postmortem_enabled is True in settings.
+        Only runs if postmortem is enabled AND Claude CLI is available.
 
         Args:
             trade_id: Optional specific trade ID. If None, analyzes the last trade.
         """
-        if not self.settings.postmortem_enabled:
+        if not self.settings.postmortem_enabled or not self._postmortem_available:
             return
 
         def run_postmortem():
