@@ -16,8 +16,9 @@ import subprocess
 import time
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event
 from typing import Optional, Union
 
 import structlog
@@ -344,8 +345,12 @@ class TradingDaemon:
 
         # Check postmortem requirements if enabled
         self._postmortem_available = False
+        self._postmortem_executor: Optional[ThreadPoolExecutor] = None
         if settings.postmortem_enabled:
             self._postmortem_available = self._check_postmortem_requirements()
+            if self._postmortem_available:
+                # Single-worker executor prevents resource exhaustion
+                self._postmortem_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="postmortem")
 
         # Register shutdown handlers
         signal.signal(signal.SIGTERM, self._handle_shutdown)
@@ -926,9 +931,9 @@ class TradingDaemon:
             except Exception as e:
                 logger.warning("postmortem_error", error=str(e))
 
-        # Run in background thread
-        thread = Thread(target=run_postmortem, daemon=True)
-        thread.start()
+        # Submit to executor (single-worker prevents resource exhaustion)
+        if self._postmortem_executor:
+            self._postmortem_executor.submit(run_postmortem)
 
     def run(self) -> None:
         """Run the main trading loop."""

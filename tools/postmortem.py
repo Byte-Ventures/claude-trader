@@ -699,27 +699,31 @@ def create_github_discussion(
 
     repo_id, category_id = get_discussion_ids(verbose)
 
-    # Escape quotes in body for GraphQL
-    escaped_body = body.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-    escaped_title = title.replace("\\", "\\\\").replace('"', '\\"')
-
-    query = f'''
-    mutation {{
-      createDiscussion(input: {{
-        repositoryId: "{repo_id}",
-        categoryId: "{category_id}",
-        title: "{escaped_title}",
-        body: "{escaped_body}"
-      }}) {{
-        discussion {{
+    # Use GraphQL variables for proper escaping (prevents injection)
+    query = """
+    mutation CreateDiscussion($repoId: ID!, $categoryId: ID!, $title: String!, $body: String!) {
+      createDiscussion(input: {
+        repositoryId: $repoId,
+        categoryId: $categoryId,
+        title: $title,
+        body: $body
+      }) {
+        discussion {
           url
-        }}
-      }}
-    }}
-    '''
+        }
+      }
+    }
+    """
 
     result = subprocess.run(
-        ["gh", "api", "graphql", "-f", f"query={query}"],
+        [
+            "gh", "api", "graphql",
+            "-f", f"query={query}",
+            "-F", f"repoId={repo_id}",
+            "-F", f"categoryId={category_id}",
+            "-F", f"title={title}",
+            "-F", f"body={body}",
+        ],
         capture_output=True,
         text=True,
     )
@@ -793,11 +797,16 @@ def main() -> int:
     # Determine mode (paper is default, --live overrides)
     is_paper = not args.live
 
-    # Validate and check database path
-    db_path = Path(args.db).resolve()  # Resolve to absolute path
-    if ".." in args.db or not db_path.is_absolute():
+    # Validate database path BEFORE resolving (prevents symlink bypass)
+    if ".." in args.db:
         print(f"[ERROR] Invalid database path: {args.db}")
-        print("[HINT] Use absolute paths without '..' components")
+        print("[HINT] Path traversal (..) not allowed")
+        return 1
+
+    db_path = Path(args.db).resolve()  # Now safe to resolve
+    if not db_path.is_absolute():
+        print(f"[ERROR] Invalid database path: {args.db}")
+        print("[HINT] Use absolute paths")
         return 1
     if not db_path.exists():
         print(f"[ERROR] Database not found: {db_path}")
