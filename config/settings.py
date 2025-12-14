@@ -542,6 +542,16 @@ class Settings(BaseSettings):
         description="Dashboard web server port"
     )
 
+    # Post-Mortem Analysis (automated trade analysis using Claude CLI)
+    postmortem_enabled: bool = Field(
+        default=False,
+        description="Enable automatic post-mortem analysis after trades (requires Claude CLI)"
+    )
+    postmortem_create_discussion: bool = Field(
+        default=False,
+        description="Create GitHub Discussion with analysis (requires gh CLI and Post-Mortems category)"
+    )
+
     @field_validator("ema_slow")
     @classmethod
     def validate_ema_slow(cls, v: int, info) -> int:

@@ -12,10 +12,12 @@ Orchestrates all components:
 import asyncio
 import math
 import signal
+import subprocess
 import time
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
-from threading import Event
+from pathlib import Path
+from threading import Event, Thread
 from typing import Optional, Union
 
 import structlog
@@ -816,6 +818,75 @@ class TradingDaemon:
         except SQLAlchemyError as e:
             # Non-critical - don't block trading for history update
             logger.warning("signal_history_trade_flag_update_failed", error=str(e))
+
+    def _run_postmortem_async(self, trade_id: Optional[int] = None) -> None:
+        """
+        Run post-mortem analysis asynchronously after a trade.
+
+        Spawns a background thread to run the postmortem script without blocking trading.
+        Only runs if postmortem_enabled is True in settings.
+
+        Args:
+            trade_id: Optional specific trade ID. If None, analyzes the last trade.
+        """
+        if not self.settings.postmortem_enabled:
+            return
+
+        def run_postmortem():
+            try:
+                # Build command
+                script_path = Path(__file__).parent.parent.parent / "tools" / "postmortem.py"
+                cmd = ["python3", str(script_path)]
+
+                # Add mode flag
+                if self.settings.is_paper_trading:
+                    cmd.append("--paper")
+                else:
+                    cmd.append("--live")
+
+                # Add trade selection
+                if trade_id:
+                    cmd.extend(["--trade-id", str(trade_id)])
+                else:
+                    cmd.extend(["--last", "1"])
+
+                # Add discussion flag if enabled
+                if self.settings.postmortem_create_discussion:
+                    cmd.append("--create-discussion")
+
+                logger.info("postmortem_starting", cmd=" ".join(cmd))
+
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=900,  # 15 minute timeout
+                )
+
+                if result.returncode == 0:
+                    logger.info("postmortem_completed")
+                    # Notify via Telegram if we created a discussion
+                    if self.settings.postmortem_create_discussion and "GitHub Discussion created" in result.stdout:
+                        # Extract URL from output
+                        for line in result.stdout.split("\n"):
+                            if "github.com" in line and "discussions" in line:
+                                self.notifier.send_message(f"📊 Post-mortem analysis: {line.strip()}")
+                                break
+                else:
+                    logger.warning(
+                        "postmortem_failed",
+                        returncode=result.returncode,
+                        stderr=result.stderr[:500] if result.stderr else None,
+                    )
+
+            except subprocess.TimeoutExpired:
+                logger.warning("postmortem_timeout")
+            except Exception as e:
+                logger.warning("postmortem_error", error=str(e))
+
+        # Run in background thread
+        thread = Thread(target=run_postmortem, daemon=True)
+        thread.start()
 
     def run(self) -> None:
         """Run the main trading loop."""
@@ -1810,6 +1881,9 @@ class TradingDaemon:
 
             # Mark signal history as having resulted in trade (for post-mortem analysis)
             self._mark_signal_trade_executed(self._current_signal_id)
+
+            # Run post-mortem analysis asynchronously (if enabled)
+            self._run_postmortem_async()
         else:
             logger.error("buy_failed", error=result.error)
             self.circuit_breaker.record_order_failure()
@@ -1994,6 +2068,9 @@ class TradingDaemon:
 
             # Mark signal history as having resulted in trade (for post-mortem analysis)
             self._mark_signal_trade_executed(self._current_signal_id)
+
+            # Run post-mortem analysis asynchronously (if enabled)
+            self._run_postmortem_async()
         else:
             logger.error("sell_failed", error=result.error)
             self.circuit_breaker.record_order_failure()
