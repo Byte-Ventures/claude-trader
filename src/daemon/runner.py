@@ -88,6 +88,9 @@ class TradingDaemon:
         self._6h_trend: str = "neutral"
         self._6h_last_fetch: Optional[datetime] = None
 
+        # Signal history tracking (to avoid race condition when marking trades)
+        self._current_signal_id: Optional[int] = None
+
         # Create persistent event loop for async operations (avoids repeated asyncio.run())
         self._loop = asyncio.new_event_loop()
 
@@ -712,11 +715,14 @@ class TradingDaemon:
         six_hour_trend: str,
         threshold: int,
         trade_executed: bool = False,
-    ) -> None:
+    ) -> Optional[int]:
         """
         Store signal calculation for historical analysis.
 
         Called every iteration to enable post-mortem analysis of trades.
+
+        Returns:
+            The signal history record ID, or None if storage failed.
         """
         try:
             breakdown = signal_result.breakdown
@@ -750,26 +756,32 @@ class TradingDaemon:
                 )
                 session.add(history)
                 session.commit()
+                return history.id
         except SQLAlchemyError as e:
             # Database errors are non-critical - don't block trading for history storage
             logger.warning("signal_history_store_failed", error=str(e), error_type=type(e).__name__)
+            return None
 
-    def _mark_signal_trade_executed(self) -> None:
+    def _mark_signal_trade_executed(self, signal_id: Optional[int]) -> None:
         """
-        Mark the most recent signal history record as having resulted in a trade.
+        Mark a specific signal history record as having resulted in a trade.
 
         Called after successful buy/sell to enable accurate post-mortem analysis.
+
+        Args:
+            signal_id: The ID of the signal history record to mark.
+                       If None, the operation is skipped (signal storage may have failed).
         """
+        if signal_id is None:
+            return
+
         try:
             with self.db.get_session() as session:
-                latest_signal = session.query(SignalHistory).filter(
-                    SignalHistory.is_paper == self.settings.is_paper_trading,
-                    SignalHistory.symbol == self.settings.trading_pair,
-                ).order_by(SignalHistory.timestamp.desc()).first()
-                if latest_signal:
-                    latest_signal.trade_executed = True
-                    session.commit()
-                    logger.debug("signal_history_trade_marked", signal_id=latest_signal.id)
+                session.query(SignalHistory).filter(
+                    SignalHistory.id == signal_id
+                ).update({"trade_executed": True})
+                session.commit()
+                logger.debug("signal_history_trade_marked", signal_id=signal_id)
         except SQLAlchemyError as e:
             # Non-critical - don't block trading for history update
             logger.warning("signal_history_trade_flag_update_failed", error=str(e))
@@ -1275,7 +1287,8 @@ class TradingDaemon:
         self.db.set_state("dashboard_state", dashboard_state)
 
         # Store signal for historical analysis (every iteration)
-        self._store_signal_history(
+        # Store the ID to mark as executed if a trade occurs (avoids race condition)
+        self._current_signal_id = self._store_signal_history(
             signal_result=signal_result,
             current_price=current_price,
             htf_bias=htf_bias,
@@ -1765,7 +1778,7 @@ class TradingDaemon:
             self.circuit_breaker.record_order_success()
 
             # Mark signal history as having resulted in trade (for post-mortem analysis)
-            self._mark_signal_trade_executed()
+            self._mark_signal_trade_executed(self._current_signal_id)
         else:
             logger.error("buy_failed", error=result.error)
             self.circuit_breaker.record_order_failure()
@@ -1949,7 +1962,7 @@ class TradingDaemon:
             self.circuit_breaker.record_order_success()
 
             # Mark signal history as having resulted in trade (for post-mortem analysis)
-            self._mark_signal_trade_executed()
+            self._mark_signal_trade_executed(self._current_signal_id)
         else:
             logger.error("sell_failed", error=result.error)
             self.circuit_breaker.record_order_failure()
