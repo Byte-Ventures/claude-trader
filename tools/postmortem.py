@@ -3,15 +3,15 @@
 Post-mortem analysis script for claude-trader.
 
 Analyzes trades using Claude Code CLI to identify algorithmic weaknesses
-and creates GitHub issues with improvement recommendations.
+and creates GitHub Discussions with improvement recommendations.
 
-Defaults: --paper --last 1 --include-source --no-issue
+Defaults: --paper --last 1 --include-source
 
 Usage:
-    python tools/postmortem.py                    # Analyze last paper trade
-    python tools/postmortem.py --last 5           # Analyze last 5 paper trades
-    python tools/postmortem.py --live --last 3    # Analyze last 3 live trades
-    python tools/postmortem.py --create-issue     # Create GitHub issue
+    python tools/postmortem.py                       # Analyze last paper trade
+    python tools/postmortem.py --last 5              # Analyze last 5 paper trades
+    python tools/postmortem.py --live --last 3       # Analyze last 3 live trades
+    python tools/postmortem.py --create-discussion   # Create GitHub Discussion
 """
 
 import argparse
@@ -108,12 +108,12 @@ def create_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python tools/postmortem.py                    # Analyze last paper trade (default)
-  python tools/postmortem.py --last 5           # Analyze last 5 paper trades
-  python tools/postmortem.py --live --last 3    # Analyze last 3 live trades
-  python tools/postmortem.py --trade-id 42      # Analyze specific trade
-  python tools/postmortem.py --create-issue     # Create GitHub issue with analysis
-  python tools/postmortem.py --no-source        # Don't include source code in prompt
+  python tools/postmortem.py                       # Analyze last paper trade (default)
+  python tools/postmortem.py --last 5              # Analyze last 5 paper trades
+  python tools/postmortem.py --live --last 3       # Analyze last 3 live trades
+  python tools/postmortem.py --trade-id 42         # Analyze specific trade
+  python tools/postmortem.py --create-discussion   # Create GitHub Discussion with analysis
+  python tools/postmortem.py --no-source           # Don't include source code in prompt
         """,
     )
 
@@ -139,7 +139,7 @@ Examples:
         "--end", type=str, help="End date (YYYY-MM-DD) for date range"
     )
     parser.add_argument(
-        "--create-issue", action="store_true", help="Create GitHub issue with analysis"
+        "--create-discussion", action="store_true", help="Create GitHub Discussion with analysis"
     )
     parser.add_argument(
         "--print-context",
@@ -615,34 +615,128 @@ def invoke_claude(prompt: str, verbose: bool = False) -> str:
     return result.stdout
 
 
-def create_github_issue(
-    title: str,
-    body: str,
-    labels: list[str],
-    verbose: bool = False,
-) -> str:
-    """Create GitHub issue using gh CLI. Returns issue URL."""
+def get_discussion_ids(verbose: bool = False) -> tuple[str, str]:
+    """Fetch repository ID and Post-Mortems category ID from current repo."""
+    import json
+
     if verbose:
-        print(f"[INFO] Creating GitHub issue: {title}")
+        print("[INFO] Fetching repository and category IDs...")
 
-    cmd = ["gh", "issue", "create", "--title", title, "--body", body]
-    for label in labels:
-        cmd.extend(["--label", label])
+    # Get repo owner/name from git remote
+    result = subprocess.run(
+        ["gh", "repo", "view", "--json", "owner,name"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to get repo info: {result.stderr}")
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    repo_info = json.loads(result.stdout)
+    owner = repo_info["owner"]["login"]
+    name = repo_info["name"]
+
+    # Fetch repo ID and category ID via GraphQL
+    query = f'''
+    query {{
+      repository(owner: "{owner}", name: "{name}") {{
+        id
+        discussionCategories(first: 20) {{
+          nodes {{
+            id
+            name
+            slug
+          }}
+        }}
+      }}
+    }}
+    '''
+
+    result = subprocess.run(
+        ["gh", "api", "graphql", "-f", f"query={query}"],
+        capture_output=True,
+        text=True,
+    )
 
     if result.returncode != 0:
-        raise RuntimeError(f"GitHub issue creation failed: {result.stderr}")
+        raise RuntimeError(f"Failed to fetch discussion categories: {result.stderr}")
 
-    return result.stdout.strip()
+    response = json.loads(result.stdout)
+    if "errors" in response:
+        raise RuntimeError(f"GraphQL error: {response['errors']}")
+
+    repo_id = response["data"]["repository"]["id"]
+    categories = response["data"]["repository"]["discussionCategories"]["nodes"]
+
+    # Find Post-Mortems category
+    category_id = None
+    for cat in categories:
+        if cat["slug"] == "post-mortems":
+            category_id = cat["id"]
+            break
+
+    if not category_id:
+        raise RuntimeError(
+            "Post-Mortems category not found. "
+            "Create it in Settings → Discussions → New Category"
+        )
+
+    return repo_id, category_id
 
 
-def format_issue_body(
+def create_github_discussion(
+    title: str,
+    body: str,
+    verbose: bool = False,
+) -> str:
+    """Create GitHub Discussion using GraphQL API. Returns discussion URL."""
+    import json
+
+    if verbose:
+        print(f"[INFO] Creating GitHub Discussion: {title}")
+
+    repo_id, category_id = get_discussion_ids(verbose)
+
+    # Escape quotes in body for GraphQL
+    escaped_body = body.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    escaped_title = title.replace("\\", "\\\\").replace('"', '\\"')
+
+    query = f'''
+    mutation {{
+      createDiscussion(input: {{
+        repositoryId: "{repo_id}",
+        categoryId: "{category_id}",
+        title: "{escaped_title}",
+        body: "{escaped_body}"
+      }}) {{
+        discussion {{
+          url
+        }}
+      }}
+    }}
+    '''
+
+    result = subprocess.run(
+        ["gh", "api", "graphql", "-f", f"query={query}"],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"GitHub Discussion creation failed: {result.stderr}")
+
+    response = json.loads(result.stdout)
+    if "errors" in response:
+        raise RuntimeError(f"GraphQL error: {response['errors']}")
+
+    return response["data"]["createDiscussion"]["discussion"]["url"]
+
+
+def format_discussion_body(
     trades: list[TradeContext],
     analysis: str,
     is_paper: bool,
 ) -> str:
-    """Format the GitHub issue body."""
+    """Format the GitHub Discussion body."""
     mode = "PAPER" if is_paper else "LIVE"
 
     # Calculate summary stats
@@ -779,32 +873,25 @@ def main() -> int:
         print("=" * 60)
         print(analysis)
 
-        # Create GitHub issue
-        if args.create_issue:
-            print("\n[INFO] Creating GitHub issue...")
+        # Create GitHub Discussion
+        if args.create_discussion:
+            print("\n[INFO] Creating GitHub Discussion...")
 
             date_str = trades[0].executed_at.strftime("%Y-%m-%d")
             title = f"[Post-Mortem] {mode.title()} Trade Analysis - {date_str}"
 
-            body = format_issue_body(trades, analysis, is_paper)
+            body = format_discussion_body(trades, analysis, is_paper)
 
             try:
-                labels = ["post-mortem", "algorithm"]
-                if is_paper:
-                    labels.append("paper")
-                else:
-                    labels.append("live")
-
-                issue_url = create_github_issue(
+                discussion_url = create_github_discussion(
                     title=title,
                     body=body,
-                    labels=labels,
                     verbose=args.verbose,
                 )
-                print(f"[SUCCESS] GitHub issue created: {issue_url}")
+                print(f"[SUCCESS] GitHub Discussion created: {discussion_url}")
             except Exception as e:
-                print(f"[WARNING] Failed to create GitHub issue: {e}")
-                print("[INFO] Analysis completed but issue not created")
+                print(f"[WARNING] Failed to create GitHub Discussion: {e}")
+                print("[INFO] Analysis completed but discussion not created")
 
         return 0
 
