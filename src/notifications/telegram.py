@@ -38,6 +38,7 @@ DEFAULT_COOLDOWNS = {
     "order_failed": 1800,     # 30 minutes
     "trade_rejected": 0,      # Always send - must notify user of rejected trades
     "regime_change": 0,       # Always send (only fires on actual change)
+    "weight_profile": 900,    # 15 minutes - prevent oscillation spam
     "trade": 0,               # Always send trade notifications
     "trade_review": 0,        # Always send actual trade reviews
     "interesting_hold": 1800, # 30 minutes - throttle repetitive hold alerts
@@ -341,6 +342,7 @@ class TelegramNotifier:
 
         if self.send_message_sync(message):
             self._record_sent("order_failed", error)
+            self._save_to_dashboard("order_failed", f"Order Failed: {side.upper()}", message)
 
     def notify_circuit_breaker(
         self,
@@ -380,6 +382,7 @@ class TelegramNotifier:
         )
 
         self.send_message_sync(message)
+        self._save_to_dashboard("kill_switch", "Kill Switch Activated", message)
 
     def notify_loss_limit(self, limit_type: str, loss_percent: float) -> None:
         """Send notification for loss limit hit."""
@@ -397,6 +400,11 @@ class TelegramNotifier:
 
         if self.send_message_sync(message):
             self._record_sent("loss_limit", dedup_key)
+            self._save_to_dashboard(
+                "loss_limit",
+                f"{limit_type.title()} Loss Limit",
+                message,
+            )
 
     def notify_daily_summary(
         self,
@@ -421,6 +429,7 @@ class TelegramNotifier:
         )
 
         self.send_message_sync(message)
+        self._save_to_dashboard("daily_summary", f"{mode}Daily Summary", message)
 
     def notify_startup(self, mode: str, balance: Decimal, exchange: str = "Coinbase") -> None:
         """Send notification on bot startup."""
@@ -463,6 +472,7 @@ class TelegramNotifier:
 
         if self.send_message_sync(message):
             self._record_sent("error", dedup_key)
+            self._save_to_dashboard("error", "System Error", message)
 
     def notify_trade_review(self, review, review_type: str) -> None:
         """
@@ -699,6 +709,60 @@ class TelegramNotifier:
         )
 
         self.send_message_sync(message)
+        self._save_to_dashboard(
+            "regime_change",
+            f"Regime: {old_regime} → {new_regime}",
+            message,
+        )
+
+    def notify_weight_profile(
+        self,
+        old_profile: str,
+        new_profile: str,
+        confidence: float,
+        reasoning: str,
+    ) -> None:
+        """
+        Send notification when weight profile changes.
+
+        Args:
+            old_profile: Previous profile name
+            new_profile: New profile name
+            confidence: AI confidence (0.0 to 1.0)
+            reasoning: AI reasoning for the selection
+        """
+        # Deduplicate to prevent oscillation spam (e.g., repeated A→B→A→B)
+        dedup_key = f"{old_profile}:{new_profile}"
+        if not self._should_send("weight_profile", dedup_key):
+            logger.debug(
+                "weight_profile_notification_throttled",
+                old=old_profile,
+                new=new_profile,
+            )
+            return
+
+        profile_emoji = {
+            "trending": "📈",
+            "ranging": "↔️",
+            "volatile": "⚡",
+            "default": "⚖️",
+        }.get(new_profile, "🔄")
+
+        confidence_pct = int(confidence * 100)
+        message = (
+            f"{profile_emoji} <b>Weight Profile Changed</b>\n\n"
+            f"<b>Profile:</b> {old_profile} → {new_profile}\n"
+            f"<b>Confidence:</b> {confidence_pct}%\n\n"
+            f"<b>AI Reasoning:</b>\n{reasoning}"
+        )
+
+        if self.send_message_sync(message):
+            self._record_sent("weight_profile", dedup_key)
+        self._save_to_dashboard(
+            "weight_profile",
+            f"Weight Profile: {new_profile}",
+            message,
+        )
 
     def _format_signal_breakdown(self, breakdown: dict) -> str:
         """Format signal breakdown for Telegram display."""
@@ -834,3 +898,63 @@ class TelegramNotifier:
 
         self.send_message_sync(message)
         self._save_to_dashboard("market_analysis", "Hourly Market Analysis", message)
+
+    def notify_periodic_report(
+        self,
+        period: str,
+        report_date: str,
+        portfolio_return: float,
+        btc_return: float,
+        alpha: float,
+        pnl: Decimal,
+        ending_balance: Decimal,
+        trades: int,
+        is_paper: bool = False,
+    ) -> None:
+        """
+        Send periodic performance report (daily, weekly, monthly).
+
+        Args:
+            period: Report period ("Daily", "Weekly", "Monthly")
+            report_date: Date or date range string
+            portfolio_return: Portfolio return percentage
+            btc_return: BTC HODL return percentage
+            alpha: Alpha (outperformance vs BTC)
+            pnl: Profit/loss amount
+            ending_balance: Ending balance
+            trades: Number of trades
+            is_paper: Whether in paper trading mode
+        """
+        # Determine performance emoji
+        threshold = 1 if period == "Daily" else 2
+        if alpha > threshold:
+            perf_emoji = "🚀"
+        elif alpha > 0:
+            perf_emoji = "✅"
+        elif alpha > -threshold:
+            perf_emoji = "➖"
+        else:
+            perf_emoji = "📉"
+
+        mode = "PAPER" if is_paper else "LIVE"
+
+        # Period-specific emoji
+        period_emoji = {"Daily": "📊", "Weekly": "📅", "Monthly": "📆"}.get(period, "📊")
+
+        message = (
+            f"{period_emoji} <b>{period} Report</b> ({mode})\n"
+            f"{report_date}\n\n"
+            f"<b>Portfolio</b>: {portfolio_return:+.2f}%\n"
+            f"<b>BTC (HODL)</b>: {btc_return:+.2f}%\n"
+            f"{perf_emoji} <b>Alpha</b>: {alpha:+.2f}%\n\n"
+            f"P&L: €{pnl:+,.2f}\n"
+            f"Balance: €{ending_balance:,.2f}\n"
+            f"Trades: {trades}"
+        )
+
+        self.send_message_sync(message)
+        self._save_to_dashboard(
+            "periodic_report",
+            f"{period} Report ({mode})",
+            message,
+        )

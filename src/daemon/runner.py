@@ -833,21 +833,13 @@ class TradingDaemon:
                 is_paper=self.settings.is_paper_trading,
             )
 
-            # Send Telegram notification
+            # Send notification (Telegram + dashboard via unified method)
             self.notifier.notify_regime_change(
                 old_regime=self._last_regime,
                 new_regime=regime.regime_name,
                 threshold_adj=regime.threshold_adjustment,
                 position_mult=regime.position_multiplier,
                 components=regime.components,
-            )
-
-            # Save to dashboard notifications
-            self.db.save_notification(
-                type="regime_change",
-                title=f"Regime: {self._last_regime} → {regime.regime_name}",
-                message=f"Threshold adj: {regime.threshold_adjustment:+d}, Position mult: {regime.position_multiplier:.1f}x",
-                is_paper=self.settings.is_paper_trading,
             )
 
             self._last_regime = regime.regime_name
@@ -908,29 +900,12 @@ class TradingDaemon:
                             is_paper=self.settings.is_paper_trading,
                         )
 
-                        # Send Telegram notification
-                        profile_emoji = {
-                            "trending": "📈",
-                            "ranging": "↔️",
-                            "volatile": "⚡",
-                            "default": "⚖️",
-                        }.get(selection.profile_name, "🔄")
-
-                        confidence_pct = int(selection.confidence * 100)
-                        notification_msg = (
-                            f"{profile_emoji} <b>Weight Profile Changed</b>\n\n"
-                            f"<b>Profile:</b> {self._last_weight_profile} → {selection.profile_name}\n"
-                            f"<b>Confidence:</b> {confidence_pct}%\n\n"
-                            f"<b>AI Reasoning:</b>\n{selection.reasoning}"
-                        )
-                        self.notifier.send_message_sync(notification_msg)
-
-                        # Save notification to database for dashboard
-                        self.db.save_notification(
-                            notification_type="weight_profile",
-                            title=f"Weight Profile: {selection.profile_name}",
-                            message=f"{self._last_weight_profile} → {selection.profile_name} ({confidence_pct}% confidence)\n{selection.reasoning}",
-                            is_paper=self.settings.is_paper_trading,
+                        # Send notification (Telegram + dashboard via unified method)
+                        self.notifier.notify_weight_profile(
+                            old_profile=self._last_weight_profile,
+                            new_profile=selection.profile_name,
+                            confidence=selection.confidence,
+                            reasoning=selection.reasoning,
                         )
 
                         # Update stored profile name (confidence/reasoning updated above)
@@ -1794,32 +1769,20 @@ class TradingDaemon:
         ending_balance: Decimal,
         trades: int,
     ) -> None:
-        """Send daily performance report via Telegram."""
-        # Determine performance emoji
-        if alpha > 1:
-            perf_emoji = "🚀"  # Beating BTC significantly
-        elif alpha > 0:
-            perf_emoji = "✅"  # Beating BTC
-        elif alpha > -1:
-            perf_emoji = "➖"  # Roughly matching
-        else:
-            perf_emoji = "📉"  # Underperforming
-
-        mode = "PAPER" if self.settings.is_paper_trading else "LIVE"
+        """Send daily performance report via unified notification method."""
         pnl = ending_balance - starting_balance
 
-        message = (
-            f"📊 <b>Daily Report</b> ({mode})\n"
-            f"Date: {report_date}\n\n"
-            f"<b>Portfolio</b>: {portfolio_return:+.2f}%\n"
-            f"<b>BTC (HODL)</b>: {btc_return:+.2f}%\n"
-            f"{perf_emoji} <b>Alpha</b>: {alpha:+.2f}%\n\n"
-            f"P&L: €{pnl:+,.2f}\n"
-            f"Balance: €{ending_balance:,.2f}\n"
-            f"Trades: {trades}"
+        self.notifier.notify_periodic_report(
+            period="Daily",
+            report_date=f"Date: {report_date}",
+            portfolio_return=portfolio_return,
+            btc_return=btc_return,
+            alpha=alpha,
+            pnl=pnl,
+            ending_balance=ending_balance,
+            trades=trades,
+            is_paper=self.settings.is_paper_trading,
         )
-
-        self.notifier.send_message_sync(message)
 
     def _check_weekly_report(self) -> None:
         """Check if we should generate weekly performance report (on Mondays)."""
@@ -1944,35 +1907,20 @@ class TradingDaemon:
         ending_balance: Decimal,
         trades: int,
     ) -> None:
-        """Send weekly/monthly performance report via Telegram."""
-        # Determine performance emoji
-        if alpha > 2:
-            perf_emoji = "🚀"
-        elif alpha > 0:
-            perf_emoji = "✅"
-        elif alpha > -2:
-            perf_emoji = "➖"
-        else:
-            perf_emoji = "📉"
-
-        mode = "PAPER" if self.settings.is_paper_trading else "LIVE"
+        """Send weekly/monthly performance report via unified notification method."""
         pnl = ending_balance - starting_balance
 
-        # Period-specific emoji
-        period_emoji = "📅" if period == "Weekly" else "📆"
-
-        message = (
-            f"{period_emoji} <b>{period} Report</b> ({mode})\n"
-            f"{start_date} → {end_date}\n\n"
-            f"<b>Portfolio</b>: {portfolio_return:+.2f}%\n"
-            f"<b>BTC (HODL)</b>: {btc_return:+.2f}%\n"
-            f"{perf_emoji} <b>Alpha</b>: {alpha:+.2f}%\n\n"
-            f"P&L: €{pnl:+,.2f}\n"
-            f"Balance: €{ending_balance:,.2f}\n"
-            f"Trades: {trades}"
+        self.notifier.notify_periodic_report(
+            period=period,
+            report_date=f"{start_date} → {end_date}",
+            portfolio_return=portfolio_return,
+            btc_return=btc_return,
+            alpha=alpha,
+            pnl=pnl,
+            ending_balance=ending_balance,
+            trades=trades,
+            is_paper=self.settings.is_paper_trading,
         )
-
-        self.notifier.send_message_sync(message)
 
     def _check_hourly_analysis(self) -> None:
         """Run hourly market analysis during volatile conditions or post-volatility."""
