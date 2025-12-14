@@ -467,6 +467,8 @@ def test_whale_boost_is_30_percent():
 
     # Whale boost (30%) should be larger than high volume boost (20%)
     # Expected ratio is 1.5x (30% / 20%)
+    # Tolerance of ±0.1 accounts for int() rounding in boost calculation:
+    #   e.g., if score=25: whale=int(7.5)=7, high=int(5.0)=5, ratio=7/5=1.4
     if whale_boost > 0 and high_boost > 0:
         ratio = whale_boost / high_boost
         assert 1.4 <= ratio <= 1.6, f"Expected ~1.5x ratio (30%/20%), got {ratio:.2f}"

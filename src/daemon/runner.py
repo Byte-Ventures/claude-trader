@@ -835,7 +835,7 @@ class TradingDaemon:
                     is_paper=self.settings.is_paper_trading,
                 )
             except Exception as e:
-                logger.warning("whale_event_record_failed", error=str(e))
+                logger.warning("whale_event_record_failed", error=str(e), exc_info=True)
 
         # Track volatility for adaptive interval and post-volatility analysis
         if ind.volatility:

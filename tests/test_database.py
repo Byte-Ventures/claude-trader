@@ -1115,6 +1115,135 @@ def test_get_last_regime_empty(db):
 
 
 # ============================================================================
+# Whale Event Tests - Paper/Live Separation
+# ============================================================================
+
+def test_record_whale_event(db):
+    """Test recording a whale activity event."""
+    event = db.record_whale_event(
+        symbol="BTC-USD",
+        volume_ratio=4.5,
+        direction="bullish",
+        price_change_pct=0.005,
+        signal_score=75,
+        signal_action="buy",
+        is_paper=True
+    )
+
+    assert event.id is not None
+    assert event.symbol == "BTC-USD"
+    assert event.volume_ratio == "4.5"
+    assert event.direction == "bullish"
+    assert event.price_change_pct == "0.005"
+    assert event.signal_score == 75
+    assert event.signal_action == "buy"
+    assert event.is_paper is True
+
+
+def test_get_whale_events(db):
+    """Test retrieving whale events."""
+    # Record several whale events
+    for i in range(5):
+        db.record_whale_event(
+            symbol="BTC-USD",
+            volume_ratio=3.0 + i * 0.5,
+            direction="bullish" if i % 2 == 0 else "bearish",
+            price_change_pct=0.001 * i,
+            signal_score=50 + i * 5,
+            signal_action="buy",
+            is_paper=True
+        )
+
+    events = db.get_whale_events(hours=24, is_paper=True)
+    assert len(events) == 5
+
+
+def test_whale_events_paper_live_separation(db):
+    """
+    CRITICAL: Verify paper and live whale events remain separated.
+    """
+    # Record live whale event
+    db.record_whale_event(
+        symbol="BTC-USD",
+        volume_ratio=4.0,
+        direction="bullish",
+        price_change_pct=0.003,
+        signal_score=70,
+        signal_action="buy",
+        is_paper=False
+    )
+
+    # Record paper whale event
+    db.record_whale_event(
+        symbol="BTC-USD",
+        volume_ratio=5.0,
+        direction="bearish",
+        price_change_pct=-0.002,
+        signal_score=-60,
+        signal_action="sell",
+        is_paper=True
+    )
+
+    # Verify separation
+    live_events = db.get_whale_events(hours=24, is_paper=False)
+    paper_events = db.get_whale_events(hours=24, is_paper=True)
+
+    assert len(live_events) == 1
+    assert len(paper_events) == 1
+    assert live_events[0].direction == "bullish"
+    assert paper_events[0].direction == "bearish"
+
+
+def test_whale_events_symbol_filter(db):
+    """Test filtering whale events by symbol."""
+    # Record events for different symbols
+    db.record_whale_event(
+        symbol="BTC-USD",
+        volume_ratio=4.0,
+        direction="bullish",
+        price_change_pct=0.003,
+        signal_score=70,
+        signal_action="buy",
+        is_paper=True
+    )
+    db.record_whale_event(
+        symbol="ETH-USD",
+        volume_ratio=5.0,
+        direction="bearish",
+        price_change_pct=-0.002,
+        signal_score=-60,
+        signal_action="sell",
+        is_paper=True
+    )
+
+    # Filter by symbol
+    btc_events = db.get_whale_events(hours=24, symbol="BTC-USD", is_paper=True)
+    eth_events = db.get_whale_events(hours=24, symbol="ETH-USD", is_paper=True)
+    all_events = db.get_whale_events(hours=24, is_paper=True)
+
+    assert len(btc_events) == 1
+    assert len(eth_events) == 1
+    assert len(all_events) == 2
+
+
+def test_whale_event_null_price_change(db):
+    """Test recording whale event with null price_change_pct."""
+    event = db.record_whale_event(
+        symbol="BTC-USD",
+        volume_ratio=3.5,
+        direction="unknown",
+        price_change_pct=None,
+        signal_score=0,
+        signal_action="hold",
+        is_paper=True
+    )
+
+    assert event.id is not None
+    assert event.price_change_pct is None
+    assert event.direction == "unknown"
+
+
+# ============================================================================
 # Session Management Tests - Commit/Rollback
 # ============================================================================
 
