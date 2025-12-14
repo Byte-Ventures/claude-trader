@@ -641,8 +641,10 @@ class TradingDaemon:
 
             logger.info("htf_trend_updated", timeframe=granularity, trend=trend)
             return trend
-        except Exception as e:
-            logger.warning("htf_fetch_failed", timeframe=granularity, error=str(e))
+        except (ConnectionError, TimeoutError, OSError, ValueError, KeyError) as e:
+            # Expected failures: network issues, API errors, data parsing issues
+            # Fail-open: return cached trend or neutral, never block trading
+            logger.warning("htf_fetch_failed", timeframe=granularity, error=str(e), error_type=type(e).__name__)
             return cached_trend or "neutral"
 
     def _get_htf_bias(self) -> tuple[str, str, str]:
@@ -718,8 +720,9 @@ class TradingDaemon:
                 )
                 session.add(history)
                 session.commit()
-        except Exception as e:
-            logger.warning("signal_history_store_failed", error=str(e))
+        except SQLAlchemyError as e:
+            # Database errors are non-critical - don't block trading for history storage
+            logger.warning("signal_history_store_failed", error=str(e), error_type=type(e).__name__)
 
     def run(self) -> None:
         """Run the main trading loop."""

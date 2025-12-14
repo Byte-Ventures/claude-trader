@@ -1476,3 +1476,344 @@ def test_get_recommended_threshold_progression():
     for i in range(1, len(thresholds)):
         assert thresholds[i] >= thresholds[i-1], \
             f"Threshold for {intervals[i]} should be >= {intervals[i-1]}"
+
+
+# ============================================================================
+# Multi-Timeframe (MTF) / Higher Timeframe (HTF) Bias Tests
+# ============================================================================
+
+class TestHTFBiasModifier:
+    """Tests for higher timeframe bias score modifiers.
+
+    HTF (Higher Timeframe) bias is determined by combining Daily and 6-hour trends:
+    - Both bullish → bullish bias
+    - Both bearish → bearish bias
+    - Mixed/neutral → neutral bias
+
+    Score modifiers:
+    - Aligned bullish trade (buy + bullish bias) → +mtf_aligned_boost (default +20)
+    - Counter-trend bullish trade (buy + bearish bias) → -mtf_counter_penalty (default -20)
+    - Aligned bearish trade (sell + bearish bias) → -mtf_aligned_boost (more negative)
+    - Counter-trend bearish trade (sell + bullish bias) → +mtf_counter_penalty (less negative)
+    """
+
+    @pytest.fixture
+    def mtf_scorer(self):
+        """Signal scorer with MTF parameters configured."""
+        return SignalScorer(
+            mtf_aligned_boost=20,
+            mtf_counter_penalty=20,
+        )
+
+    @pytest.fixture
+    def bullish_signal_df(self):
+        """Generate data that produces a positive (bullish) signal."""
+        np.random.seed(42)
+        length = 100
+        # Strong uptrend with oversold RSI recovery
+        prices = []
+        current = 45000.0
+        for i in range(length):
+            # Uptrend with 80% up moves
+            if np.random.random() < 0.8:
+                change = current * np.random.uniform(0.002, 0.005)
+            else:
+                change = -current * np.random.uniform(0.001, 0.002)
+            current = current + change
+            prices.append(current)
+
+        return pd.DataFrame({
+            'open': [p * 0.998 for p in prices],
+            'high': [p * 1.01 for p in prices],
+            'low': [p * 0.995 for p in prices],
+            'close': prices,
+            'volume': [10000.0] * length,
+        })
+
+    @pytest.fixture
+    def bearish_signal_df(self):
+        """Generate data that produces a negative (bearish) signal."""
+        np.random.seed(43)
+        length = 100
+        # Strong downtrend with overbought RSI falling
+        prices = []
+        current = 55000.0
+        for i in range(length):
+            # Downtrend with 80% down moves
+            if np.random.random() < 0.8:
+                change = -current * np.random.uniform(0.002, 0.005)
+            else:
+                change = current * np.random.uniform(0.001, 0.002)
+            current = current + change
+            prices.append(current)
+
+        return pd.DataFrame({
+            'open': [p * 1.002 for p in prices],
+            'high': [p * 1.005 for p in prices],
+            'low': [p * 0.99 for p in prices],
+            'close': prices,
+            'volume': [10000.0] * length,
+        })
+
+    def test_htf_bullish_boosts_aligned_buy(self, mtf_scorer, bullish_signal_df):
+        """Test bullish HTF bias boosts buy signals by +20."""
+        # Get baseline score without HTF bias
+        result_baseline = mtf_scorer.calculate_score(bullish_signal_df)
+
+        # Get score with bullish HTF bias
+        result_with_htf = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="bullish",
+            htf_daily="bullish",
+            htf_6h="bullish",
+        )
+
+        # Only applies if signal is positive (bullish)
+        if result_baseline.score > 0:
+            assert result_with_htf.breakdown.get("htf_bias") == 20
+            # Score should be boosted by 20 (clamped to -100/+100)
+            expected_score = min(100, result_baseline.score + 20)
+            assert result_with_htf.score == expected_score
+
+    def test_htf_bearish_penalizes_counter_trend_buy(self, mtf_scorer, bullish_signal_df):
+        """Test bearish HTF bias penalizes buy signals by -20."""
+        result_baseline = mtf_scorer.calculate_score(bullish_signal_df)
+
+        result_with_htf = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="bearish",
+            htf_daily="bearish",
+            htf_6h="bearish",
+        )
+
+        # Only applies if signal is positive (bullish)
+        if result_baseline.score > 0:
+            assert result_with_htf.breakdown.get("htf_bias") == -20
+            # Score should be penalized by 20 (clamped to -100/+100)
+            expected_score = max(-100, result_baseline.score - 20)
+            assert result_with_htf.score == expected_score
+
+    def test_htf_bearish_boosts_aligned_sell(self, mtf_scorer, bearish_signal_df):
+        """Test bearish HTF bias boosts sell signals (more negative)."""
+        result_baseline = mtf_scorer.calculate_score(bearish_signal_df)
+
+        result_with_htf = mtf_scorer.calculate_score(
+            bearish_signal_df,
+            htf_bias="bearish",
+            htf_daily="bearish",
+            htf_6h="bearish",
+        )
+
+        # Only applies if signal is negative (bearish)
+        if result_baseline.score < 0:
+            # Aligned bearish → more negative (boost the sell signal)
+            assert result_with_htf.breakdown.get("htf_bias") == -20
+            expected_score = max(-100, result_baseline.score - 20)
+            assert result_with_htf.score == expected_score
+
+    def test_htf_bullish_penalizes_counter_trend_sell(self, mtf_scorer, bearish_signal_df):
+        """Test bullish HTF bias penalizes sell signals (less negative)."""
+        result_baseline = mtf_scorer.calculate_score(bearish_signal_df)
+
+        result_with_htf = mtf_scorer.calculate_score(
+            bearish_signal_df,
+            htf_bias="bullish",
+            htf_daily="bullish",
+            htf_6h="bullish",
+        )
+
+        # Only applies if signal is negative (bearish)
+        if result_baseline.score < 0:
+            # Counter-trend sell → less negative (weaken the sell signal)
+            assert result_with_htf.breakdown.get("htf_bias") == 20
+            expected_score = min(100, result_baseline.score + 20)
+            assert result_with_htf.score == expected_score
+
+    def test_htf_neutral_no_effect(self, mtf_scorer, bullish_signal_df):
+        """Test neutral HTF bias has no effect on score."""
+        result_baseline = mtf_scorer.calculate_score(bullish_signal_df)
+
+        result_with_htf = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="neutral",
+            htf_daily="neutral",
+            htf_6h="neutral",
+        )
+
+        # Neutral bias should add 0
+        assert result_with_htf.breakdown.get("htf_bias") == 0
+        assert result_with_htf.score == result_baseline.score
+
+    def test_htf_none_no_effect(self, mtf_scorer, bullish_signal_df):
+        """Test None HTF bias (MTF disabled) has no effect."""
+        result_baseline = mtf_scorer.calculate_score(bullish_signal_df)
+
+        result_with_htf = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias=None,
+            htf_daily=None,
+            htf_6h=None,
+        )
+
+        # None bias should add 0
+        assert result_with_htf.breakdown.get("htf_bias") == 0
+        assert result_with_htf.score == result_baseline.score
+
+    def test_htf_breakdown_contains_trend_metadata(self, mtf_scorer, bullish_signal_df):
+        """Test breakdown includes HTF trend metadata for AI context."""
+        result = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="bullish",
+            htf_daily="bullish",
+            htf_6h="neutral",
+        )
+
+        # Should contain underscore-prefixed metadata
+        assert result.breakdown.get("_htf_trend") == "bullish"
+        assert result.breakdown.get("_htf_daily") == "bullish"
+        assert result.breakdown.get("_htf_6h") == "neutral"
+
+    def test_htf_breakdown_defaults_when_none(self, mtf_scorer, bullish_signal_df):
+        """Test breakdown defaults to 'neutral' when HTF params are None."""
+        result = mtf_scorer.calculate_score(bullish_signal_df)
+
+        assert result.breakdown.get("_htf_trend") == "neutral"
+        assert result.breakdown.get("_htf_daily") == "neutral"
+        assert result.breakdown.get("_htf_6h") == "neutral"
+
+    def test_htf_custom_boost_values(self, bullish_signal_df):
+        """Test custom aligned_boost and counter_penalty values work."""
+        scorer = SignalScorer(
+            mtf_aligned_boost=30,  # Custom boost
+            mtf_counter_penalty=15,  # Custom penalty
+        )
+
+        result_aligned = scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="bullish",
+        )
+        result_counter = scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="bearish",
+        )
+
+        baseline = scorer.calculate_score(bullish_signal_df)
+
+        if baseline.score > 0:
+            # Aligned should use 30
+            assert result_aligned.breakdown.get("htf_bias") == 30
+            # Counter should use -15
+            assert result_counter.breakdown.get("htf_bias") == -15
+
+    def test_htf_update_settings(self):
+        """Test MTF parameters can be updated at runtime."""
+        scorer = SignalScorer(
+            mtf_aligned_boost=20,
+            mtf_counter_penalty=20,
+        )
+
+        assert scorer.mtf_aligned_boost == 20
+        assert scorer.mtf_counter_penalty == 20
+
+        scorer.update_settings(
+            mtf_aligned_boost=25,
+            mtf_counter_penalty=15,
+        )
+
+        assert scorer.mtf_aligned_boost == 25
+        assert scorer.mtf_counter_penalty == 15
+
+    def test_htf_zero_score_no_adjustment(self, mtf_scorer):
+        """Test HTF bias doesn't apply when signal score is exactly 0."""
+        # Create flat data that produces ~0 score
+        df = pd.DataFrame({
+            'open': [50000.0] * 100,
+            'high': [50100.0] * 100,
+            'low': [49900.0] * 100,
+            'close': [50000.0] * 100,
+            'volume': [10000.0] * 100,
+        })
+
+        result = mtf_scorer.calculate_score(df, htf_bias="bullish")
+
+        # If score is 0, HTF adjustment should be 0
+        if result.score - result.breakdown.get("htf_bias", 0) == 0:
+            assert result.breakdown.get("htf_bias") == 0
+
+    def test_htf_score_clamped_to_100(self, mtf_scorer, bullish_signal_df):
+        """Test score with HTF boost is clamped to +100."""
+        # Get a very high positive score
+        scorer = SignalScorer(threshold=30, mtf_aligned_boost=50)
+        result = scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="bullish",
+        )
+
+        assert result.score <= 100
+
+    def test_htf_score_clamped_to_negative_100(self, mtf_scorer, bearish_signal_df):
+        """Test score with HTF boost is clamped to -100."""
+        scorer = SignalScorer(threshold=30, mtf_aligned_boost=50)
+        result = scorer.calculate_score(
+            bearish_signal_df,
+            htf_bias="bearish",
+        )
+
+        assert result.score >= -100
+
+
+class TestHTFRawIndicatorValues:
+    """Tests for raw indicator values stored in breakdown for signal history."""
+
+    @pytest.fixture
+    def scorer(self):
+        return SignalScorer()
+
+    @pytest.fixture
+    def sample_df(self, sample_ohlcv_data):
+        return sample_ohlcv_data(length=100, base_price=50000.0, volatility=0.02)
+
+    def test_rsi_value_in_breakdown(self, scorer, sample_df):
+        """Test raw RSI value is stored in breakdown."""
+        result = scorer.calculate_score(sample_df)
+
+        assert "_rsi_value" in result.breakdown
+        rsi_value = result.breakdown["_rsi_value"]
+        assert rsi_value is None or (0 <= rsi_value <= 100)
+
+    def test_macd_histogram_in_breakdown(self, scorer, sample_df):
+        """Test MACD histogram value is stored in breakdown."""
+        result = scorer.calculate_score(sample_df)
+
+        assert "_macd_histogram" in result.breakdown
+        # MACD histogram can be any value, just verify it's a number
+        assert result.breakdown["_macd_histogram"] is None or isinstance(
+            result.breakdown["_macd_histogram"], (int, float)
+        )
+
+    def test_bb_position_in_breakdown(self, scorer, sample_df):
+        """Test Bollinger Band position (0-1) is stored in breakdown."""
+        result = scorer.calculate_score(sample_df)
+
+        assert "_bb_position" in result.breakdown
+        bb_pos = result.breakdown["_bb_position"]
+        # BB position should be roughly 0-1 (can exceed due to volatility)
+        assert bb_pos is None or isinstance(bb_pos, (int, float))
+
+    def test_ema_gap_percent_in_breakdown(self, scorer, sample_df):
+        """Test EMA gap percentage is stored in breakdown."""
+        result = scorer.calculate_score(sample_df)
+
+        assert "_ema_gap_percent" in result.breakdown
+        assert result.breakdown["_ema_gap_percent"] is None or isinstance(
+            result.breakdown["_ema_gap_percent"], (int, float)
+        )
+
+    def test_raw_score_in_breakdown(self, scorer, sample_df):
+        """Test raw score (before adjustments) is stored in breakdown."""
+        result = scorer.calculate_score(sample_df)
+
+        assert "_raw_score" in result.breakdown
+        raw = result.breakdown["_raw_score"]
+        assert isinstance(raw, int)
+        assert -100 <= raw <= 100

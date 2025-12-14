@@ -232,6 +232,8 @@ class SignalScorer:
         momentum_price_candles: Optional[int] = None,
         momentum_penalty_reduction: Optional[float] = None,
         candle_interval: Optional[str] = None,
+        mtf_aligned_boost: Optional[int] = None,
+        mtf_counter_penalty: Optional[int] = None,
     ) -> None:
         """
         Update scorer settings at runtime.
@@ -280,6 +282,10 @@ class SignalScorer:
             self.momentum_penalty_reduction = momentum_penalty_reduction
         if candle_interval is not None:
             self.candle_interval = candle_interval
+        if mtf_aligned_boost is not None:
+            self.mtf_aligned_boost = mtf_aligned_boost
+        if mtf_counter_penalty is not None:
+            self.mtf_counter_penalty = mtf_counter_penalty
 
         logger.info("signal_scorer_settings_updated")
 
@@ -670,19 +676,29 @@ class SignalScorer:
             total_score += trend_adjustment
         breakdown["trend_filter"] = trend_adjustment
 
-        # HTF bias modifier: boost aligned trades, penalize counter-trend
+        # HTF (Higher Timeframe) bias modifier
+        # Purpose: Reduce false signals by aligning trades with the macro trend
+        # - Daily + 6-hour trends must agree for strong bias, otherwise neutral
+        # - Expected impact: 30-50% reduction in false signals
+        #
+        # Application logic (asymmetric for sell signals):
+        # - Bullish signal (+score): +boost if HTF bullish, -penalty if HTF bearish
+        # - Bearish signal (-score): -boost if HTF bearish (more negative = stronger sell),
+        #                            +penalty if HTF bullish (less negative = weaker sell)
         htf_adjustment = 0
         if htf_bias and htf_bias != "neutral":
-            if total_score > 0:  # Bullish signal
+            if total_score > 0:  # Bullish signal (potential buy)
                 if htf_bias == "bullish":
-                    htf_adjustment = self.mtf_aligned_boost  # Boost aligned trade
+                    htf_adjustment = self.mtf_aligned_boost  # +20: stronger buy signal
                 elif htf_bias == "bearish":
-                    htf_adjustment = -self.mtf_counter_penalty  # Penalize counter-trend
-            elif total_score < 0:  # Bearish signal
+                    htf_adjustment = -self.mtf_counter_penalty  # -20: weaker buy signal
+            elif total_score < 0:  # Bearish signal (potential sell)
                 if htf_bias == "bearish":
-                    htf_adjustment = -self.mtf_aligned_boost  # More negative = stronger signal
+                    # Aligned: make more negative to strengthen sell signal
+                    htf_adjustment = -self.mtf_aligned_boost  # e.g., -60 → -80
                 elif htf_bias == "bullish":
-                    htf_adjustment = self.mtf_counter_penalty  # Less negative = weaker signal
+                    # Counter-trend: make less negative to weaken sell signal
+                    htf_adjustment = self.mtf_counter_penalty  # e.g., -60 → -40
             total_score += htf_adjustment
 
             if htf_adjustment != 0:

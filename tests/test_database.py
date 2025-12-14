@@ -1367,3 +1367,328 @@ def test_empty_query_results(db):
     # None
     position = db.get_current_position("NONEXISTENT", is_paper=False)
     assert position is None
+
+
+# ============================================================================
+# Signal History Tests - Paper/Live Separation & Post-Mortem Analysis
+# ============================================================================
+
+def test_signal_history_import():
+    """Test SignalHistory can be imported from database module."""
+    from src.state.database import SignalHistory
+    assert SignalHistory is not None
+
+
+def test_signal_history_table_creation(db):
+    """Test SignalHistory table is created on database initialization."""
+    from src.state.database import SignalHistory
+    from sqlalchemy import inspect
+
+    inspector = inspect(db.engine)
+    tables = inspector.get_table_names()
+
+    assert "signal_history" in tables
+
+
+def test_signal_history_record_creation(db):
+    """Test creating a signal history record."""
+    from src.state.database import SignalHistory
+
+    with db.session() as session:
+        signal = SignalHistory(
+            symbol="BTC-USD",
+            is_paper=True,
+            current_price="50000.00",
+            rsi_score=15.5,
+            macd_score=10.2,
+            bollinger_score=-5.0,
+            ema_score=8.3,
+            volume_score=4.0,
+            rsi_value=35.0,
+            macd_histogram=150.5,
+            bb_position=0.3,
+            ema_gap_percent=1.2,
+            volume_ratio=2.5,
+            trend_filter_adj=-10.0,
+            momentum_mode_adj=0.0,
+            whale_activity_adj=0.0,
+            htf_bias_adj=20.0,
+            htf_bias="bullish",
+            htf_daily_trend="bullish",
+            htf_6h_trend="bullish",
+            raw_score=45,
+            final_score=55,
+            action="hold",
+            threshold_used=60,
+            trade_executed=False,
+        )
+        session.add(signal)
+        session.commit()
+
+        # Verify record was created
+        assert signal.id is not None
+
+
+def test_signal_history_paper_live_separation(db):
+    """
+    CRITICAL: Verify paper and live signal history remain separated.
+    """
+    from src.state.database import SignalHistory
+
+    with db.session() as session:
+        # Create paper signal
+        paper_signal = SignalHistory(
+            symbol="BTC-USD",
+            is_paper=True,
+            current_price="50000.00",
+            rsi_score=15.0,
+            macd_score=10.0,
+            bollinger_score=-5.0,
+            ema_score=8.0,
+            volume_score=4.0,
+            raw_score=45,
+            final_score=55,
+            action="hold",
+            threshold_used=60,
+        )
+
+        # Create live signal
+        live_signal = SignalHistory(
+            symbol="BTC-USD",
+            is_paper=False,
+            current_price="50100.00",
+            rsi_score=20.0,
+            macd_score=15.0,
+            bollinger_score=-3.0,
+            ema_score=10.0,
+            volume_score=5.0,
+            raw_score=55,
+            final_score=65,
+            action="buy",
+            threshold_used=60,
+        )
+
+        session.add(paper_signal)
+        session.add(live_signal)
+        session.commit()
+
+        # Verify separation via query
+        paper_signals = session.query(SignalHistory).filter(
+            SignalHistory.is_paper == True
+        ).all()
+        live_signals = session.query(SignalHistory).filter(
+            SignalHistory.is_paper == False
+        ).all()
+
+        assert len(paper_signals) == 1
+        assert len(live_signals) == 1
+        assert paper_signals[0].final_score == 55
+        assert live_signals[0].final_score == 65
+
+
+def test_signal_history_htf_fields(db):
+    """Test HTF fields are stored and retrieved correctly."""
+    from src.state.database import SignalHistory
+
+    with db.session() as session:
+        signal = SignalHistory(
+            symbol="BTC-USD",
+            is_paper=True,
+            current_price="50000.00",
+            rsi_score=15.0,
+            macd_score=10.0,
+            bollinger_score=-5.0,
+            ema_score=8.0,
+            volume_score=4.0,
+            htf_bias="bullish",
+            htf_daily_trend="bullish",
+            htf_6h_trend="neutral",
+            htf_bias_adj=20.0,
+            raw_score=45,
+            final_score=65,  # 45 + 20 from HTF
+            action="buy",
+            threshold_used=60,
+        )
+        session.add(signal)
+        session.commit()
+
+        # Retrieve and verify
+        retrieved = session.query(SignalHistory).filter(
+            SignalHistory.id == signal.id
+        ).first()
+
+        assert retrieved.htf_bias == "bullish"
+        assert retrieved.htf_daily_trend == "bullish"
+        assert retrieved.htf_6h_trend == "neutral"
+        assert retrieved.htf_bias_adj == 20.0
+
+
+def test_signal_history_raw_indicator_values(db):
+    """Test raw indicator values are stored for debugging."""
+    from src.state.database import SignalHistory
+
+    with db.session() as session:
+        signal = SignalHistory(
+            symbol="BTC-USD",
+            is_paper=True,
+            current_price="50000.00",
+            rsi_score=15.0,
+            macd_score=10.0,
+            bollinger_score=-5.0,
+            ema_score=8.0,
+            volume_score=4.0,
+            rsi_value=35.5,
+            macd_histogram=150.75,
+            bb_position=0.25,
+            ema_gap_percent=1.5,
+            volume_ratio=2.3,
+            raw_score=45,
+            final_score=55,
+            action="hold",
+            threshold_used=60,
+        )
+        session.add(signal)
+        session.commit()
+
+        retrieved = session.query(SignalHistory).filter(
+            SignalHistory.id == signal.id
+        ).first()
+
+        assert retrieved.rsi_value == 35.5
+        assert retrieved.macd_histogram == 150.75
+        assert retrieved.bb_position == 0.25
+        assert retrieved.ema_gap_percent == 1.5
+        assert retrieved.volume_ratio == 2.3
+
+
+def test_signal_history_trade_executed_flag(db):
+    """Test trade_executed flag tracks whether signal resulted in trade."""
+    from src.state.database import SignalHistory
+
+    with db.session() as session:
+        # Signal that resulted in a trade
+        traded_signal = SignalHistory(
+            symbol="BTC-USD",
+            is_paper=True,
+            current_price="50000.00",
+            rsi_score=20.0,
+            macd_score=15.0,
+            bollinger_score=-5.0,
+            ema_score=12.0,
+            volume_score=8.0,
+            raw_score=75,
+            final_score=85,
+            action="buy",
+            threshold_used=60,
+            trade_executed=True,
+        )
+
+        # Signal that didn't result in a trade
+        not_traded_signal = SignalHistory(
+            symbol="BTC-USD",
+            is_paper=True,
+            current_price="50100.00",
+            rsi_score=10.0,
+            macd_score=5.0,
+            bollinger_score=0.0,
+            ema_score=3.0,
+            volume_score=2.0,
+            raw_score=25,
+            final_score=30,
+            action="hold",
+            threshold_used=60,
+            trade_executed=False,
+        )
+
+        session.add(traded_signal)
+        session.add(not_traded_signal)
+        session.commit()
+
+        # Query for signals that resulted in trades
+        traded = session.query(SignalHistory).filter(
+            SignalHistory.trade_executed == True
+        ).all()
+
+        not_traded = session.query(SignalHistory).filter(
+            SignalHistory.trade_executed == False
+        ).all()
+
+        assert len(traded) == 1
+        assert len(not_traded) == 1
+        assert traded[0].action == "buy"
+        assert not_traded[0].action == "hold"
+
+
+def test_signal_history_timestamp_auto_generated(db):
+    """Test timestamp is auto-generated if not provided."""
+    from src.state.database import SignalHistory
+
+    with db.session() as session:
+        signal = SignalHistory(
+            symbol="BTC-USD",
+            is_paper=True,
+            current_price="50000.00",
+            rsi_score=15.0,
+            macd_score=10.0,
+            bollinger_score=-5.0,
+            ema_score=8.0,
+            volume_score=4.0,
+            raw_score=45,
+            final_score=55,
+            action="hold",
+            threshold_used=60,
+        )
+        session.add(signal)
+        session.commit()
+
+        assert signal.timestamp is not None
+        assert isinstance(signal.timestamp, datetime)
+
+
+def test_signal_history_indexes_exist(db):
+    """Test that indexes are created for efficient querying."""
+    from sqlalchemy import inspect
+
+    inspector = inspect(db.engine)
+    indexes = inspector.get_indexes("signal_history")
+
+    index_names = [idx["name"] for idx in indexes]
+
+    # Check for expected indexes
+    assert any("timestamp" in name for name in index_names)
+    assert any("paper" in name and "timestamp" in name for name in index_names)
+
+
+def test_signal_history_null_htf_values(db):
+    """Test HTF fields can be null (MTF disabled)."""
+    from src.state.database import SignalHistory
+
+    with db.session() as session:
+        signal = SignalHistory(
+            symbol="BTC-USD",
+            is_paper=True,
+            current_price="50000.00",
+            rsi_score=15.0,
+            macd_score=10.0,
+            bollinger_score=-5.0,
+            ema_score=8.0,
+            volume_score=4.0,
+            htf_bias=None,  # MTF disabled
+            htf_daily_trend=None,
+            htf_6h_trend=None,
+            htf_bias_adj=0.0,
+            raw_score=45,
+            final_score=45,
+            action="hold",
+            threshold_used=60,
+        )
+        session.add(signal)
+        session.commit()
+
+        retrieved = session.query(SignalHistory).filter(
+            SignalHistory.id == signal.id
+        ).first()
+
+        assert retrieved.htf_bias is None
+        assert retrieved.htf_daily_trend is None
+        assert retrieved.htf_6h_trend is None
