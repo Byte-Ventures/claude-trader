@@ -9,7 +9,7 @@ import asyncio
 import json
 import random
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -592,6 +592,9 @@ class TradeReviewer:
         review_type: str = "trade",
         position_percent: float = 0.0,
         candles: Optional[pd.DataFrame] = None,
+        quote_balance: Optional[Decimal] = None,
+        base_balance: Optional[Decimal] = None,
+        estimated_size: Optional[dict] = None,
     ) -> MultiAgentReviewResult:
         """
         Multi-agent review process.
@@ -603,6 +606,9 @@ class TradeReviewer:
             review_type: "trade" or "interesting_hold"
             position_percent: Current position as percentage of portfolio
             candles: Optional DataFrame with OHLCV data for price action context
+            quote_balance: Available quote currency balance for buying
+            base_balance: Current base currency holdings for selling
+            estimated_size: Estimated trade size dict with side, size_base, size_quote
 
         Returns:
             MultiAgentReviewResult with all reviews and judge decision
@@ -614,7 +620,7 @@ class TradeReviewer:
         trade_summary = get_trade_summary(self.db, days=7)
         context = self._build_context(
             signal_result, current_price, trading_pair, fear_greed, trade_summary, review_type,
-            position_percent, candles
+            position_percent, candles, quote_balance, base_balance, estimated_size
         )
 
         # Multi-agent review for all decisions
@@ -953,12 +959,20 @@ class TradeReviewer:
         review_type: str,
         position_percent: float = 0.0,
         candles: Optional[pd.DataFrame] = None,
+        quote_balance: Optional[Decimal] = None,
+        base_balance: Optional[Decimal] = None,
+        estimated_size: Optional[dict] = None,
     ) -> dict:
         """Build context dict for prompts and Telegram."""
         trading_style, trading_style_desc = self._get_trading_style()
 
         # Generate price action summary if candles available
         price_action = self._summarize_recent_candles(candles) if candles is not None else ""
+
+        # Calculate portfolio value if balances provided
+        portfolio_value = None
+        if quote_balance is not None and base_balance is not None:
+            portfolio_value = float(quote_balance + base_balance * current_price)
 
         return {
             "review_type": review_type,
@@ -973,13 +987,17 @@ class TradeReviewer:
             "total_trades": trade_summary.total_trades,
             "net_pnl": float(trade_summary.net_pnl),
             "breakdown": signal_result.breakdown,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "candle_interval": self.candle_interval,
             "trading_style": trading_style,
             "trading_style_desc": trading_style_desc,
             "position_percent": position_percent,
             "threshold": self.signal_threshold,
             "price_action": price_action,
+            "quote_balance": float(quote_balance) if quote_balance is not None else None,
+            "base_balance": float(base_balance) if base_balance is not None else None,
+            "portfolio_value": portfolio_value,
+            "estimated_size": estimated_size,
         }
 
     def _build_reviewer_prompt(self, context: dict) -> str:
@@ -1157,7 +1175,7 @@ Explain what the indicators are showing, considering the trading timeframe."""
             "price_change_24h": price_change_24h,
             "indicators": indicators,
             "research": research_text,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
         try:

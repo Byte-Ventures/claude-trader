@@ -20,11 +20,15 @@ import hashlib
 from datetime import datetime
 from decimal import Decimal
 from time import time
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import structlog
 from telegram import Bot
 from telegram.error import TelegramError
+
+if TYPE_CHECKING:
+    from src.safety.circuit_breaker import CircuitBreaker
+    from src.safety.kill_switch import KillSwitch
 
 logger = structlog.get_logger(__name__)
 
@@ -38,6 +42,7 @@ DEFAULT_COOLDOWNS = {
     "order_failed": 1800,     # 30 minutes
     "trade_rejected": 0,      # Always send - must notify user of rejected trades
     "regime_change": 0,       # Always send (only fires on actual change)
+    "weight_profile": 900,    # 15 minutes - prevent oscillation spam
     "trade": 0,               # Always send trade notifications
     "trade_review": 0,        # Always send actual trade reviews
     "interesting_hold": 1800, # 30 minutes - throttle repetitive hold alerts
@@ -97,6 +102,15 @@ class TelegramNotifier:
         self._last_message_by_type: dict[str, float] = {}
         # Track last message content hash to detect duplicates
         self._last_message_hash: dict[str, str] = {}
+
+        # Safety system references for command handling
+        self._circuit_breaker: Optional["CircuitBreaker"] = None
+        self._kill_switch: Optional["KillSwitch"] = None
+
+        # Command handling state
+        self._last_update_id: int = 0
+        self._command_check_interval: float = 10.0  # Check every 10 seconds
+        self._last_command_check: float = 0.0
 
         if enabled and bot_token and chat_id:
             self._bot = Bot(token=bot_token)
@@ -194,7 +208,7 @@ class TelegramNotifier:
 
     def send_message_sync(self, message: str, parse_mode: str = "HTML") -> bool:
         """
-        Send a message synchronously (for non-async contexts).
+        Send a message synchronously (blocking).
 
         Args:
             message: Message text
@@ -203,17 +217,190 @@ class TelegramNotifier:
         Returns:
             True if sent successfully
         """
+        import concurrent.futures
+
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                # Create a new task if already in async context
-                asyncio.create_task(self.send_message(message, parse_mode))
-                return True
+                # In async context - run in thread pool to avoid blocking
+                # and actually wait for result (previous code used create_task
+                # which never awaited, so messages were never sent!)
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(asyncio.run, self.send_message(message, parse_mode))
+                    return future.result(timeout=30)
             else:
                 return loop.run_until_complete(self.send_message(message, parse_mode))
         except RuntimeError:
             # No event loop, create one
             return asyncio.run(self.send_message(message, parse_mode))
+        except concurrent.futures.TimeoutError:
+            logger.warning("telegram_send_timeout", timeout=30)
+            return False
+        except Exception as e:
+            logger.error("telegram_send_error", error=str(e))
+            return False
+
+    # Command handling methods
+
+    def set_safety_systems(
+        self,
+        circuit_breaker: "CircuitBreaker",
+        kill_switch: "KillSwitch",
+    ) -> None:
+        """
+        Set references to safety systems for command handling.
+
+        Args:
+            circuit_breaker: Circuit breaker instance
+            kill_switch: Kill switch instance
+        """
+        self._circuit_breaker = circuit_breaker
+        self._kill_switch = kill_switch
+        logger.info("telegram_command_handling_enabled")
+
+    def check_commands(self, loop: asyncio.AbstractEventLoop = None) -> None:
+        """
+        Check for and process incoming Telegram commands.
+
+        Call this periodically from the main loop. It's rate-limited internally.
+
+        Args:
+            loop: Optional event loop to use. If provided, uses run_until_complete()
+                  instead of creating a new loop with asyncio.run(). This is more
+                  efficient and avoids potential conflicts with existing event loops.
+        """
+        if not self.enabled or not self._bot:
+            return
+
+        # Rate limit command checks
+        now = time()
+        if now - self._last_command_check < self._command_check_interval:
+            return
+        self._last_command_check = now
+
+        try:
+            if loop:
+                # Use provided event loop (more efficient, avoids conflicts)
+                loop.run_until_complete(self._async_check_commands())
+            else:
+                # Fallback: create new event loop (less efficient)
+                asyncio.run(self._async_check_commands())
+        except Exception as e:
+            logger.debug("telegram_command_check_error", error=str(e))
+
+    async def _async_check_commands(self) -> None:
+        """Async implementation of command checking."""
+        try:
+            updates = await self._bot.get_updates(
+                offset=self._last_update_id + 1,
+                timeout=1,
+                allowed_updates=["message"],
+            )
+
+            for update in updates:
+                self._last_update_id = update.update_id
+
+                if update.message and update.message.text:
+                    # Only process commands from authorized chat
+                    if str(update.message.chat_id) != self.chat_id:
+                        logger.warning(
+                            "telegram_unauthorized_command",
+                            chat_id=update.message.chat_id,
+                        )
+                        continue
+
+                    text = update.message.text.strip()
+                    await self._handle_command(text)
+
+        except TelegramError as e:
+            logger.debug("telegram_get_updates_error", error=str(e))
+
+    async def _handle_command(self, text: str) -> None:
+        """Handle a single command."""
+        if text == "/reset":
+            await self._cmd_reset()
+        elif text == "/status":
+            await self._cmd_status()
+        elif text == "/help":
+            await self._cmd_help()
+        # Ignore non-commands
+
+    async def _cmd_reset(self) -> None:
+        """Handle /reset command - reset circuit breaker from BLACK state."""
+        if not self._circuit_breaker:
+            await self.send_message("❌ Circuit breaker not available")
+            return
+
+        from src.safety.circuit_breaker import BreakerLevel
+
+        status = self._circuit_breaker.status
+        if status.level == BreakerLevel.BLACK:
+            success = self._circuit_breaker.manual_reset("RESET_CONFIRMED")
+            if success:
+                await self.send_message(
+                    "✅ <b>Circuit Breaker Reset</b>\n\n"
+                    "Status: BLACK → GREEN\n"
+                    "Trading has resumed."
+                )
+                logger.info("circuit_breaker_reset_via_telegram")
+            else:
+                await self.send_message("❌ Reset failed - check logs")
+        elif status.level == BreakerLevel.RED:
+            await self.send_message(
+                f"⚠️ Circuit breaker is RED (not BLACK)\n\n"
+                f"Reason: {status.reason}\n"
+                f"Auto-recovery: {status.cooldown_until.strftime('%H:%M:%S') if status.cooldown_until else 'N/A'}\n\n"
+                "RED state auto-recovers. Use /reset only for BLACK state."
+            )
+        else:
+            await self.send_message(
+                f"ℹ️ Circuit breaker is {status.level.name}\n\n"
+                "No reset needed - trading is active."
+            )
+
+    async def _cmd_status(self) -> None:
+        """Handle /status command - show current system status."""
+        lines = ["📊 <b>System Status</b>\n"]
+
+        # Circuit breaker status
+        if self._circuit_breaker:
+            from src.safety.circuit_breaker import BreakerLevel
+            status = self._circuit_breaker.status
+            level_emoji = {
+                BreakerLevel.GREEN: "🟢",
+                BreakerLevel.YELLOW: "🟡",
+                BreakerLevel.RED: "🔴",
+                BreakerLevel.BLACK: "⚫",
+            }
+            lines.append(
+                f"Circuit Breaker: {level_emoji.get(status.level, '⚪')} {status.level.name}"
+            )
+            if status.reason:
+                lines.append(f"  └ {status.reason}")
+            if status.cooldown_until:
+                lines.append(f"  └ Recovers: {status.cooldown_until.strftime('%H:%M:%S')}")
+
+        # Kill switch status
+        if self._kill_switch:
+            if self._kill_switch.is_active:
+                lines.append(f"Kill Switch: 🛑 ACTIVE - {self._kill_switch.reason}")
+            else:
+                lines.append("Kill Switch: ✅ Inactive")
+
+        # Trading mode
+        mode = "📝 PAPER" if self._is_paper else "💰 LIVE"
+        lines.append(f"Mode: {mode}")
+
+        await self.send_message("\n".join(lines))
+
+    async def _cmd_help(self) -> None:
+        """Handle /help command - show available commands."""
+        await self.send_message(
+            "🤖 <b>Trading Bot Commands</b>\n\n"
+            "/status - Show system status\n"
+            "/reset - Reset circuit breaker (BLACK → GREEN)\n"
+            "/help - Show this message"
+        )
 
     # Convenience methods for common notifications
 
@@ -330,6 +517,7 @@ class TelegramNotifier:
 
         if self.send_message_sync(message):
             self._record_sent("order_failed", error)
+            self._save_to_dashboard("order_failed", f"Order Failed: {side.upper()}", message)
 
     def notify_circuit_breaker(
         self,
@@ -369,6 +557,7 @@ class TelegramNotifier:
         )
 
         self.send_message_sync(message)
+        self._save_to_dashboard("kill_switch", "Kill Switch Activated", message)
 
     def notify_loss_limit(self, limit_type: str, loss_percent: float) -> None:
         """Send notification for loss limit hit."""
@@ -386,6 +575,11 @@ class TelegramNotifier:
 
         if self.send_message_sync(message):
             self._record_sent("loss_limit", dedup_key)
+            self._save_to_dashboard(
+                "loss_limit",
+                f"{limit_type.title()} Loss Limit",
+                message,
+            )
 
     def notify_daily_summary(
         self,
@@ -410,6 +604,7 @@ class TelegramNotifier:
         )
 
         self.send_message_sync(message)
+        self._save_to_dashboard("daily_summary", f"{mode}Daily Summary", message)
 
     def notify_startup(self, mode: str, balance: Decimal, exchange: str = "Coinbase") -> None:
         """Send notification on bot startup."""
@@ -452,6 +647,7 @@ class TelegramNotifier:
 
         if self.send_message_sync(message):
             self._record_sent("error", dedup_key)
+            self._save_to_dashboard("error", "System Error", message)
 
     def notify_trade_review(self, review, review_type: str) -> None:
         """
@@ -514,7 +710,7 @@ class TelegramNotifier:
 
             message = (
                 f"{title}\n\n"
-                f"Signal Score: {ctx.get('score', 0)}/100 (threshold: 60)\n"
+                f"Signal Score: {ctx.get('score', 0)}/100 (threshold: {ctx.get('threshold', 60)})\n"
                 f"Price: ¤{ctx.get('price', 0):,.2f}\n"
                 f"📊 Fear & Greed: {ctx.get('fear_greed', 'N/A')} ({ctx.get('fear_greed_class', '')})\n\n"
                 f"<b>Signal Breakdown</b>:\n{breakdown_text}\n\n"
@@ -566,14 +762,42 @@ class TelegramNotifier:
 
             # Veto action explanation
             veto_action = review.final_veto_action
+            # Build trade size section FIRST - THIS IS THE MOST IMPORTANT INFO
+            estimated_size = ctx.get('estimated_size')
+            trading_pair = ctx.get('trading_pair', 'BTC-USD')
+            parts = trading_pair.split('-')
+            base_symbol = parts[0] if len(parts) >= 1 else 'BTC'
+            quote_symbol = parts[1] if len(parts) >= 2 else 'USD'
+
+            trade_size_section = ""
+            size_base = 0
+            size_quote = 0
+            if estimated_size:
+                size_base = estimated_size.get('size_base', 0)
+                size_quote = estimated_size.get('size_quote', 0)
+                trade_size_section = (
+                    f"\n<b>📦 Trade Size</b>:\n"
+                    f"  {size_base:.6f} {base_symbol} (¤{size_quote:,.2f} {quote_symbol})\n"
+                )
+
+            # Build veto explanation with actual amounts
             if veto_action:
-                veto_explanations = {
-                    "skip": "🚫 TRADE CANCELLED",
-                    "reduce": "⚠️ POSITION REDUCED TO 50%",
-                    "delay": "⏸️ TRADE DELAYED 15 MIN",
-                    "info": "ℹ️ WARNING LOGGED, TRADE PROCEEDS",
-                }
-                veto_text = f"\n\n<b>Veto Action</b>: {veto_explanations.get(veto_action, veto_action.upper())}"
+                if veto_action == "reduce" and size_base > 0:
+                    reduced_base = size_base * 0.5
+                    reduced_quote = size_quote * 0.5
+                    veto_text = (
+                        f"\n\n<b>Veto Action</b>: ⚠️ POSITION REDUCED TO 50%\n"
+                        f"  Original: {size_base:.6f} {base_symbol} (¤{size_quote:,.2f})\n"
+                        f"  Reduced: {reduced_base:.6f} {base_symbol} (¤{reduced_quote:,.2f})"
+                    )
+                else:
+                    veto_explanations = {
+                        "skip": "🚫 TRADE CANCELLED",
+                        "reduce": "⚠️ POSITION REDUCED TO 50%",
+                        "delay": "⏸️ TRADE DELAYED 15 MIN",
+                        "info": "ℹ️ WARNING LOGGED, TRADE PROCEEDS",
+                    }
+                    veto_text = f"\n\n<b>Veto Action</b>: {veto_explanations.get(veto_action, veto_action.upper())}"
             else:
                 veto_text = ""
 
@@ -589,11 +813,30 @@ class TelegramNotifier:
             else:
                 outcome = "ℹ️ <b>TRADE PROCEEDS (INFO ONLY)</b>"
 
+            # Build portfolio section if balances available
+            portfolio_section = ""
+            quote_balance = ctx.get('quote_balance')
+            base_balance = ctx.get('base_balance')
+            portfolio_value = ctx.get('portfolio_value')
+            position_pct = ctx.get('position_percent', 0)
+
+            if quote_balance is not None and base_balance is not None:
+                portfolio_section = (
+                    f"\n<b>Portfolio</b>:\n"
+                    f"  💰 Available: ¤{quote_balance:,.2f} {quote_symbol}\n"
+                    f"  ₿ Holdings: {base_balance:.6f} {base_symbol}\n"
+                    f"  📊 Position: {position_pct:.1f}% of portfolio\n"
+                )
+                if portfolio_value is not None:
+                    portfolio_section += f"  💼 Total Value: ¤{portfolio_value:,.2f}\n"
+
             message = (
                 f"🤖 <b>Multi-Agent Trade Review</b>\n\n"
                 f"📊 <b>Trade</b>: {action} @ ¤{ctx.get('price', 0):,.2f}\n"
                 f"Signal Score: {ctx.get('score', 0)}/100\n"
-                f"Fear & Greed: {ctx.get('fear_greed', 'N/A')} ({ctx.get('fear_greed_class', '')})\n\n"
+                f"Fear & Greed: {ctx.get('fear_greed', 'N/A')} ({ctx.get('fear_greed_class', '')})"
+                f"{trade_size_section}"
+                f"{portfolio_section}\n"
                 f"<b>Agent Reviews</b>:\n{agents_text}\n\n"
                 f"<b>━━━ Judge Decision ━━━</b>\n"
                 f"{judge_decision_text} ({review.judge_confidence*100:.0f}% confidence)\n"
@@ -688,6 +931,60 @@ class TelegramNotifier:
         )
 
         self.send_message_sync(message)
+        self._save_to_dashboard(
+            "regime_change",
+            f"Regime: {old_regime} → {new_regime}",
+            message,
+        )
+
+    def notify_weight_profile(
+        self,
+        old_profile: str,
+        new_profile: str,
+        confidence: float,
+        reasoning: str,
+    ) -> None:
+        """
+        Send notification when weight profile changes.
+
+        Args:
+            old_profile: Previous profile name
+            new_profile: New profile name
+            confidence: AI confidence (0.0 to 1.0)
+            reasoning: AI reasoning for the selection
+        """
+        # Deduplicate to prevent oscillation spam (e.g., repeated A→B→A→B)
+        dedup_key = f"{old_profile}:{new_profile}"
+        if not self._should_send("weight_profile", dedup_key):
+            logger.debug(
+                "weight_profile_notification_throttled",
+                old=old_profile,
+                new=new_profile,
+            )
+            return
+
+        profile_emoji = {
+            "trending": "📈",
+            "ranging": "↔️",
+            "volatile": "⚡",
+            "default": "⚖️",
+        }.get(new_profile, "🔄")
+
+        confidence_pct = int(confidence * 100)
+        message = (
+            f"{profile_emoji} <b>Weight Profile Changed</b>\n\n"
+            f"<b>Profile:</b> {old_profile} → {new_profile}\n"
+            f"<b>Confidence:</b> {confidence_pct}%\n\n"
+            f"<b>AI Reasoning:</b>\n{reasoning}"
+        )
+
+        if self.send_message_sync(message):
+            self._record_sent("weight_profile", dedup_key)
+        self._save_to_dashboard(
+            "weight_profile",
+            f"Weight Profile: {new_profile}",
+            message,
+        )
 
     def _format_signal_breakdown(self, breakdown: dict) -> str:
         """Format signal breakdown for Telegram display."""
@@ -823,3 +1120,63 @@ class TelegramNotifier:
 
         self.send_message_sync(message)
         self._save_to_dashboard("market_analysis", "Hourly Market Analysis", message)
+
+    def notify_periodic_report(
+        self,
+        period: str,
+        report_date: str,
+        portfolio_return: float,
+        btc_return: float,
+        alpha: float,
+        pnl: Decimal,
+        ending_balance: Decimal,
+        trades: int,
+        is_paper: bool = False,
+    ) -> None:
+        """
+        Send periodic performance report (daily, weekly, monthly).
+
+        Args:
+            period: Report period ("Daily", "Weekly", "Monthly")
+            report_date: Date or date range string
+            portfolio_return: Portfolio return percentage
+            btc_return: BTC HODL return percentage
+            alpha: Alpha (outperformance vs BTC)
+            pnl: Profit/loss amount
+            ending_balance: Ending balance
+            trades: Number of trades
+            is_paper: Whether in paper trading mode
+        """
+        # Determine performance emoji
+        threshold = 1 if period == "Daily" else 2
+        if alpha > threshold:
+            perf_emoji = "🚀"
+        elif alpha > 0:
+            perf_emoji = "✅"
+        elif alpha > -threshold:
+            perf_emoji = "➖"
+        else:
+            perf_emoji = "📉"
+
+        mode = "PAPER" if is_paper else "LIVE"
+
+        # Period-specific emoji
+        period_emoji = {"Daily": "📊", "Weekly": "📅", "Monthly": "📆"}.get(period, "📊")
+
+        message = (
+            f"{period_emoji} <b>{period} Report</b> ({mode})\n"
+            f"{report_date}\n\n"
+            f"<b>Portfolio</b>: {portfolio_return:+.2f}%\n"
+            f"<b>BTC (HODL)</b>: {btc_return:+.2f}%\n"
+            f"{perf_emoji} <b>Alpha</b>: {alpha:+.2f}%\n\n"
+            f"P&L: €{pnl:+,.2f}\n"
+            f"Balance: €{ending_balance:,.2f}\n"
+            f"Trades: {trades}"
+        )
+
+        self.send_message_sync(message)
+        self._save_to_dashboard(
+            "periodic_report",
+            f"{period} Report ({mode})",
+            message,
+        )

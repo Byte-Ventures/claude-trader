@@ -139,14 +139,28 @@ async function loadInitialData() {
         const candlesResponse = await fetch('/api/candles?limit=100');
         if (candlesResponse.ok) {
             const candles = await candlesResponse.json();
-            const chartData = candles.map(c => ({
-                time: Math.floor(new Date(c.timestamp + 'Z').getTime() / 1000),
-                open: parseFloat(c.open),
-                high: parseFloat(c.high),
-                low: parseFloat(c.low),
-                close: parseFloat(c.close),
-            }));
-            candleSeries.setData(chartData);
+            const chartData = candles
+                .map(c => {
+                    // Parse timestamp - handle both ISO format and empty strings
+                    const timestamp = c.timestamp ? new Date(c.timestamp + 'Z').getTime() : NaN;
+                    const time = Math.floor(timestamp / 1000);
+                    const open = parseFloat(c.open);
+                    const high = parseFloat(c.high);
+                    const low = parseFloat(c.low);
+                    const close = parseFloat(c.close);
+                    return { time, open, high, low, close };
+                })
+                .filter(c => {
+                    // Filter out invalid candles (NaN values crash the chart)
+                    return !isNaN(c.time) && c.time > 0 &&
+                           !isNaN(c.open) && !isNaN(c.high) &&
+                           !isNaN(c.low) && !isNaN(c.close) &&
+                           c.open !== null && c.high !== null &&
+                           c.low !== null && c.close !== null;
+                });
+            if (chartData.length > 0) {
+                candleSeries.setData(chartData);
+            }
         }
 
         // Load trades
@@ -261,11 +275,26 @@ function updateDashboard(state) {
 
     // Update indicators
     const indicators = state.indicators;
-    document.getElementById('volatility-value').textContent = indicators.volatility ?
-        indicators.volatility.toUpperCase() : '--';
 
-    // Update regime
-    document.getElementById('regime-value').textContent = state.regime || '--';
+    // Update weight profile
+    const weightProfile = state.weight_profile;
+    if (weightProfile) {
+        const profileEmoji = {
+            'trending': '📈',
+            'ranging': '↔️',
+            'volatile': '⚡',
+            'default': '⚖️'
+        };
+        const emoji = profileEmoji[weightProfile.name] || '🔄';
+        document.getElementById('weight-profile-value').textContent =
+            `${emoji} ${weightProfile.name.charAt(0).toUpperCase() + weightProfile.name.slice(1)}`;
+        const confidencePct = Math.round(weightProfile.confidence * 100);
+        document.getElementById('weight-profile-confidence').textContent =
+            confidencePct > 0 ? `${confidencePct}% confidence` : '--';
+    } else {
+        document.getElementById('weight-profile-value').textContent = 'Disabled';
+        document.getElementById('weight-profile-confidence').textContent = '--';
+    }
 
     // Update circuit breaker
     const cbEl = document.getElementById('circuit-breaker');
@@ -288,16 +317,19 @@ function updateDashboard(state) {
     updateBreakdownBar('breakdown-ema', breakdown.ema || 0);
     updateBreakdownBar('breakdown-volume', breakdown.volume || 0);
 
-    // Update chart with new price (if we have a timestamp)
-    if (state.timestamp && candleSeries) {
-        const time = Math.floor(new Date(state.timestamp + 'Z').getTime() / 1000);
-        candleSeries.update({
-            time: time,
-            open: price,
-            high: price,
-            low: price,
-            close: price,
-        });
+    // Update chart with new price (if we have valid data)
+    if (state.timestamp && candleSeries && !isNaN(price) && price > 0) {
+        // Don't add 'Z' - state timestamps already have timezone info (+00:00)
+        const time = Math.floor(new Date(state.timestamp).getTime() / 1000);
+        if (!isNaN(time) && time > 0) {
+            candleSeries.update({
+                time: time,
+                open: price,
+                high: price,
+                low: price,
+                close: price,
+            });
+        }
     }
 
     // Update trades table if recent_trades included

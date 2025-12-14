@@ -255,6 +255,25 @@ class SignalScorer:
 
         logger.info("signal_scorer_settings_updated")
 
+    def update_weights(self, weights: SignalWeights) -> None:
+        """
+        Update indicator weights at runtime.
+
+        Used by AI weight profile selector to adjust weights based on market conditions.
+
+        Args:
+            weights: New SignalWeights to apply
+        """
+        self.weights = weights
+        logger.info(
+            "signal_weights_updated",
+            rsi=weights.rsi,
+            macd=weights.macd,
+            bollinger=weights.bollinger,
+            ema=weights.ema,
+            volume=weights.volume,
+        )
+
     def is_momentum_mode(self, df: pd.DataFrame, rsi: pd.Series) -> tuple[bool, str]:
         """
         Detect if market is in sustained momentum mode.

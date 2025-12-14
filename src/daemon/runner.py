@@ -28,9 +28,15 @@ from src.notifications.telegram import TelegramNotifier
 from src.safety.circuit_breaker import CircuitBreaker, CircuitBreakerConfig, BreakerLevel
 from src.safety.kill_switch import KillSwitch
 from src.safety.loss_limiter import LossLimiter
+from src.safety.trade_cooldown import TradeCooldown, TradeCooldownConfig
 from src.safety.validator import OrderValidator, OrderRequest, ValidatorConfig
 from src.state.database import Database
 from src.strategy.signal_scorer import SignalScorer
+from src.strategy.weight_profile_selector import (
+    WeightProfileSelector,
+    ProfileSelectorConfig,
+    WEIGHT_PROFILES,
+)
 from src.strategy.position_sizer import PositionSizer, PositionSizeConfig
 from src.strategy.regime import MarketRegime, RegimeConfig, RegimeAdjustments, get_cached_sentiment
 from src.indicators.ema import get_ema_trend_from_values
@@ -209,6 +215,27 @@ class TradingDaemon:
             loss_limiter=self.loss_limiter,
         )
 
+        # Initialize trade cooldown (optional, prevents rapid consecutive trades)
+        self.trade_cooldown: Optional[TradeCooldown] = None
+        if settings.trade_cooldown_enabled:
+            self.trade_cooldown = TradeCooldown(
+                config=TradeCooldownConfig(
+                    buy_cooldown_minutes=settings.buy_cooldown_minutes,
+                    sell_cooldown_minutes=settings.sell_cooldown_minutes,
+                    buy_price_change_percent=settings.buy_price_change_percent,
+                    sell_price_change_percent=settings.sell_price_change_percent,
+                ),
+                db=self.db,
+                is_paper=settings.is_paper_trading,
+                symbol=settings.trading_pair,
+            )
+
+        # Enable Telegram command handling (for /reset, /status, /help)
+        self.notifier.set_safety_systems(
+            circuit_breaker=self.circuit_breaker,
+            kill_switch=self.kill_switch,
+        )
+
         # Initialize strategy components
         self.signal_scorer = SignalScorer(
             threshold=settings.signal_threshold,
@@ -254,6 +281,35 @@ class TradingDaemon:
                 logger.info("regime_restored_from_db", regime=last_regime)
             logger.info("market_regime_initialized", scale=settings.regime_adjustment_scale)
 
+        # Initialize AI weight profile selector (optional, requires OpenRouter key)
+        self.weight_profile_selector: Optional[WeightProfileSelector] = None
+        self._last_weight_profile: str = "default"
+        self._last_weight_profile_confidence: float = 0.0
+        self._last_weight_profile_reasoning: str = ""
+        if settings.ai_weight_profile_enabled and settings.openrouter_api_key:
+            self.weight_profile_selector = WeightProfileSelector(
+                api_key=settings.openrouter_api_key.get_secret_value(),
+                config=ProfileSelectorConfig(
+                    enabled=settings.ai_weight_profile_enabled,
+                    cache_minutes=self._get_candle_interval_minutes(),
+                    fallback_profile=settings.ai_weight_fallback_profile,
+                    model=settings.ai_weight_profile_model,
+                ),
+            )
+            # Restore last weight profile from database
+            last_profile = self.db.get_last_weight_profile(is_paper=settings.is_paper_trading)
+            if last_profile and last_profile in WEIGHT_PROFILES:
+                self._last_weight_profile = last_profile
+                self.signal_scorer.update_weights(WEIGHT_PROFILES[last_profile])
+                logger.info("weight_profile_restored_from_db", profile=last_profile)
+            logger.info(
+                "ai_weight_profile_selector_initialized",
+                model=settings.ai_weight_profile_model,
+                fallback=settings.ai_weight_fallback_profile,
+            )
+        else:
+            logger.info("ai_weight_profile_selector_disabled")
+
         # AI recommendation state (for threshold adjustments from interesting holds)
         self._ai_recommendation: Optional[str] = None  # "accumulate", "reduce", "wait"
         self._ai_recommendation_confidence: float = 0.0
@@ -296,6 +352,28 @@ class TradingDaemon:
                 return default
 
         return self._loop.run_until_complete(_with_timeout())
+
+    def _get_candle_interval_minutes(self) -> int:
+        """Convert candle interval string to minutes."""
+        interval_map = {
+            "ONE_MINUTE": 1,
+            "FIVE_MINUTE": 5,
+            "FIFTEEN_MINUTE": 15,
+            "THIRTY_MINUTE": 30,
+            "ONE_HOUR": 60,
+            "TWO_HOUR": 120,
+            "SIX_HOUR": 360,
+            "ONE_DAY": 1440,
+        }
+        return interval_map.get(self.settings.candle_interval, 60)
+
+    def _calculate_bb_percent_b(self, price: Decimal, indicators) -> Optional[float]:
+        """Calculate Bollinger %B for weight profile selection."""
+        if indicators.bb_upper and indicators.bb_lower:
+            bb_range = indicators.bb_upper - indicators.bb_lower
+            if bb_range > 0:
+                return (float(price) - indicators.bb_lower) / bb_range
+        return None
 
     def _validate_trading_pair(self, trading_pair: str) -> None:
         """
@@ -347,7 +425,7 @@ class TradingDaemon:
             return 0
 
         # Check if recommendation has expired
-        elapsed = (datetime.utcnow() - self._ai_recommendation_time).total_seconds() / 60
+        elapsed = (datetime.now(timezone.utc) - self._ai_recommendation_time).total_seconds() / 60
         if elapsed > self._ai_recommendation_ttl_minutes:
             # Clear expired recommendation
             self._ai_recommendation = None
@@ -452,6 +530,15 @@ class TradingDaemon:
                 max_hourly_loss_percent=new_settings.max_hourly_loss_percent,
             )
 
+            # Update TradeCooldown (if enabled)
+            if self.trade_cooldown:
+                self.trade_cooldown.update_settings(
+                    buy_cooldown_minutes=new_settings.buy_cooldown_minutes,
+                    sell_cooldown_minutes=new_settings.sell_cooldown_minutes,
+                    buy_price_change_percent=new_settings.buy_price_change_percent,
+                    sell_price_change_percent=new_settings.sell_price_change_percent,
+                )
+
             # Update TradeReviewer (if enabled)
             if self.trade_reviewer:
                 self.trade_reviewer.review_all = new_settings.ai_review_all
@@ -536,6 +623,10 @@ class TradingDaemon:
 
             # Main loop
             while not self.shutdown_event.is_set():
+                # Check for Telegram commands (/reset, /status, /help)
+                # Pass event loop to avoid creating a new one each time
+                self.notifier.check_commands(loop=self._loop)
+
                 # Check for config reload request
                 if reload_pending():
                     self._reload_config()
@@ -694,8 +785,24 @@ class TradingDaemon:
         # Determine which trade directions are possible
         min_quote = Decimal(str(self.position_sizer.config.min_trade_quote))
         min_base = Decimal(str(self.position_sizer.config.min_trade_base))
-        can_buy = quote_balance > min_quote and position_percent < self.position_sizer.config.max_position_percent
+        max_position_pct = self.position_sizer.config.max_position_percent
+
+        # Check if there's meaningful room to buy (at least 1% of portfolio or min_trade_quote)
+        # This prevents running AI review when position is nearly at limit
+        available_room_pct = max_position_pct - position_percent
+        min_room_pct = max(1.0, float(min_quote / portfolio_value * 100)) if portfolio_value > 0 else 1.0
+        has_room = available_room_pct >= min_room_pct
+        can_buy = quote_balance > min_quote and has_room
         can_sell = base_balance > min_base
+
+        if not has_room and quote_balance > min_quote:
+            logger.info(
+                "buy_blocked_insufficient_room",
+                position_pct=f"{position_percent:.1f}%",
+                max_position_pct=f"{max_position_pct:.1f}%",
+                available_room_pct=f"{available_room_pct:.2f}%",
+                min_room_pct=f"{min_room_pct:.2f}%",
+            )
 
         # Calculate signal
         signal_result = self.signal_scorer.calculate_score(candles, current_price)
@@ -777,7 +884,7 @@ class TradingDaemon:
                 is_paper=self.settings.is_paper_trading,
             )
 
-            # Send Telegram notification
+            # Send notification (Telegram + dashboard via unified method)
             self.notifier.notify_regime_change(
                 old_regime=self._last_regime,
                 new_regime=regime.regime_name,
@@ -786,15 +893,78 @@ class TradingDaemon:
                 components=regime.components,
             )
 
-            # Save to dashboard notifications
-            self.db.save_notification(
-                type="regime_change",
-                title=f"Regime: {self._last_regime} → {regime.regime_name}",
-                message=f"Threshold adj: {regime.threshold_adjustment:+d}, Position mult: {regime.position_multiplier:.1f}x",
-                is_paper=self.settings.is_paper_trading,
-            )
-
             self._last_regime = regime.regime_name
+
+        # Update weight profile if AI selector enabled and should update
+        if self.weight_profile_selector and self.weight_profile_selector.should_update():
+            try:
+                # Build indicator context for AI profile selection
+                indicator_context = {
+                    "rsi": ind.rsi,
+                    "macd_histogram": ind.macd_histogram,
+                    "bb_percent_b": self._calculate_bb_percent_b(current_price, ind),
+                }
+
+                # Get Fear & Greed value for context
+                fear_greed_value = None
+                if sentiment:
+                    fear_greed_value = sentiment.value
+
+                selection = self._run_async_with_timeout(
+                    self.weight_profile_selector.select_profile(
+                        indicators=indicator_context,
+                        volatility=ind.volatility or "normal",
+                        trend=trend,
+                        current_price=current_price,
+                        fear_greed=fear_greed_value,
+                    ),
+                    timeout=30,
+                    default=None,
+                )
+
+                if selection:
+                    # Update weights in signal scorer for NEXT iteration
+                    # NOTE: Weight updates happen AFTER signal calculation in the current iteration.
+                    # This means new weights take effect on the next candle, not the current one.
+                    # This 1-candle lag is acceptable for a trading system since weight profiles
+                    # are meant to adapt gradually to market conditions, not react instantly.
+                    self.signal_scorer.update_weights(selection.weights)
+
+                    # Always update confidence/reasoning for dashboard display
+                    self._last_weight_profile_confidence = selection.confidence
+                    self._last_weight_profile_reasoning = selection.reasoning
+
+                    # Log and record profile change (only on actual change)
+                    if selection.profile_name != self._last_weight_profile:
+                        logger.info(
+                            "weight_profile_changed",
+                            old=self._last_weight_profile,
+                            new=selection.profile_name,
+                            confidence=selection.confidence,
+                        )
+
+                        # Record to database
+                        self.db.record_weight_profile_change(
+                            profile_name=selection.profile_name,
+                            confidence=selection.confidence,
+                            reasoning=selection.reasoning,
+                            market_context=selection.market_context,
+                            is_paper=self.settings.is_paper_trading,
+                        )
+
+                        # Send notification (Telegram + dashboard via unified method)
+                        self.notifier.notify_weight_profile(
+                            old_profile=self._last_weight_profile,
+                            new_profile=selection.profile_name,
+                            confidence=selection.confidence,
+                            reasoning=selection.reasoning,
+                        )
+
+                        # Update stored profile name (confidence/reasoning updated above)
+                        self._last_weight_profile = selection.profile_name
+
+            except Exception as e:
+                logger.warning("weight_profile_update_failed", error=str(e))
 
         # Apply regime and AI threshold adjustments to determine effective action
         base_threshold = self.settings.signal_threshold + regime.threshold_adjustment
@@ -816,7 +986,7 @@ class TradingDaemon:
 
         # Log when AI adjustment is active
         if ai_buy_adj != 0 or ai_sell_adj != 0:
-            elapsed = (datetime.utcnow() - self._ai_recommendation_time).total_seconds() / 60
+            elapsed = (datetime.now(timezone.utc) - self._ai_recommendation_time).total_seconds() / 60
             decay_pct = (1.0 - elapsed / self._ai_recommendation_ttl_minutes) * 100
             logger.info(
                 "ai_threshold_adjustment_active",
@@ -847,7 +1017,7 @@ class TradingDaemon:
         # Persist state for dashboard
         ind = signal_result.indicators
         dashboard_state = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "price": str(current_price),
             "signal": {
                 "score": signal_result.score,
@@ -876,6 +1046,11 @@ class TradingDaemon:
                 "position_percent": position_percent,
             },
             "regime": regime.regime_name,
+            "weight_profile": {
+                "name": self._last_weight_profile,
+                "confidence": self._last_weight_profile_confidence,
+                "reasoning": self._last_weight_profile_reasoning,
+            } if self.weight_profile_selector else None,
             "safety": {
                 "circuit_breaker": self.circuit_breaker.level.name,
                 "can_trade": self.circuit_breaker.can_trade,
@@ -911,6 +1086,35 @@ class TradingDaemon:
 
                 if should_review:
                     try:
+                        # Estimate trade size for context (before AI veto adjustments)
+                        # This gives users visibility into what the trade would be
+                        # Use 1.0 multiplier for estimation - actual safety check happens later
+                        estimated_size = None
+                        if signal_result.action == "buy":
+                            est_position = self.position_sizer.calculate_size(
+                                df=candles,
+                                current_price=current_price,
+                                quote_balance=quote_balance,
+                                base_balance=base_balance,
+                                signal_strength=signal_result.score,
+                                side="buy",
+                                safety_multiplier=1.0,
+                            )
+                            if est_position.size_quote > 0:
+                                estimated_size = {
+                                    "side": "buy",
+                                    "size_base": float(est_position.size_base),
+                                    "size_quote": float(est_position.size_quote),
+                                }
+                        elif signal_result.action == "sell":
+                            # For sells, estimate based on position
+                            sell_size = base_balance if abs(signal_result.score) >= 80 else base_balance * Decimal("0.5")
+                            estimated_size = {
+                                "side": "sell",
+                                "size_base": float(sell_size),
+                                "size_quote": float(sell_size * current_price),
+                            }
+
                         # Run async multi-agent review with timeout protection
                         review = self._run_async_with_timeout(
                             self.trade_reviewer.review_trade(
@@ -920,6 +1124,9 @@ class TradingDaemon:
                                 review_type=review_type,
                                 position_percent=position_percent,
                                 candles=candles,
+                                quote_balance=quote_balance,
+                                base_balance=base_balance,
+                                estimated_size=estimated_size,
                             ),
                             timeout=ASYNC_TIMEOUT_SECONDS,
                         )
@@ -986,7 +1193,7 @@ class TradingDaemon:
                             if review.judge_recommendation in ("accumulate", "reduce"):
                                 self._ai_recommendation = review.judge_recommendation
                                 self._ai_recommendation_confidence = review.judge_confidence
-                                self._ai_recommendation_time = datetime.utcnow()
+                                self._ai_recommendation_time = datetime.now(timezone.utc)
                                 logger.info(
                                     "ai_recommendation_stored",
                                     recommendation=review.judge_recommendation,
@@ -1047,6 +1254,18 @@ class TradingDaemon:
 
         if effective_action == "buy":
             if can_buy:
+                # Check trade cooldown
+                if self.trade_cooldown:
+                    cooldown_ok, cooldown_reason = self.trade_cooldown.can_execute("buy", current_price)
+                    if not cooldown_ok:
+                        logger.info(
+                            "decision",
+                            action="skip_buy",
+                            reason=f"trade_cooldown: {cooldown_reason}",
+                            signal_score=signal_result.score,
+                        )
+                        return
+
                 logger.info(
                     "decision",
                     action="buy",
@@ -1070,6 +1289,18 @@ class TradingDaemon:
 
         elif effective_action == "sell":
             if can_sell:
+                # Check trade cooldown (disabled by default for sells, but here for completeness)
+                if self.trade_cooldown:
+                    cooldown_ok, cooldown_reason = self.trade_cooldown.can_execute("sell", current_price)
+                    if not cooldown_ok:
+                        logger.info(
+                            "decision",
+                            action="skip_sell",
+                            reason=f"trade_cooldown: {cooldown_reason}",
+                            signal_score=signal_result.score,
+                        )
+                        return
+
                 logger.info(
                     "decision",
                     action="sell",
@@ -1114,6 +1345,14 @@ class TradingDaemon:
 
         if position.size_quote < Decimal("10"):
             logger.info("buy_skipped", reason="position_too_small", size_quote=str(position.size_quote))
+            self.notifier.notify_trade_rejected(
+                side="buy",
+                reason="Position too small (< $10)",
+                price=current_price,
+                signal_score=signal_score,
+                size_quote=position.size_quote,
+                is_paper=self.settings.is_paper_trading,
+            )
             return
 
         # Validate order
@@ -1219,6 +1458,10 @@ class TradingDaemon:
                 spot_rate=current_price,
             )
             self.db.increment_daily_trade_count(is_paper=is_paper)
+
+            # Update trade cooldown
+            if self.trade_cooldown:
+                self.trade_cooldown.record_trade("buy", filled_price)
 
             # Update position tracking and create stop protection
             # CRITICAL: If stop creation fails, immediately close position (fail-safe)
@@ -1328,6 +1571,14 @@ class TradingDaemon:
         min_base = Decimal(str(self.position_sizer.config.min_trade_base))
         if size_base < min_base:
             logger.info("sell_skipped", reason="position_too_small", size_base=str(size_base), min_base=str(min_base))
+            self.notifier.notify_trade_rejected(
+                side="sell",
+                reason=f"Position too small (< {min_base} BTC)",
+                price=current_price,
+                signal_score=signal_score,
+                size_quote=size_base * current_price,
+                is_paper=self.settings.is_paper_trading,
+            )
             return
 
         # Validate order
@@ -1443,6 +1694,10 @@ class TradingDaemon:
                 size=result.size,
                 price=filled_price,
             )
+
+            # Update trade cooldown
+            if self.trade_cooldown:
+                self.trade_cooldown.record_trade("sell", filled_price)
 
             # Send notification
             self.notifier.notify_trade(
@@ -1646,32 +1901,20 @@ class TradingDaemon:
         ending_balance: Decimal,
         trades: int,
     ) -> None:
-        """Send daily performance report via Telegram."""
-        # Determine performance emoji
-        if alpha > 1:
-            perf_emoji = "🚀"  # Beating BTC significantly
-        elif alpha > 0:
-            perf_emoji = "✅"  # Beating BTC
-        elif alpha > -1:
-            perf_emoji = "➖"  # Roughly matching
-        else:
-            perf_emoji = "📉"  # Underperforming
-
-        mode = "PAPER" if self.settings.is_paper_trading else "LIVE"
+        """Send daily performance report via unified notification method."""
         pnl = ending_balance - starting_balance
 
-        message = (
-            f"📊 <b>Daily Report</b> ({mode})\n"
-            f"Date: {report_date}\n\n"
-            f"<b>Portfolio</b>: {portfolio_return:+.2f}%\n"
-            f"<b>BTC (HODL)</b>: {btc_return:+.2f}%\n"
-            f"{perf_emoji} <b>Alpha</b>: {alpha:+.2f}%\n\n"
-            f"P&L: €{pnl:+,.2f}\n"
-            f"Balance: €{ending_balance:,.2f}\n"
-            f"Trades: {trades}"
+        self.notifier.notify_periodic_report(
+            period="Daily",
+            report_date=f"Date: {report_date}",
+            portfolio_return=portfolio_return,
+            btc_return=btc_return,
+            alpha=alpha,
+            pnl=pnl,
+            ending_balance=ending_balance,
+            trades=trades,
+            is_paper=self.settings.is_paper_trading,
         )
-
-        self.notifier.send_message_sync(message)
 
     def _check_weekly_report(self) -> None:
         """Check if we should generate weekly performance report (on Mondays)."""
@@ -1796,35 +2039,20 @@ class TradingDaemon:
         ending_balance: Decimal,
         trades: int,
     ) -> None:
-        """Send weekly/monthly performance report via Telegram."""
-        # Determine performance emoji
-        if alpha > 2:
-            perf_emoji = "🚀"
-        elif alpha > 0:
-            perf_emoji = "✅"
-        elif alpha > -2:
-            perf_emoji = "➖"
-        else:
-            perf_emoji = "📉"
-
-        mode = "PAPER" if self.settings.is_paper_trading else "LIVE"
+        """Send weekly/monthly performance report via unified notification method."""
         pnl = ending_balance - starting_balance
 
-        # Period-specific emoji
-        period_emoji = "📅" if period == "Weekly" else "📆"
-
-        message = (
-            f"{period_emoji} <b>{period} Report</b> ({mode})\n"
-            f"{start_date} → {end_date}\n\n"
-            f"<b>Portfolio</b>: {portfolio_return:+.2f}%\n"
-            f"<b>BTC (HODL)</b>: {btc_return:+.2f}%\n"
-            f"{perf_emoji} <b>Alpha</b>: {alpha:+.2f}%\n\n"
-            f"P&L: €{pnl:+,.2f}\n"
-            f"Balance: €{ending_balance:,.2f}\n"
-            f"Trades: {trades}"
+        self.notifier.notify_periodic_report(
+            period=period,
+            report_date=f"{start_date} → {end_date}",
+            portfolio_return=portfolio_return,
+            btc_return=btc_return,
+            alpha=alpha,
+            pnl=pnl,
+            ending_balance=ending_balance,
+            trades=trades,
+            is_paper=self.settings.is_paper_trading,
         )
-
-        self.notifier.send_message_sync(message)
 
     def _check_hourly_analysis(self) -> None:
         """Run hourly market analysis during volatile conditions or post-volatility."""

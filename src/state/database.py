@@ -50,8 +50,8 @@ class Position(Base):
     quantity = Column(String(50), nullable=False)  # Stored as string for Decimal precision
     average_cost = Column(String(50), nullable=False)
     unrealized_pnl = Column(String(50), default="0")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     is_current = Column(Boolean, default=True)
     is_paper = Column(Boolean, default=False)
 
@@ -81,8 +81,8 @@ class Order(Base):
     filled_size = Column(String(50), default="0")
     filled_price = Column(String(50), nullable=True)
     fee = Column(String(50), default="0")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     error_message = Column(Text, nullable=True)
     is_paper = Column(Boolean, default=False)
 
@@ -101,7 +101,7 @@ class Trade(Base):
     price = Column(String(50), nullable=False)
     fee = Column(String(50), default="0")
     realized_pnl = Column(String(50), default="0")
-    executed_at = Column(DateTime, default=datetime.utcnow)
+    executed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_paper = Column(Boolean, default=False)
     # Balance snapshot after trade
     quote_balance_after = Column(String(50), nullable=True)
@@ -135,7 +135,7 @@ class SystemState(Base):
 
     key = Column(String(100), primary_key=True)
     value = Column(Text, nullable=False)  # JSON-encoded
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class Notification(Base):
@@ -147,7 +147,7 @@ class Notification(Base):
     type = Column(String(50), nullable=False)  # trade, error, circuit_breaker, etc.
     title = Column(String(200), nullable=False)
     message = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_paper = Column(Boolean, default=False)
 
 
@@ -164,7 +164,21 @@ class RegimeHistory(Base):
     sentiment_category = Column(String(30), nullable=True)
     volatility_level = Column(String(20), nullable=True)
     trend_direction = Column(String(20), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    is_paper = Column(Boolean, default=False)
+
+
+class WeightProfileHistory(Base):
+    """Historical record of AI weight profile selections."""
+
+    __tablename__ = "weight_profile_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    profile_name = Column(String(20), nullable=False)  # trending, ranging, volatile, default
+    confidence = Column(String(10), nullable=False)  # AI confidence 0.0-1.0
+    reasoning = Column(Text, nullable=True)  # AI reasoning
+    market_context = Column(Text, nullable=True)  # JSON with market data
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_paper = Column(Boolean, default=False)
 
 
@@ -184,8 +198,8 @@ class TrailingStop(Base):
     breakeven_triggered = Column(Boolean, default=False)  # True when stop moved to break-even
     is_active = Column(Boolean, default=False)
     is_paper = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     def get_entry_price(self) -> Decimal:
         return Decimal(self.entry_price)
@@ -231,7 +245,7 @@ class RateHistory(Base):
     close_price = Column(String(50), nullable=False)
     volume = Column(String(50), nullable=False)
     is_paper = Column(Boolean, nullable=False, default=False)  # Paper vs live data
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Unique constraint: one candle per symbol/exchange/interval/timestamp/is_paper
     __table_args__ = (
@@ -653,7 +667,7 @@ class Database:
     ) -> list[Order]:
         """Get recent orders."""
         with self.session() as session:
-            cutoff = datetime.utcnow() - timedelta(hours=hours)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
             return (
                 session.query(Order)
                 .filter(Order.symbol == symbol, Order.created_at > cutoff)
@@ -709,7 +723,7 @@ class Database:
     def get_trades_today(self, symbol: str = "BTC-USD") -> list[Trade]:
         """Get all trades from today."""
         with self.session() as session:
-            today = datetime.utcnow().date()
+            today = datetime.now(timezone.utc).date()
             return (
                 session.query(Trade)
                 .filter(
@@ -742,6 +756,37 @@ class Database:
             if symbol:
                 query = query.filter(Trade.symbol == symbol)
             return query.order_by(Trade.executed_at.desc()).limit(limit).all()
+
+    def get_last_trade_by_side(
+        self,
+        side: str,
+        symbol: str = "BTC-USD",
+        is_paper: bool = False,
+    ) -> Optional[Trade]:
+        """
+        Get the most recent trade for a specific side (buy/sell).
+
+        Used for trade cooldown calculations.
+
+        Args:
+            side: Trade side ("buy" or "sell")
+            symbol: Trading pair symbol
+            is_paper: Whether to query paper trades
+
+        Returns:
+            Most recent Trade object for the given side, or None
+        """
+        with self.session() as session:
+            return (
+                session.query(Trade)
+                .filter(
+                    Trade.side == side,
+                    Trade.symbol == symbol,
+                    Trade.is_paper == is_paper,
+                )
+                .order_by(Trade.executed_at.desc())
+                .first()
+            )
 
     def get_last_paper_balance(
         self, symbol: str = "BTC-USD"
@@ -803,6 +848,9 @@ class Database:
                 )
                 session.add(stats)
 
+            # Update starting_balance if provided and not already set (or is "0")
+            if starting_balance is not None and (not stats.starting_balance or stats.starting_balance == "0"):
+                stats.starting_balance = str(starting_balance)
             if starting_price is not None:
                 stats.starting_price = str(starting_price)
             if ending_balance is not None:
@@ -822,7 +870,7 @@ class Database:
 
     def increment_daily_trade_count(self, is_paper: bool = False) -> None:
         """Increment today's trade count by 1 (UTC)."""
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
 
         with self.session() as session:
             stats = (
@@ -833,10 +881,12 @@ class Database:
 
             if not stats:
                 # Create the record if it doesn't exist
+                # starting_balance will be updated when daemon records it
                 stats = DailyStats(
                     date=today,
                     is_paper=is_paper,
                     total_trades=0,
+                    starting_balance="0",  # Placeholder until daemon sets it
                 )
                 session.add(stats)
 
@@ -845,7 +895,7 @@ class Database:
 
     def count_todays_trades(self, is_paper: bool = False, symbol: Optional[str] = None) -> int:
         """Count trades executed today (UTC)."""
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
         today_start = datetime.combine(today, datetime.min.time())
         today_end = datetime.combine(today, datetime.max.time())
 
@@ -861,7 +911,7 @@ class Database:
 
     def get_todays_realized_pnl(self, is_paper: bool = False, symbol: Optional[str] = None) -> Decimal:
         """Sum realized P&L from today's trades (UTC) using SQL aggregation."""
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
         today_start = datetime.combine(today, datetime.min.time())
         today_end = datetime.combine(today, datetime.max.time())
 
@@ -1191,7 +1241,7 @@ class Database:
     ) -> list[RegimeHistory]:
         """Get regime change history for the past N hours."""
         with self.session() as session:
-            cutoff = datetime.utcnow() - timedelta(hours=hours)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
             return (
                 session.query(RegimeHistory)
                 .filter(
@@ -1201,6 +1251,47 @@ class Database:
                 .order_by(RegimeHistory.created_at.desc())
                 .all()
             )
+
+    # Weight profile history methods
+    def record_weight_profile_change(
+        self,
+        profile_name: str,
+        confidence: float,
+        reasoning: str,
+        market_context: dict,
+        is_paper: bool = False,
+    ) -> WeightProfileHistory:
+        """Record an AI weight profile selection."""
+        import json
+
+        with self.session() as session:
+            record = WeightProfileHistory(
+                profile_name=profile_name,
+                confidence=str(confidence),
+                reasoning=reasoning,
+                market_context=json.dumps(market_context),
+                is_paper=is_paper,
+            )
+            session.add(record)
+            session.flush()
+
+            logger.info(
+                "weight_profile_recorded",
+                profile=profile_name,
+                confidence=confidence,
+            )
+            return record
+
+    def get_last_weight_profile(self, is_paper: bool = False) -> Optional[str]:
+        """Get the last recorded weight profile name for session recovery."""
+        with self.session() as session:
+            record = (
+                session.query(WeightProfileHistory)
+                .filter(WeightProfileHistory.is_paper == is_paper)
+                .order_by(WeightProfileHistory.created_at.desc())
+                .first()
+            )
+            return record.profile_name if record else None
 
     # Rate history methods
     def record_rate(

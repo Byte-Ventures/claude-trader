@@ -71,6 +71,12 @@ Update the version BEFORE committing.
 3. Push and create PR to `develop`
 4. After review, merge to `develop`
 5. When ready for release, create PR from `develop` to `main`
+6. **After every PR merge to `main`**, merge `main` back into `develop`:
+   ```bash
+   git fetch origin main
+   git merge origin/main
+   git push origin develop
+   ```
 
 ### Creating PRs to Main
 
