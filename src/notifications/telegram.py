@@ -514,7 +514,7 @@ class TelegramNotifier:
 
             message = (
                 f"{title}\n\n"
-                f"Signal Score: {ctx.get('score', 0)}/100 (threshold: 60)\n"
+                f"Signal Score: {ctx.get('score', 0)}/100 (threshold: {ctx.get('threshold', 60)})\n"
                 f"Price: ¤{ctx.get('price', 0):,.2f}\n"
                 f"📊 Fear & Greed: {ctx.get('fear_greed', 'N/A')} ({ctx.get('fear_greed_class', '')})\n\n"
                 f"<b>Signal Breakdown</b>:\n{breakdown_text}\n\n"
