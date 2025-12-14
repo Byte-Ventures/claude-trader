@@ -273,6 +273,16 @@ class WeightProfileSelector:
             response.raise_for_status()
             data = response.json()
 
+            # Validate response structure
+            if not data.get("choices") or not isinstance(data["choices"], list):
+                raise ValueError("Invalid API response: missing 'choices' array")
+            if len(data["choices"]) == 0:
+                raise ValueError("Invalid API response: empty 'choices' array")
+            if not data["choices"][0].get("message"):
+                raise ValueError("Invalid API response: missing 'message' in choice")
+            if "content" not in data["choices"][0]["message"]:
+                raise ValueError("Invalid API response: missing 'content' in message")
+
             content = data["choices"][0]["message"]["content"]
             result = self._parse_response(content)
 
