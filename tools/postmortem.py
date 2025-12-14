@@ -3,15 +3,15 @@
 Post-mortem analysis script for claude-trader.
 
 Analyzes trades using Claude Code CLI to identify algorithmic weaknesses
-and creates GitHub Discussions with improvement recommendations.
+and creates GitHub issues with improvement recommendations.
 
-Defaults: --paper --last 1 --include-source
+Defaults: --paper --last 1 --include-source --no-issue
 
 Usage:
-    python tools/postmortem.py                       # Analyze last paper trade
-    python tools/postmortem.py --last 5              # Analyze last 5 paper trades
-    python tools/postmortem.py --live --last 3       # Analyze last 3 live trades
-    python tools/postmortem.py --create-discussion   # Create GitHub Discussion
+    python tools/postmortem.py                    # Analyze last paper trade
+    python tools/postmortem.py --last 5           # Analyze last 5 paper trades
+    python tools/postmortem.py --live --last 3    # Analyze last 3 live trades
+    python tools/postmortem.py --create-issue     # Create GitHub issue
 """
 
 import argparse
@@ -108,12 +108,12 @@ def create_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python tools/postmortem.py                       # Analyze last paper trade (default)
-  python tools/postmortem.py --last 5              # Analyze last 5 paper trades
-  python tools/postmortem.py --live --last 3       # Analyze last 3 live trades
-  python tools/postmortem.py --trade-id 42         # Analyze specific trade
-  python tools/postmortem.py --create-discussion   # Create GitHub Discussion with analysis
-  python tools/postmortem.py --no-source           # Don't include source code in prompt
+  python tools/postmortem.py                    # Analyze last paper trade (default)
+  python tools/postmortem.py --last 5           # Analyze last 5 paper trades
+  python tools/postmortem.py --live --last 3    # Analyze last 3 live trades
+  python tools/postmortem.py --trade-id 42      # Analyze specific trade
+  python tools/postmortem.py --create-issue     # Create GitHub issue with analysis
+  python tools/postmortem.py --no-source        # Don't include source code in prompt
         """,
     )
 
@@ -139,33 +139,25 @@ Examples:
         "--end", type=str, help="End date (YYYY-MM-DD) for date range"
     )
     parser.add_argument(
-        "--create-discussion", action="store_true", help="Create GitHub Discussion with analysis"
+        "--create-issue", action="store_true", help="Create GitHub issue with analysis"
     )
     parser.add_argument(
         "--print-context",
         action="store_true",
         help="Print context only without Claude analysis (debug)",
     )
-    # Auto-detect paths: try local first, fallback to production
-    local_db = project_root / "data" / "trading.db"
-    prod_db = Path("/opt/claude-trader/data/trading.db")
-    default_db = local_db if local_db.exists() else prod_db
     parser.add_argument(
         "--db",
         type=str,
-        default=str(default_db),
-        help=f"Database path (default: {default_db})",
+        default="/opt/claude-trader/data/trading.db",
+        help="Database path (default: /opt/claude-trader/data/trading.db)",
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
-    # Source root: try local first, fallback to production
-    local_source = project_root
-    prod_source = Path("/opt/claude-trader")
-    default_source = local_source if (local_source / "src").exists() else prod_source
     parser.add_argument(
         "--source-root",
         type=str,
-        default=str(default_source),
-        help=f"Path to trading bot source code (default: {default_source})",
+        default="/opt/claude-trader",
+        help="Path to trading bot source code (default: /opt/claude-trader)",
     )
     parser.add_argument(
         "--no-source",
@@ -199,7 +191,7 @@ def fetch_trades_with_context(
     Fetch trades and correlate with signals, regime, and whale events.
 
     Signal correlation: Find signal_history where trade_executed=True
-    within 120 seconds before trade.executed_at (accounts for order placement latency).
+    within 60 seconds before trade.executed_at.
     """
     # Build trade query
     query = session.query(Trade).filter(Trade.is_paper == is_paper)
@@ -568,14 +560,10 @@ Focus on patterns that lead to losing trades and missed opportunities.
 
 ## Important Instructions
 
-- You have access to tools. If you need more data, you CAN read the database using sqlite3:
-  ```bash
-  sqlite3 {db_path} "SELECT * FROM signal_history WHERE is_paper={1 if is_paper else 0} ORDER BY timestamp DESC LIMIT 10"
-  ```
+- You have access to tools. If you need more data, you CAN query the database directly.
 - Database location: `{db_path}`
 - Key tables: `trades`, `signal_history`, `regime_history`, `whale_events`, `notifications`, `daily_stats`
-- All tables have `is_paper` column (1=paper, 0=live).
-- You can also read source files at `{source_root}` to understand the algorithm.
+- All tables have `is_paper` column to filter paper vs live trades (is_paper={'1' if is_paper else '0'}).
 - Provide concrete, actionable recommendations.
 - End with a summary of your top 3 recommendations.
 
@@ -596,17 +584,14 @@ def invoke_claude(prompt: str, verbose: bool = False) -> str:
     """
     Invoke Claude CLI for trade analysis.
 
-    Uses --allowedTools to permit database queries and file reads without prompts.
+    Runs WITHOUT --print flag so Claude can use tools (read files, query database).
     """
     if verbose:
         print(f"[INFO] Sending {len(prompt)} chars to Claude...")
         print("[INFO] Claude will have tool access - may take longer...")
 
     result = subprocess.run(
-        [
-            "claude", "-p", prompt,
-            "--allowedTools", "Bash(sqlite3:*)", "Read", "Grep", "Glob",
-        ],
+        ["claude", "-p", prompt, "--tools", "default"],
         capture_output=True,
         text=True,
         timeout=900,  # 15 minute timeout (tools take longer)
@@ -618,132 +603,34 @@ def invoke_claude(prompt: str, verbose: bool = False) -> str:
     return result.stdout
 
 
-def get_discussion_ids(verbose: bool = False) -> tuple[str, str]:
-    """Fetch repository ID and Post-Mortems category ID from current repo."""
-    import json
-
-    if verbose:
-        print("[INFO] Fetching repository and category IDs...")
-
-    # Get repo owner/name from git remote
-    result = subprocess.run(
-        ["gh", "repo", "view", "--json", "owner,name"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to get repo info: {result.stderr}")
-
-    repo_info = json.loads(result.stdout)
-    owner = repo_info["owner"]["login"]
-    name = repo_info["name"]
-
-    # Fetch repo ID and category ID via GraphQL
-    query = f'''
-    query {{
-      repository(owner: "{owner}", name: "{name}") {{
-        id
-        discussionCategories(first: 20) {{
-          nodes {{
-            id
-            name
-            slug
-          }}
-        }}
-      }}
-    }}
-    '''
-
-    result = subprocess.run(
-        ["gh", "api", "graphql", "-f", f"query={query}"],
-        capture_output=True,
-        text=True,
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to fetch discussion categories: {result.stderr}")
-
-    response = json.loads(result.stdout)
-    if "errors" in response:
-        raise RuntimeError(f"GraphQL error: {response['errors']}")
-
-    repo_id = response["data"]["repository"]["id"]
-    categories = response["data"]["repository"]["discussionCategories"]["nodes"]
-
-    # Find Post-Mortems category
-    category_id = None
-    for cat in categories:
-        if cat["slug"] == "post-mortems":
-            category_id = cat["id"]
-            break
-
-    if not category_id:
-        raise RuntimeError(
-            "Post-Mortems category not found. "
-            "Create it in Settings → Discussions → New Category"
-        )
-
-    return repo_id, category_id
-
-
-def create_github_discussion(
+def create_github_issue(
     title: str,
     body: str,
+    labels: list[str],
     verbose: bool = False,
 ) -> str:
-    """Create GitHub Discussion using GraphQL API. Returns discussion URL."""
-    import json
-
+    """Create GitHub issue using gh CLI. Returns issue URL."""
     if verbose:
-        print(f"[INFO] Creating GitHub Discussion: {title}")
+        print(f"[INFO] Creating GitHub issue: {title}")
 
-    repo_id, category_id = get_discussion_ids(verbose)
+    cmd = ["gh", "issue", "create", "--title", title, "--body", body]
+    for label in labels:
+        cmd.extend(["--label", label])
 
-    # Use GraphQL variables for proper escaping (prevents injection)
-    query = """
-    mutation CreateDiscussion($repoId: ID!, $categoryId: ID!, $title: String!, $body: String!) {
-      createDiscussion(input: {
-        repositoryId: $repoId,
-        categoryId: $categoryId,
-        title: $title,
-        body: $body
-      }) {
-        discussion {
-          url
-        }
-      }
-    }
-    """
-
-    result = subprocess.run(
-        [
-            "gh", "api", "graphql",
-            "-f", f"query={query}",
-            "-F", f"repoId={repo_id}",
-            "-F", f"categoryId={category_id}",
-            "-F", f"title={title}",
-            "-F", f"body={body}",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
-        raise RuntimeError(f"GitHub Discussion creation failed: {result.stderr}")
+        raise RuntimeError(f"GitHub issue creation failed: {result.stderr}")
 
-    response = json.loads(result.stdout)
-    if "errors" in response:
-        raise RuntimeError(f"GraphQL error: {response['errors']}")
-
-    return response["data"]["createDiscussion"]["discussion"]["url"]
+    return result.stdout.strip()
 
 
-def format_discussion_body(
+def format_issue_body(
     trades: list[TradeContext],
     analysis: str,
     is_paper: bool,
 ) -> str:
-    """Format the GitHub Discussion body."""
+    """Format the GitHub issue body."""
     mode = "PAPER" if is_paper else "LIVE"
 
     # Calculate summary stats
@@ -797,17 +684,8 @@ def main() -> int:
     # Determine mode (paper is default, --live overrides)
     is_paper = not args.live
 
-    # Validate database path BEFORE resolving (prevents symlink bypass)
-    if ".." in args.db:
-        print(f"[ERROR] Invalid database path: {args.db}")
-        print("[HINT] Path traversal (..) not allowed")
-        return 1
-
-    db_path = Path(args.db).resolve()  # Now safe to resolve
-    if not db_path.is_absolute():
-        print(f"[ERROR] Invalid database path: {args.db}")
-        print("[HINT] Use absolute paths")
-        return 1
+    # Check database exists
+    db_path = Path(args.db)
     if not db_path.exists():
         print(f"[ERROR] Database not found: {db_path}")
         return 1
@@ -818,22 +696,13 @@ def main() -> int:
     session = get_session(str(db_path))
 
     try:
-        # Parse and validate date range
+        # Parse date range if provided
         start_date = None
         end_date = None
-        try:
-            if args.start:
-                start_date = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
-            if args.end:
-                end_date = datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc)
-
-            if start_date and end_date and end_date < start_date:
-                print("[ERROR] End date must be after start date")
-                return 1
-        except ValueError as e:
-            print(f"[ERROR] Invalid date format: {e}")
-            print("[HINT] Use YYYY-MM-DD format (e.g., 2024-12-01)")
-            return 1
+        if args.start:
+            start_date = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
+        if args.end:
+            end_date = datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc)
 
         # Determine limit (default: 1 trade)
         limit = args.last if args.last else (None if args.start else 1)
@@ -885,30 +754,37 @@ def main() -> int:
         print("=" * 60)
         print(analysis)
 
-        # Create GitHub Discussion
-        if args.create_discussion:
-            print("\n[INFO] Creating GitHub Discussion...")
+        # Create GitHub issue
+        if args.create_issue:
+            print("\n[INFO] Creating GitHub issue...")
 
             date_str = trades[0].executed_at.strftime("%Y-%m-%d")
             title = f"[Post-Mortem] {mode.title()} Trade Analysis - {date_str}"
 
-            body = format_discussion_body(trades, analysis, is_paper)
+            body = format_issue_body(trades, analysis, is_paper)
 
             try:
-                discussion_url = create_github_discussion(
+                labels = ["post-mortem", "algorithm"]
+                if is_paper:
+                    labels.append("paper")
+                else:
+                    labels.append("live")
+
+                issue_url = create_github_issue(
                     title=title,
                     body=body,
+                    labels=labels,
                     verbose=args.verbose,
                 )
-                print(f"[SUCCESS] GitHub Discussion created: {discussion_url}")
+                print(f"[SUCCESS] GitHub issue created: {issue_url}")
             except Exception as e:
-                print(f"[WARNING] Failed to create GitHub Discussion: {e}")
-                print("[INFO] Analysis completed but discussion not created")
+                print(f"[WARNING] Failed to create GitHub issue: {e}")
+                print("[INFO] Analysis completed but issue not created")
 
         return 0
 
     except subprocess.TimeoutExpired:
-        print("[ERROR] Claude CLI timed out after 15 minutes")
+        print("[ERROR] Claude CLI timed out after 10 minutes")
         return 1
     except FileNotFoundError as e:
         if "claude" in str(e):

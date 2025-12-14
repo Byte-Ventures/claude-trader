@@ -268,16 +268,6 @@ class PositionSizer:
                 min_pct=self.config.min_take_profit_percent,
             )
 
-        # Calculate and log R:R ratio
-        rr_ratio = float(tp_distance / stop_distance) if stop_distance > 0 else 0
-        if rr_ratio < 1.0 and result.size_quote > 0:
-            logger.warning(
-                "unfavorable_risk_reward_ratio",
-                rr_ratio=f"{rr_ratio:.2f}",
-                tp_distance=str(tp_distance),
-                stop_distance=str(stop_distance),
-            )
-
         logger.debug(
             "position_size_calculated",
             size_base=str(result.size_base),
@@ -287,7 +277,6 @@ class PositionSizer:
             atr=str(atr_decimal),
             stop_distance=str(stop_distance),
             tp_distance=str(tp_distance),
-            risk_reward_ratio=f"{rr_ratio:.2f}",
             stop_method="min_pct" if used_min_stop_pct else "atr",
             tp_method="min_pct" if used_min_tp_pct else "atr",
             volatility_mult=volatility_multiplier,
