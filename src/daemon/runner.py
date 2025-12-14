@@ -344,12 +344,8 @@ class TradingDaemon:
 
         # Check postmortem requirements if enabled
         self._postmortem_available = False
-        self._postmortem_executor: Optional[ThreadPoolExecutor] = None
         if settings.postmortem_enabled:
             self._postmortem_available = self._check_postmortem_requirements()
-            if self._postmortem_available:
-                # Single-worker executor prevents resource exhaustion
-                self._postmortem_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="postmortem")
 
         # Register shutdown handlers
         signal.signal(signal.SIGTERM, self._handle_shutdown)
@@ -870,12 +866,12 @@ class TradingDaemon:
         Run post-mortem analysis asynchronously after a trade.
 
         Spawns a background thread to run the postmortem script without blocking trading.
-        Only runs if postmortem_enabled is True in settings.
+        Only runs if postmortem is enabled AND Claude CLI is available.
 
         Args:
             trade_id: Optional specific trade ID. If None, analyzes the last trade.
         """
-        if not self.settings.postmortem_enabled:
+        if not self.settings.postmortem_enabled or not self._postmortem_available:
             return
 
         def run_postmortem():
