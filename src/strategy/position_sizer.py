@@ -191,8 +191,11 @@ class PositionSizer:
             max_additional_base = max_position_base - base_balance
             if max_additional_base <= 0:
                 # Already at or above position limit
-                logger.debug(
-                    "buy_size_zero_at_position_limit",
+                current_position_pct = float(base_balance * current_price / total_value * 100)
+                logger.info(
+                    "buy_blocked_at_position_limit",
+                    current_position_pct=f"{current_position_pct:.1f}%",
+                    max_position_pct=f"{self.config.max_position_percent:.1f}%",
                     base_balance=str(base_balance),
                     max_position_base=str(max_position_base),
                 )
@@ -207,6 +210,13 @@ class PositionSizer:
         # Step 8: Ensure minimum trade size
         size_quote = size_base * current_price
         if size_quote < Decimal(str(self.config.min_trade_quote)):
+            logger.info(
+                "position_size_below_minimum",
+                size_quote=str(size_quote),
+                min_trade_quote=self.config.min_trade_quote,
+                size_base=str(size_base),
+                safety_multiplier=safety_multiplier,
+            )
             return self._zero_result(current_price, side)
 
         # Calculate stop-loss and take-profit prices

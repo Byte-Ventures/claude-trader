@@ -1043,6 +1043,8 @@ class TradingDaemon:
                                 review_type=review_type,
                                 position_percent=position_percent,
                                 candles=candles,
+                                quote_balance=quote_balance,
+                                base_balance=base_balance,
                             ),
                             timeout=ASYNC_TIMEOUT_SECONDS,
                         )
@@ -1237,6 +1239,14 @@ class TradingDaemon:
 
         if position.size_quote < Decimal("10"):
             logger.info("buy_skipped", reason="position_too_small", size_quote=str(position.size_quote))
+            self.notifier.notify_trade_rejected(
+                side="buy",
+                reason="Position too small (< $10)",
+                price=current_price,
+                signal_score=signal_score,
+                size_quote=position.size_quote,
+                is_paper=self.settings.is_paper_trading,
+            )
             return
 
         # Validate order
@@ -1451,6 +1461,14 @@ class TradingDaemon:
         min_base = Decimal(str(self.position_sizer.config.min_trade_base))
         if size_base < min_base:
             logger.info("sell_skipped", reason="position_too_small", size_base=str(size_base), min_base=str(min_base))
+            self.notifier.notify_trade_rejected(
+                side="sell",
+                reason=f"Position too small (< {min_base} BTC)",
+                price=current_price,
+                signal_score=signal_score,
+                size_quote=size_base * current_price,
+                is_paper=self.settings.is_paper_trading,
+            )
             return
 
         # Validate order

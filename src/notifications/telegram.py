@@ -610,11 +610,35 @@ class TelegramNotifier:
             else:
                 outcome = "ℹ️ <b>TRADE PROCEEDS (INFO ONLY)</b>"
 
+            # Build portfolio section if balances available
+            portfolio_section = ""
+            quote_balance = ctx.get('quote_balance')
+            base_balance = ctx.get('base_balance')
+            portfolio_value = ctx.get('portfolio_value')
+            position_pct = ctx.get('position_percent', 0)
+
+            if quote_balance is not None and base_balance is not None:
+                # Parse trading pair to get currency symbols
+                trading_pair = ctx.get('trading_pair', 'BTC-USD')
+                parts = trading_pair.split('-')
+                base_symbol = parts[0] if len(parts) >= 1 else 'BTC'
+                quote_symbol = parts[1] if len(parts) >= 2 else 'USD'
+
+                portfolio_section = (
+                    f"\n<b>Portfolio</b>:\n"
+                    f"  💰 Available: ¤{quote_balance:,.2f} {quote_symbol}\n"
+                    f"  ₿ Holdings: {base_balance:.6f} {base_symbol}\n"
+                    f"  📊 Position: {position_pct:.1f}% of portfolio\n"
+                )
+                if portfolio_value is not None:
+                    portfolio_section += f"  💼 Total Value: ¤{portfolio_value:,.2f}\n"
+
             message = (
                 f"🤖 <b>Multi-Agent Trade Review</b>\n\n"
                 f"📊 <b>Trade</b>: {action} @ ¤{ctx.get('price', 0):,.2f}\n"
                 f"Signal Score: {ctx.get('score', 0)}/100\n"
-                f"Fear & Greed: {ctx.get('fear_greed', 'N/A')} ({ctx.get('fear_greed_class', '')})\n\n"
+                f"Fear & Greed: {ctx.get('fear_greed', 'N/A')} ({ctx.get('fear_greed_class', '')})"
+                f"{portfolio_section}\n"
                 f"<b>Agent Reviews</b>:\n{agents_text}\n\n"
                 f"<b>━━━ Judge Decision ━━━</b>\n"
                 f"{judge_decision_text} ({review.judge_confidence*100:.0f}% confidence)\n"

@@ -357,17 +357,30 @@ Choose the best profile for these conditions."""
     def _parse_response(self, content: str) -> dict:
         """Parse AI response to extract profile selection."""
         import json
+        import re
+
+        # Clean content - strip markdown code blocks if present
+        cleaned = content.strip()
+        # Handle ```json ... ``` or ``` ... ```
+        code_block_match = re.search(r'```(?:json)?\s*(.*?)\s*```', cleaned, re.DOTALL)
+        if code_block_match:
+            cleaned = code_block_match.group(1).strip()
 
         # Try direct JSON parse
         try:
-            data = json.loads(content.strip())
+            data = json.loads(cleaned)
         except json.JSONDecodeError:
             # Try to extract JSON from text
-            start = content.find("{")
-            end = content.rfind("}") + 1
+            start = cleaned.find("{")
+            end = cleaned.rfind("}") + 1
             if start >= 0 and end > start:
-                data = json.loads(content[start:end])
+                data = json.loads(cleaned[start:end])
             else:
+                # Log the problematic response for debugging
+                logger.warning(
+                    "json_parse_failed",
+                    content_preview=content[:200] if len(content) > 200 else content,
+                )
                 raise ValueError("No valid JSON in response")
 
         # Validate profile name
