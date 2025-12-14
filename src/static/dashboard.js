@@ -2,6 +2,7 @@
 
 let chart = null;
 let candleSeries = null;
+let priceLine = null;
 let performanceChart = null;
 let portfolioSeries = null;
 let btcSeries = null;
@@ -64,6 +65,16 @@ function initChart() {
         },
     });
 
+    // Add price line series FIRST (renders behind candles)
+    priceLine = chart.addLineSeries({
+        color: 'rgba(16, 185, 129, 0.6)',  // Default green, updated with data
+        lineWidth: 2,
+        crosshairMarkerVisible: false,
+        lastValueVisible: false,
+        priceLineVisible: false,
+    });
+
+    // Add candlestick series SECOND (renders in front)
     candleSeries = chart.addCandlestickSeries({
         upColor: '#10b981',
         downColor: '#ef4444',
@@ -84,6 +95,19 @@ function initChart() {
             performanceChart.applyOptions({ width: perfContainer.clientWidth });
         }
     });
+}
+
+// Get price line color based on price direction
+function getPriceLineColor(data) {
+    if (!data || data.length < 2) return 'rgba(16, 185, 129, 0.6)';
+
+    const firstPrice = data[0].close;
+    const lastPrice = data[data.length - 1].close;
+
+    // Green if price went up or stayed same, red if went down
+    return firstPrice <= lastPrice
+        ? 'rgba(16, 185, 129, 0.6)'   // Green (up or same)
+        : 'rgba(239, 68, 68, 0.6)';   // Red (down)
 }
 
 // Initialize Performance Chart
@@ -160,6 +184,11 @@ async function loadInitialData() {
                 });
             if (chartData.length > 0) {
                 candleSeries.setData(chartData);
+
+                // Set price line data and color based on price direction
+                const lineData = chartData.map(c => ({ time: c.time, value: c.close }));
+                priceLine.setData(lineData);
+                priceLine.applyOptions({ color: getPriceLineColor(chartData) });
             }
         }
 
@@ -329,6 +358,11 @@ function updateDashboard(state) {
                 low: price,
                 close: price,
             });
+
+            // Update price line with same data point
+            if (priceLine) {
+                priceLine.update({ time: time, value: price });
+            }
         }
     }
 
