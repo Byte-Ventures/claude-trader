@@ -172,6 +172,7 @@ class TradingDaemon:
                 market_research_cache_minutes=settings.market_research_cache_minutes,
                 candle_interval=settings.candle_interval,
                 signal_threshold=settings.signal_threshold,
+                max_tokens=settings.ai_max_tokens,
             )
             logger.info(
                 "multi_agent_trade_reviewer_initialized",
@@ -307,6 +308,7 @@ class TradingDaemon:
                     cache_minutes=self._get_candle_interval_minutes(),
                     fallback_profile=settings.ai_weight_fallback_profile,
                     model=settings.ai_weight_profile_model,
+                    max_tokens=settings.ai_max_tokens,
                 ),
             )
             # Restore last weight profile from database

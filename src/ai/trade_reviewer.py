@@ -491,6 +491,7 @@ class TradeReviewer:
         market_research_cache_minutes: int = 15,
         candle_interval: str = "ONE_HOUR",
         signal_threshold: int = 60,
+        max_tokens: int = 4000,
     ):
         """
         Initialize multi-agent trade reviewer.
@@ -510,6 +511,7 @@ class TradeReviewer:
             ai_web_search_enabled: Allow AI models to search web during analysis
             market_research_cache_minutes: Cache duration for research data
             candle_interval: Candle timeframe for determining trading style
+            max_tokens: Maximum tokens for AI API responses
         """
         self.api_key = api_key
         self.db = db
@@ -525,6 +527,7 @@ class TradeReviewer:
         self.ai_web_search_enabled = ai_web_search_enabled
         self.candle_interval = candle_interval
         self.signal_threshold = signal_threshold
+        self.max_tokens = max_tokens
 
         # Set cache TTL for market research
         set_cache_ttl(market_research_cache_minutes)
@@ -1434,7 +1437,7 @@ Based on these three perspectives, provide the final market outlook."""
 
         request_body = {
             "model": model,
-            "max_tokens": 500,
+            "max_tokens": self.max_tokens,
             "messages": messages,
         }
 

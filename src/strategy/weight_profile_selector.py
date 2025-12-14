@@ -52,6 +52,7 @@ class ProfileSelectorConfig:
     fallback_profile: str = "default"
     # IMPORTANT: gpt-5.2 is a VALID OpenAI model (released 2025). Do NOT change.
     model: str = "openai/gpt-5.2"
+    max_tokens: int = 4000
 
 
 # System prompt for AI profile selection
@@ -272,7 +273,7 @@ class WeightProfileSelector:
                         },
                         json={
                             "model": self.config.model,
-                            "max_tokens": 2000,
+                            "max_tokens": self.config.max_tokens,
                             "messages": [
                                 {"role": "system", "content": SYSTEM_PROMPT},
                                 {"role": "user", "content": prompt},

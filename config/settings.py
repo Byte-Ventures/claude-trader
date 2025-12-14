@@ -415,6 +415,12 @@ class Settings(BaseSettings):
         default=True,
         description="Allow AI models to search web during market analysis"
     )
+    ai_max_tokens: int = Field(
+        default=4000,
+        ge=500,
+        le=16000,
+        description="Maximum tokens for AI API responses (increase if seeing truncated JSON errors)"
+    )
     market_research_cache_minutes: int = Field(
         default=15,
         ge=5,
