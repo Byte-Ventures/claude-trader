@@ -239,6 +239,12 @@ class Settings(BaseSettings):
         le=10.0,
         description="Take profit distance as ATR multiple"
     )
+    min_take_profit_percent: float = Field(
+        default=2.0,
+        ge=0.5,
+        le=10.0,
+        description="Minimum take profit distance as percentage above entry (safety floor)"
+    )
     trailing_stop_atr_multiplier: float = Field(
         default=1.0,
         ge=0.5,
@@ -534,6 +540,16 @@ class Settings(BaseSettings):
         ge=1024,
         le=65535,
         description="Dashboard web server port"
+    )
+
+    # Post-Mortem Analysis (automated trade analysis using Claude CLI)
+    postmortem_enabled: bool = Field(
+        default=False,
+        description="Enable automatic post-mortem analysis after trades (requires Claude CLI)"
+    )
+    postmortem_create_discussion: bool = Field(
+        default=False,
+        description="Create GitHub Discussion with analysis (requires gh CLI and Post-Mortems category)"
     )
 
     @field_validator("ema_slow")

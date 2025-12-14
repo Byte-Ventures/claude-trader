@@ -12,9 +12,12 @@ Orchestrates all components:
 import asyncio
 import math
 import signal
+import subprocess
 import time
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from threading import Event
 from typing import Optional, Union
 
@@ -280,6 +283,7 @@ class TradingDaemon:
                 max_position_percent=settings.position_size_percent,
                 stop_loss_atr_multiplier=settings.stop_loss_atr_multiplier,
                 min_stop_loss_percent=settings.min_stop_loss_percent,
+                min_take_profit_percent=settings.min_take_profit_percent,
             ),
             atr_period=settings.atr_period,
             take_profit_atr_multiplier=settings.take_profit_atr_multiplier,
@@ -339,6 +343,15 @@ class TradingDaemon:
         self._ai_recommendation_time: Optional[datetime] = None
         self._ai_recommendation_ttl_minutes: int = settings.ai_recommendation_ttl_minutes
 
+        # Check postmortem requirements if enabled
+        self._postmortem_available = False
+        self._postmortem_executor: Optional[ThreadPoolExecutor] = None
+        if settings.postmortem_enabled:
+            self._postmortem_available = self._check_postmortem_requirements()
+            if self._postmortem_available:
+                # Single-worker executor prevents resource exhaustion
+                self._postmortem_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="postmortem")
+
         # Register shutdown handlers
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -346,6 +359,43 @@ class TradingDaemon:
         # Register SIGUSR2 for config hot-reload
         signal.signal(signal.SIGUSR2, self._handle_reload_signal)
         logger.info("config_reload_signal_registered", signal="SIGUSR2")
+
+    def _check_postmortem_requirements(self) -> bool:
+        """
+        Check if postmortem analysis requirements are met.
+
+        Returns True if Claude CLI is accessible, False otherwise.
+        Logs warnings if requirements are not met.
+        """
+        try:
+            result = subprocess.run(
+                ["claude", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                logger.info("postmortem_claude_cli_available", version=result.stdout.strip())
+                return True
+            else:
+                logger.warning(
+                    "postmortem_claude_cli_error",
+                    error="Claude CLI returned non-zero exit code",
+                    stderr=result.stderr[:200] if result.stderr else None,
+                )
+                return False
+        except FileNotFoundError:
+            logger.warning(
+                "postmortem_disabled_claude_not_found",
+                hint="Install Claude CLI or disable POSTMORTEM_ENABLED",
+            )
+            return False
+        except subprocess.TimeoutExpired:
+            logger.warning("postmortem_disabled_claude_timeout")
+            return False
+        except Exception as e:
+            logger.warning("postmortem_disabled_error", error=str(e))
+            return False
 
     def _run_async_with_timeout(self, coro, timeout: int = ASYNC_TIMEOUT_SECONDS, default=None):
         """
@@ -540,6 +590,7 @@ class TradingDaemon:
                 take_profit_atr_multiplier=new_settings.take_profit_atr_multiplier,
                 atr_period=new_settings.atr_period,
                 min_stop_loss_percent=new_settings.min_stop_loss_percent,
+                min_take_profit_percent=new_settings.min_take_profit_percent,
             )
 
             # Update OrderValidator
@@ -814,6 +865,80 @@ class TradingDaemon:
         except SQLAlchemyError as e:
             # Non-critical - don't block trading for history update
             logger.warning("signal_history_trade_flag_update_failed", error=str(e))
+
+    def _run_postmortem_async(self, trade_id: Optional[int] = None) -> None:
+        """
+        Run post-mortem analysis asynchronously after a trade.
+
+        Spawns a background thread to run the postmortem script without blocking trading.
+        Only runs if postmortem is enabled AND Claude CLI is available.
+
+        Args:
+            trade_id: Optional specific trade ID. If None, analyzes the last trade.
+        """
+        if not self.settings.postmortem_enabled or not self._postmortem_available:
+            return
+
+        # Validate trade_id type (defense-in-depth against injection)
+        if trade_id is not None and not isinstance(trade_id, int):
+            logger.error("postmortem_invalid_trade_id_type", trade_id_type=type(trade_id).__name__)
+            return
+
+        def run_postmortem():
+            try:
+                # Build command
+                script_path = Path(__file__).parent.parent.parent / "tools" / "postmortem.py"
+                cmd = ["python3", str(script_path)]
+
+                # Add mode flag
+                if self.settings.is_paper_trading:
+                    cmd.append("--paper")
+                else:
+                    cmd.append("--live")
+
+                # Add trade selection
+                if trade_id:
+                    cmd.extend(["--trade-id", str(trade_id)])
+                else:
+                    cmd.extend(["--last", "1"])
+
+                # Add discussion flag if enabled
+                if self.settings.postmortem_create_discussion:
+                    cmd.append("--create-discussion")
+
+                logger.info("postmortem_starting", cmd=" ".join(cmd))
+
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=900,  # 15 minute timeout
+                )
+
+                if result.returncode == 0:
+                    logger.info("postmortem_completed")
+                    # Notify via Telegram if we created a discussion
+                    if self.settings.postmortem_create_discussion and "GitHub Discussion created" in result.stdout:
+                        # Extract URL from output
+                        for line in result.stdout.split("\n"):
+                            if "github.com" in line and "discussions" in line:
+                                self.notifier.send_message(f"📊 Post-mortem analysis: {line.strip()}")
+                                break
+                else:
+                    logger.warning(
+                        "postmortem_failed",
+                        returncode=result.returncode,
+                        stderr=result.stderr[:500] if result.stderr else None,
+                    )
+
+            except subprocess.TimeoutExpired:
+                logger.warning("postmortem_timeout")
+            except Exception as e:
+                logger.warning("postmortem_error", error=str(e))
+
+        # Submit to executor (single-worker prevents resource exhaustion)
+        if self._postmortem_executor:
+            self._postmortem_executor.submit(run_postmortem)
 
     def run(self) -> None:
         """Run the main trading loop."""
@@ -1808,6 +1933,9 @@ class TradingDaemon:
 
             # Mark signal history as having resulted in trade (for post-mortem analysis)
             self._mark_signal_trade_executed(self._current_signal_id)
+
+            # Run post-mortem analysis asynchronously (if enabled)
+            self._run_postmortem_async()
         else:
             logger.error("buy_failed", error=result.error)
             self.circuit_breaker.record_order_failure()
@@ -1992,6 +2120,9 @@ class TradingDaemon:
 
             # Mark signal history as having resulted in trade (for post-mortem analysis)
             self._mark_signal_trade_executed(self._current_signal_id)
+
+            # Run post-mortem analysis asynchronously (if enabled)
+            self._run_postmortem_async()
         else:
             logger.error("sell_failed", error=result.error)
             self.circuit_breaker.record_order_failure()
@@ -2880,6 +3011,14 @@ class TradingDaemon:
             )
         except Exception as e:
             logger.error("shutdown_state_save_failed", error=str(e))
+
+        # Shutdown postmortem executor if active
+        if self._postmortem_executor:
+            try:
+                self._postmortem_executor.shutdown(wait=False)
+                logger.debug("postmortem_executor_shutdown")
+            except Exception as e:
+                logger.debug("postmortem_executor_shutdown_failed", error=str(e))
 
         # Close the async event loop
         try:
