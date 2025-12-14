@@ -264,7 +264,7 @@ class WeightProfileSelector:
                     },
                     json={
                         "model": self.config.model,
-                        "max_tokens": 200,
+                        "max_tokens": 2000,
                         "messages": [
                             {"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user", "content": prompt},
