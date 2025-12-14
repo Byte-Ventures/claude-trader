@@ -596,14 +596,17 @@ def invoke_claude(prompt: str, verbose: bool = False) -> str:
     """
     Invoke Claude CLI for trade analysis.
 
-    Runs WITHOUT --print flag so Claude can use tools (read files, query database).
+    Uses --allowedTools to permit database queries and file reads without prompts.
     """
     if verbose:
         print(f"[INFO] Sending {len(prompt)} chars to Claude...")
         print("[INFO] Claude will have tool access - may take longer...")
 
     result = subprocess.run(
-        ["claude", "-p", prompt, "--tools", "default"],
+        [
+            "claude", "-p", prompt,
+            "--allowedTools", "Bash(sqlite3:*)", "Read", "Grep", "Glob",
+        ],
         capture_output=True,
         text=True,
         timeout=900,  # 15 minute timeout (tools take longer)
