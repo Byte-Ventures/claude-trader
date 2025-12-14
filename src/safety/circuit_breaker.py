@@ -11,7 +11,7 @@ Multi-level status: GREEN, YELLOW, RED, BLACK
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 from typing import Callable, Optional
 
@@ -211,7 +211,7 @@ class CircuitBreaker:
 
     def _check_cooldown_expiry(self) -> None:
         """Check if cooldown has expired and reset if so."""
-        if self._cooldown_until and datetime.now() >= self._cooldown_until:
+        if self._cooldown_until and datetime.now(timezone.utc) >= self._cooldown_until:
             if self._level == BreakerLevel.RED:
                 self._reset_to_green("Cooldown expired")
             elif self._level == BreakerLevel.YELLOW:
@@ -220,7 +220,7 @@ class CircuitBreaker:
         # Check for BLACK state auto-recovery (if configured)
         if self._level == BreakerLevel.BLACK and self.config.black_recovery_hours:
             if self._triggered_at:
-                hours_since = (datetime.now() - self._triggered_at).total_seconds() / 3600
+                hours_since = (datetime.now(timezone.utc) - self._triggered_at).total_seconds() / 3600
                 if hours_since >= self.config.black_recovery_hours:
                     logger.info(
                         "circuit_breaker_black_auto_recovery",
@@ -230,7 +230,7 @@ class CircuitBreaker:
                     # Downgrade to RED (which will then auto-recover to GREEN after cooldown)
                     self._level = BreakerLevel.RED
                     self._reason = f"Auto-recovery from BLACK after {self.config.black_recovery_hours}h"
-                    self._cooldown_until = datetime.now() + timedelta(
+                    self._cooldown_until = datetime.now(timezone.utc) + timedelta(
                         seconds=self.config.red_cooldown
                     )
 
@@ -269,15 +269,15 @@ class CircuitBreaker:
 
         self._level = level
         self._reason = reason
-        self._triggered_at = datetime.now()
+        self._triggered_at = datetime.now(timezone.utc)
 
         # Set cooldown based on level
         if level == BreakerLevel.YELLOW:
-            self._cooldown_until = datetime.now() + timedelta(
+            self._cooldown_until = datetime.now(timezone.utc) + timedelta(
                 seconds=self.config.yellow_cooldown
             )
         elif level == BreakerLevel.RED:
-            self._cooldown_until = datetime.now() + timedelta(
+            self._cooldown_until = datetime.now(timezone.utc) + timedelta(
                 seconds=self.config.red_cooldown
             )
         else:  # BLACK - no auto cooldown
@@ -304,7 +304,7 @@ class CircuitBreaker:
         Args:
             price: Current price
         """
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         self._price_history.append((now, price))
         self._price_history_24h.append((now, price))
         self._price_history_rapid.append((now, price))

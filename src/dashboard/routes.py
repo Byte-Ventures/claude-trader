@@ -256,13 +256,13 @@ async def get_performance(
     request: Request,
     days: int = Query(default=30, ge=1, le=365),
 ) -> list[dict]:
-    """Get daily performance stats for charting."""
-    from datetime import date, timedelta
+    """Get daily performance stats for charting (UTC)."""
+    from datetime import datetime, timedelta, timezone
 
     settings = get_settings()
     db = get_db()
 
-    end_date = date.today()
+    end_date = datetime.now(timezone.utc).date()
     start_date = end_date - timedelta(days=days)
 
     stats = db.get_daily_stats_range(

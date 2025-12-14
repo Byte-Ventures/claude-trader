@@ -388,7 +388,7 @@ def test_daily_stats_paper_live_separation(db):
     """
     CRITICAL: Verify paper and live daily stats remain separated.
     """
-    today = date.today()
+    today = datetime.now(timezone.utc).date()
 
     # Update live stats
     db.update_daily_stats(
@@ -421,7 +421,7 @@ def test_daily_stats_paper_live_separation(db):
 
 def test_daily_stats_create_if_not_exists(db):
     """Test that update_daily_stats creates record if it doesn't exist."""
-    today = date.today()
+    today = datetime.now(timezone.utc).date()
 
     db.update_daily_stats(
         starting_balance=Decimal("10000"),
@@ -435,7 +435,7 @@ def test_daily_stats_create_if_not_exists(db):
 
 def test_daily_stats_update_existing(db):
     """Test updating existing daily stats record."""
-    today = date.today()
+    today = datetime.now(timezone.utc).date()
 
     # Create initial stats
     db.update_daily_stats(
@@ -464,8 +464,9 @@ def test_get_daily_stats_range(db):
     # Create stats for each day
     for i in range(5):
         target_date = start + timedelta(days=i)
-        with patch('src.state.database.date') as mock_date:
-            mock_date.today.return_value = target_date
+        mock_now = datetime(target_date.year, target_date.month, target_date.day, tzinfo=timezone.utc)
+        with patch('src.state.database.datetime') as mock_datetime:
+            mock_datetime.now.return_value = mock_now
             db.update_daily_stats(
                 starting_balance=Decimal("10000"),
                 total_trades=i,

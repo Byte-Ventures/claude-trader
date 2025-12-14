@@ -789,7 +789,7 @@ class TradingDaemon:
 
         # Check if there's meaningful room to buy (at least 1% of portfolio or min_trade_quote)
         # This prevents running AI review when position is nearly at limit
-        available_room_pct = max_position_pct - position_percent
+        available_room_pct = float(max_position_pct) - position_percent
         min_room_pct = max(1.0, float(min_quote / portfolio_value * 100)) if portfolio_value > 0 else 1.0
         has_room = available_room_pct >= min_room_pct
         can_buy = quote_balance > min_quote and has_room
@@ -1831,8 +1831,8 @@ class TradingDaemon:
         return quote_balance + base_value
 
     def _check_daily_report(self) -> None:
-        """Check if we should generate daily performance report."""
-        today = date.today()
+        """Check if we should generate daily performance report (UTC)."""
+        today = datetime.now(timezone.utc).date()
 
         # Only report once per day
         if self._last_daily_report == today:
@@ -1917,10 +1917,10 @@ class TradingDaemon:
         )
 
     def _check_weekly_report(self) -> None:
-        """Check if we should generate weekly performance report (on Mondays)."""
+        """Check if we should generate weekly performance report (on Mondays, UTC)."""
         from datetime import timedelta
 
-        today = date.today()
+        today = datetime.now(timezone.utc).date()
 
         # Only on Mondays
         if today.weekday() != 0:
@@ -1938,10 +1938,10 @@ class TradingDaemon:
         self._last_weekly_report = today
 
     def _check_monthly_report(self) -> None:
-        """Check if we should generate monthly performance report (on 1st of month)."""
+        """Check if we should generate monthly performance report (on 1st of month, UTC)."""
         from datetime import timedelta
 
-        today = date.today()
+        today = datetime.now(timezone.utc).date()
 
         # Only on 1st of month
         if today.day != 1:
@@ -2060,7 +2060,7 @@ class TradingDaemon:
         if not self._hourly_analysis_enabled:
             return
 
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         is_post_volatility = self._pending_post_volatility_analysis
 
         # Check if we should run analysis
@@ -2576,7 +2576,7 @@ class TradingDaemon:
         - Recovery failures
         - Database corruption
         """
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
 
         # Skip if not enough time has passed (initialized to None in __init__)
         if self._last_stop_check is not None:

@@ -830,8 +830,8 @@ class Database:
         max_drawdown: Optional[Decimal] = None,
         is_paper: bool = False,
     ) -> None:
-        """Update today's statistics."""
-        today = date.today()
+        """Update today's statistics (UTC)."""
+        today = datetime.now(timezone.utc).date()
 
         with self.session() as session:
             stats = (
@@ -940,8 +940,8 @@ class Database:
     def get_daily_stats(
         self, target_date: Optional[date] = None, is_paper: bool = False
     ) -> Optional[DailyStats]:
-        """Get statistics for a specific date."""
-        target_date = target_date or date.today()
+        """Get statistics for a specific date (defaults to today UTC)."""
+        target_date = target_date or datetime.now(timezone.utc).date()
 
         with self.session() as session:
             return (
