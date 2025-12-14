@@ -47,6 +47,16 @@ All database operations MUST support both PAPER and ACTUAL (live) trading modes.
 - Both modes must be independently functional
 - Test with paper trading before enabling live trading
 
+### Schema Migrations
+
+This project uses `Base.metadata.create_all()` instead of Alembic for simplicity:
+
+- **New tables**: Automatically created on startup - no migration needed
+- **Schema changes to existing tables**: Use `_run_migrations()` in `database.py`
+- **SQLite handles this well**: `create_all()` is idempotent (creates missing tables, skips existing)
+
+Do NOT suggest Alembic migrations for new tables - they are unnecessary in this codebase.
+
 ## Versioning
 
 Always update `src/version.py` when making commits:

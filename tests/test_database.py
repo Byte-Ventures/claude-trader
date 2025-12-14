@@ -1132,9 +1132,9 @@ def test_record_whale_event(db):
 
     assert event.id is not None
     assert event.symbol == "BTC-USD"
-    assert event.volume_ratio == "4.5"
+    assert event.volume_ratio == 4.5
     assert event.direction == "bullish"
-    assert event.price_change_pct == "0.005"
+    assert event.price_change_pct == 0.005
     assert event.signal_score == 75
     assert event.signal_action == "buy"
     assert event.is_paper is True

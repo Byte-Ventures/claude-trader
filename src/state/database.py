@@ -23,6 +23,7 @@ from sqlalchemy import (
     Column,
     Date,
     DateTime,
+    Float,
     Index,
     Integer,
     String,
@@ -317,9 +318,9 @@ class WhaleEvent(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     symbol = Column(String(20), nullable=False, default="BTC-USD")
     timestamp = Column(DateTime, nullable=False)  # When whale was detected
-    volume_ratio = Column(String(10), nullable=False)  # e.g., "3.45"
+    volume_ratio = Column(Float, nullable=False)  # e.g., 3.45
     direction = Column(String(10), nullable=False)  # bullish/bearish/neutral
-    price_change_pct = Column(String(15), nullable=True)  # e.g., "0.0035"
+    price_change_pct = Column(Float, nullable=True)  # e.g., 0.0035
     signal_score = Column(Integer, nullable=False)  # -100 to +100
     signal_action = Column(String(10), nullable=False)  # buy/sell/hold
     is_paper = Column(Boolean, default=False)
@@ -571,6 +572,50 @@ class Database:
                     conn.commit()
             except Exception as e:
                 logger.debug("rate_history_is_paper_migration_skipped", reason=str(e))
+
+            # Migrate whale_events from string to float columns (v1.27.38)
+            # SQLite doesn't support ALTER COLUMN, so we recreate the table
+            try:
+                result = conn.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type='table' AND name='whale_events'")
+                )
+                whale_schema = result.scalar()
+                # Check if table exists with old string-based schema
+                if whale_schema and "VARCHAR" in whale_schema and "volume_ratio" in whale_schema:
+                    # Backup existing data
+                    conn.execute(text("ALTER TABLE whale_events RENAME TO whale_events_old"))
+                    # Create new table with proper types (Float)
+                    conn.execute(text("""
+                        CREATE TABLE whale_events (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            symbol VARCHAR(20) NOT NULL DEFAULT 'BTC-USD',
+                            timestamp DATETIME NOT NULL,
+                            volume_ratio FLOAT NOT NULL,
+                            direction VARCHAR(10) NOT NULL,
+                            price_change_pct FLOAT,
+                            signal_score INTEGER NOT NULL,
+                            signal_action VARCHAR(10) NOT NULL,
+                            is_paper BOOLEAN DEFAULT 0,
+                            created_at DATETIME
+                        )
+                    """))
+                    # Copy data with type conversion (SQLite handles string->float)
+                    conn.execute(text("""
+                        INSERT INTO whale_events (id, symbol, timestamp, volume_ratio, direction,
+                            price_change_pct, signal_score, signal_action, is_paper, created_at)
+                        SELECT id, symbol, timestamp, CAST(volume_ratio AS REAL), direction,
+                            CAST(price_change_pct AS REAL), signal_score, signal_action, is_paper, created_at
+                        FROM whale_events_old
+                    """))
+                    conn.execute(text("DROP TABLE whale_events_old"))
+                    # Recreate the index
+                    conn.execute(text(
+                        "CREATE INDEX ix_whale_events_lookup ON whale_events (symbol, is_paper, timestamp)"
+                    ))
+                    conn.commit()
+                    logger.info("migrated_whale_events_to_float_columns")
+            except Exception as e:
+                logger.debug("whale_events_float_migration_skipped", reason=str(e))
 
     @contextmanager
     def session(self) -> Generator[Session, None, None]:
@@ -1348,9 +1393,9 @@ class Database:
             record = WhaleEvent(
                 symbol=symbol,
                 timestamp=datetime.now(timezone.utc),
-                volume_ratio=str(volume_ratio),
+                volume_ratio=volume_ratio,
                 direction=direction,
-                price_change_pct=str(price_change_pct) if price_change_pct is not None else None,
+                price_change_pct=price_change_pct,
                 signal_score=signal_score,
                 signal_action=signal_action,
                 is_paper=is_paper,
