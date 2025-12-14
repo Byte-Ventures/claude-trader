@@ -1011,10 +1011,17 @@ class TradeReviewer:
         price_action = context.get('price_action', '')
         price_action_line = f"\n{price_action}" if price_action else ""
 
+        # Check for whale activity in breakdown
+        breakdown = context['breakdown']
+        whale_activity_line = ""
+        if breakdown.get("_whale_activity"):
+            whale_direction = breakdown.get("_whale_direction", "unknown").upper()
+            whale_activity_line = f"\n⚠️ WHALE ACTIVITY ({whale_direction}): Volume {breakdown.get('_volume_ratio', 0)}x average"
+
         # Build common context sections
         common_context = f"""Price: ¤{context['price']:,.2f}
 Signal Score: {context['score']:+d} (threshold: ±{context['threshold']})
-Signal Breakdown: {json.dumps(context['breakdown'])}
+Signal Breakdown: {json.dumps(context['breakdown'])}{whale_activity_line}
 
 Trading Style: {context['trading_style_desc']}
 Timeframe: {context['candle_interval']} candles
@@ -1069,10 +1076,17 @@ Analyze this trade from your assigned perspective, considering the trading timef
                 f"  Reasoning: {review.reasoning}"
             )
 
+        # Check for whale activity
+        breakdown = context.get('breakdown', {})
+        whale_line = ""
+        if breakdown.get("_whale_activity"):
+            whale_direction = breakdown.get("_whale_direction", "unknown").upper()
+            whale_line = f"\n⚠️ WHALE ACTIVITY ({whale_direction}): Volume {breakdown.get('_volume_ratio', 0)}x average"
+
         if review_type == "interesting_hold":
             return f"""Hold Decision Review at ¤{context['price']:,.2f}
 Signal Score: {context['score']:+d} (below threshold ±{context['threshold']})
-Trading Style: {context['trading_style_desc']}
+Trading Style: {context['trading_style_desc']}{whale_line}
 
 The bot decided NOT to trade. Should this hold be confirmed or overridden?
 
@@ -1083,7 +1097,7 @@ Based on these perspectives, decide: Is the hold correct (stay passive) or shoul
         else:
             return f"""Trade Decision: {context['action'].upper()} at ¤{context['price']:,.2f}
 Signal Score: {context['score']:+d}
-Trading Style: {context['trading_style_desc']}
+Trading Style: {context['trading_style_desc']}{whale_line}
 
 Agent Reviews:
 {chr(10).join(reviews_text)}

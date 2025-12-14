@@ -47,6 +47,16 @@ All database operations MUST support both PAPER and ACTUAL (live) trading modes.
 - Both modes must be independently functional
 - Test with paper trading before enabling live trading
 
+### Schema Migrations
+
+This project uses `Base.metadata.create_all()` instead of Alembic for simplicity:
+
+- **New tables**: Automatically created on startup - no migration needed
+- **Schema changes to existing tables**: Use `_run_migrations()` in `database.py`
+- **SQLite handles this well**: `create_all()` is idempotent (creates missing tables, skips existing)
+
+Do NOT suggest Alembic migrations for new tables - they are unnecessary in this codebase.
+
 ## Versioning
 
 Always update `src/version.py` when making commits:
@@ -56,6 +66,14 @@ Always update `src/version.py` when making commits:
 - **PATCH**: Bug fixes, small improvements
 
 Update the version BEFORE committing.
+
+## Configuration Parameters
+
+When creating new configuration parameters:
+
+1. Add the field to `config/settings.py` with proper Field validation
+2. **MUST** update `.env.example` with the recommended default and documentation
+3. Use descriptive comments explaining the parameter's purpose and valid range
 
 ## Branching
 

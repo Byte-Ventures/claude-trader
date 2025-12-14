@@ -1,7 +1,7 @@
 # Performance Improvement Roadmap
 
 > Analysis Date: 2025-12-13 | Bot Version: 1.25.4
-> Last Updated: 2025-12-13
+> Last Updated: 2025-12-14 (v1.27.40)
 
 This roadmap documents gaps identified compared to professional trading systems, prioritized by **P&L impact** rather than institutional features.
 
@@ -39,6 +39,42 @@ Deferred pending data on AI review impact. Need to measure:
 - Whether per-trade review adds value vs hourly regime setting
 
 Consider adding metrics tracking before implementing this change.
+
+### 1.2 Regime-Adaptive Indicator Weights (v1.27.x)
+
+**Status:** DONE
+
+AI-driven weight profile selection that adapts indicator weights to market conditions.
+
+- Weight profiles: TREND, RANGE, VOLATILE, DEFAULT in `weight_profile_selector.py`
+- AI selects optimal profile via OpenRouter with 15-minute caching
+- Circuit breaker fallback to rule-based selection after 3 failures
+- Database persistence of profile changes
+- Full test coverage in `tests/test_weight_profile_selector.py`
+
+**Implementation exceeds roadmap scope** - uses AI selection instead of simple regime mapping.
+
+---
+
+## Partial Implementations
+
+### Break-Even Stop Logic (part of 3.1)
+- `runner.py:1444-1467` moves stop to break-even when profit threshold reached
+- Missing: Multi-level scale-out and partial sells
+
+### Volume Analysis with Whale Detection (2.3) - DONE (v1.27.40)
+- `signal_scorer.py:481-544` checks volume_ratio thresholds
+- 1.5-3x: High volume (20% signal boost, configurable)
+- 3x+: Whale activity (30% signal boost, `_whale_activity` flag, configurable)
+- Whale direction detection (bullish/bearish/neutral based on price movement)
+- Whale alerts integrated into AI reviewer/judge prompts
+- Database persistence in `whale_events` table with paper/live separation
+- Configurable thresholds: `WHALE_VOLUME_THRESHOLD`, `WHALE_DIRECTION_THRESHOLD`, `WHALE_BOOST_PERCENT`, `HIGH_VOLUME_BOOST_PERCENT`
+
+### Fear & Greed Sentiment (part of 2.2)
+- `src/ai/sentiment.py` fetches Fear & Greed Index
+- `regime.py` applies sentiment adjustments
+- Missing: Funding rates, open interest, long/short ratios
 
 ---
 
@@ -97,47 +133,7 @@ elif daily_trend == "bearish" and signal_action == "buy":
 
 ### 1.2 Regime-Adaptive Indicator Weights
 
-**Problem:** Static weights (`RSI=25, MACD=25, BB=20, EMA=15`) perform poorly in different market conditions:
-- **Trending markets:** RSI/BB scream "overbought" too early → exit winners prematurely
-- **Ranging markets:** MACD/EMA give late signals → chase entries
-
-**Current Code (`signal_scorer.py:80`):**
-```python
-@dataclass
-class SignalWeights:
-    rsi: int = 25
-    macd: int = 25
-    bollinger: int = 20
-    ema: int = 15
-    volume: int = 15
-```
-
-**Solution:**
-```python
-TREND_WEIGHTS = SignalWeights(rsi=10, macd=35, bollinger=10, ema=35, volume=10)
-RANGE_WEIGHTS = SignalWeights(rsi=35, macd=10, bollinger=35, ema=10, volume=10)
-VOLATILE_WEIGHTS = SignalWeights(rsi=20, macd=20, bollinger=30, ema=15, volume=15)
-
-# In MarketRegime.calculate(), return appropriate weights
-def calculate(self, ...) -> RegimeAdjustments:
-    # ... existing logic ...
-    if regime_name == "trending":
-        weights = TREND_WEIGHTS
-    elif regime_name == "ranging":
-        weights = RANGE_WEIGHTS
-    else:
-        weights = DEFAULT_WEIGHTS
-
-    return RegimeAdjustments(..., weights=weights)
-```
-
-**Files to Modify:**
-- `src/strategy/signal_scorer.py` - Accept dynamic weights
-- `src/strategy/regime.py` - Return weights based on regime
-
-**Expected Impact:** Better win rate in both trending and ranging conditions
-
-**Effort:** Medium
+**Status:** DONE - See Completed Items section above.
 
 ---
 
@@ -284,27 +280,7 @@ if funding_rate > 0.001:  # 0.1%
 
 ### 2.3 Volume Spike Detection
 
-**Problem:** Current volume analysis only checks if volume > 1.5x average. Missing whale activity detection.
-
-**Solution:**
-```python
-# Enhanced volume analysis in signal_scorer.py
-def detect_volume_anomaly(volume: pd.Series, threshold: float = 3.0) -> dict:
-    """Detect abnormal volume spikes indicating whale activity."""
-    avg_volume = volume.rolling(20).mean()
-    current = volume.iloc[-1]
-    ratio = current / avg_volume.iloc[-1]
-
-    return {
-        'is_spike': ratio > threshold,
-        'ratio': ratio,
-        'interpretation': 'whale_activity' if ratio > threshold else 'normal'
-    }
-```
-
-**Expected Impact:** Identify when "smart money" is moving
-
-**Effort:** Low
+**Status:** DONE (v1.27.40) - See Partial Implementations section above for details.
 
 ---
 
@@ -459,8 +435,10 @@ elif self._ai_strategy_mode == "wait":
 | **Phase 1** | 4.2 Min profit check | DONE (v1.25.0) |
 | **Phase 1a** | 4.1 Maker fees | REVERTED (v1.25.4) - race conditions |
 | **Phase 1b** | 4.3 AI regime setter | DEFERRED (needs metrics) |
-| **Phase 2** | 1.1 Multi-timeframe, 2.3 Volume spikes | Pending |
-| **Phase 3** | 1.2 Adaptive weights, 1.3 S/R awareness | Pending |
+| **Phase 1c** | 1.2 Adaptive weights | DONE (v1.27.x) |
+| **Phase 1d** | 2.3 Volume spikes / Whale detection | DONE (v1.27.40) |
+| **Phase 2** | 1.1 Multi-timeframe | Pending |
+| **Phase 3** | 1.3 S/R awareness | Pending |
 | **Phase 4** | 3.1 Scale-out exits, 2.1 Divergence | Pending |
 | **Phase 5** | 2.2 Crypto sentiment APIs, 3.2 Time exits | Pending |
 

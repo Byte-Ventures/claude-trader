@@ -30,6 +30,7 @@ from src.safety.kill_switch import KillSwitch
 from src.safety.loss_limiter import LossLimiter
 from src.safety.trade_cooldown import TradeCooldown, TradeCooldownConfig
 from src.safety.validator import OrderValidator, OrderRequest, ValidatorConfig
+from sqlalchemy.exc import SQLAlchemyError
 from src.state.database import Database
 from src.strategy.signal_scorer import SignalScorer
 from src.strategy.weight_profile_selector import (
@@ -251,6 +252,10 @@ class TradingDaemon:
             ema_slow=settings.ema_slow,
             atr_period=settings.atr_period,
             candle_interval=settings.candle_interval,
+            whale_volume_threshold=settings.whale_volume_threshold,
+            whale_direction_threshold=settings.whale_direction_threshold,
+            whale_boost_percent=settings.whale_boost_percent,
+            high_volume_boost_percent=settings.high_volume_boost_percent,
         )
 
         self.position_sizer = PositionSizer(
@@ -817,6 +822,25 @@ class TradingDaemon:
             ema_gap=f"{((ind.ema_fast - ind.ema_slow) / ind.ema_slow * 100):.3f}%" if ind.ema_fast and ind.ema_slow else "N/A",
             volatility=ind.volatility,
         )
+
+        # Record whale activity to database if detected
+        if signal_result.breakdown.get("_whale_activity"):
+            try:
+                self.db.record_whale_event(
+                    symbol=self.settings.trading_pair,
+                    volume_ratio=signal_result.breakdown.get("_volume_ratio", 0),
+                    direction=signal_result.breakdown.get("_whale_direction", "unknown"),
+                    price_change_pct=signal_result.breakdown.get("_price_change_pct"),
+                    signal_score=signal_result.score,
+                    signal_action=signal_result.action,
+                    is_paper=self.settings.is_paper_trading,
+                )
+            except SQLAlchemyError as e:
+                # Database errors - expected failure mode, non-critical
+                logger.warning("whale_event_record_failed", error=str(e), exc_info=True)
+            except Exception as e:
+                # Unexpected errors - log as error for visibility
+                logger.error("whale_event_record_unexpected", error=str(e), exc_info=True)
 
         # Track volatility for adaptive interval and post-volatility analysis
         if ind.volatility:

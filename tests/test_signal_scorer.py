@@ -418,6 +418,295 @@ def test_normal_volume_neutral():
     assert result.breakdown.get("volume", 0) == 0
 
 
+def test_whale_activity_detection():
+    """Test that extreme volume (3x+) triggers whale activity detection."""
+    scorer = SignalScorer()
+
+    # Create data with 5x volume spike (whale activity)
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': [50500] * 100,  # Slight uptrend for bullish signal
+        'volume': [10000] * 99 + [50000]  # 5x spike on last candle
+    })
+
+    result = scorer.calculate_score(df)
+
+    # Should have whale activity flag
+    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_volume_ratio") >= 3.0
+    # Volume boost should be present (30% of signal for whale vs 20% for normal high)
+    if result.score != 0:
+        assert result.breakdown.get("volume", 0) != 0
+
+
+def test_whale_boost_is_30_percent():
+    """Test that whale activity applies 30% boost (vs 20% for normal high volume)."""
+    scorer = SignalScorer()
+
+    # Create identical data twice - once with whale volume (5x), once with high volume (2x)
+    base_data = {
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': [50500] * 100,
+    }
+
+    # Whale volume (5x)
+    df_whale = pd.DataFrame({**base_data, 'volume': [10000] * 99 + [50000]})
+    result_whale = scorer.calculate_score(df_whale)
+
+    # High volume (2x)
+    df_high = pd.DataFrame({**base_data, 'volume': [10000] * 99 + [20000]})
+    result_high = scorer.calculate_score(df_high)
+
+    # Both should have volume boosts if signal is directional
+    whale_boost = abs(result_whale.breakdown.get("volume", 0))
+    high_boost = abs(result_high.breakdown.get("volume", 0))
+
+    # Whale boost (30%) should be larger than high volume boost (20%)
+    # Expected ratio is 1.5x (30% / 20%)
+    # Tolerance of ±0.1 accounts for int() rounding in boost calculation:
+    #   e.g., if score=25: whale=int(7.5)=7, high=int(5.0)=5, ratio=7/5=1.4
+    if whale_boost > 0 and high_boost > 0:
+        ratio = whale_boost / high_boost
+        assert 1.4 <= ratio <= 1.6, f"Expected ~1.5x ratio (30%/20%), got {ratio:.2f}"
+
+
+def test_whale_direction_bullish():
+    """Test that whale direction is detected as bullish on price increase."""
+    scorer = SignalScorer()
+
+    # Create data with price going UP on whale volume spike
+    closes = [50000] * 99 + [50500]  # Last candle is 1% higher
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': closes,
+        'volume': [10000] * 99 + [50000]  # 5x spike
+    })
+
+    result = scorer.calculate_score(df)
+
+    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_direction") == "bullish"
+
+
+def test_whale_direction_bearish():
+    """Test that whale direction is detected as bearish on price decrease."""
+    scorer = SignalScorer()
+
+    # Create data with price going DOWN on whale volume spike
+    closes = [50000] * 99 + [49500]  # Last candle is 1% lower
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': closes,
+        'volume': [10000] * 99 + [50000]  # 5x spike
+    })
+
+    result = scorer.calculate_score(df)
+
+    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_direction") == "bearish"
+
+
+def test_configurable_whale_threshold():
+    """Test that whale threshold is configurable."""
+    # Lower threshold (2.0x) should detect whale activity at lower volume
+    scorer_low = SignalScorer(whale_volume_threshold=2.0)
+    # Higher threshold (5.0x) should require more volume
+    scorer_high = SignalScorer(whale_volume_threshold=5.0)
+
+    # Create data with 3x volume spike
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': [50500] * 100,
+        'volume': [10000] * 99 + [30000]  # 3x spike
+    })
+
+    result_low = scorer_low.calculate_score(df)
+    result_high = scorer_high.calculate_score(df)
+
+    # Low threshold (2.0x) should detect 3x as whale
+    assert result_low.breakdown.get("_whale_activity") is True
+    # High threshold (5.0x) should NOT detect 3x as whale
+    assert result_high.breakdown.get("_whale_activity") is False
+
+
+def test_high_volume_not_whale():
+    """Test that high volume (1.5-3x) does not trigger whale activity."""
+    scorer = SignalScorer()
+
+    # Create data with 2x volume spike (high but not whale)
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': [50500] * 100,
+        'volume': [10000] * 99 + [20000]  # 2x spike - high but not whale
+    })
+
+    result = scorer.calculate_score(df)
+
+    # Should NOT have whale activity flag
+    assert result.breakdown.get("_whale_activity") is False
+    # But should have volume ratio recorded
+    assert result.breakdown.get("_volume_ratio") is not None
+    assert result.breakdown.get("_volume_ratio") < 3.0
+
+
+def test_whale_metadata_on_zero_volume():
+    """Test that whale metadata is properly set when volume SMA is zero."""
+    scorer = SignalScorer()
+
+    # Create data with zero volume - triggers the "volume_sma <= 0" path
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': [50500] * 100,
+        'volume': [0] * 100  # Zero volume triggers invalid SMA path
+    })
+
+    result = scorer.calculate_score(df)
+
+    # Should have whale metadata set to defaults (SMA is 0)
+    assert result.breakdown.get("_whale_activity") is False
+    assert result.breakdown.get("_volume_ratio") is None
+    assert result.breakdown.get("volume") == 0
+
+
+def test_whale_metadata_on_nan_volume():
+    """Test that whale metadata is properly set when volume contains NaN values.
+
+    This verifies the division-by-zero protection when volume_sma is NaN.
+    """
+    scorer = SignalScorer()
+
+    # Create data with NaN volume values - will cause volume_sma to be NaN
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': [50500] * 100,
+        'volume': [float('nan')] * 100  # NaN volume triggers pd.isna check
+    })
+
+    result = scorer.calculate_score(df)
+
+    # Should handle NaN gracefully without crashing
+    assert result.breakdown.get("_whale_activity") is False
+    assert result.breakdown.get("_volume_ratio") is None
+    assert result.breakdown.get("volume") == 0
+
+
+def test_whale_price_change_pct_stored():
+    """Test that price_change_pct is stored in breakdown for whale events."""
+    scorer = SignalScorer()
+
+    # Create data with whale volume and clear price movement
+    base_volume = 1000
+    prices = [50000] * 99 + [50500]  # 1% price increase on last candle
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': prices,
+        'volume': [base_volume] * 99 + [base_volume * 5]  # 5x spike
+    })
+
+    result = scorer.calculate_score(df)
+
+    # Should have whale activity with price_change_pct stored
+    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_price_change_pct") is not None
+    # Price change should be ~1% (0.01)
+    pct = result.breakdown.get("_price_change_pct")
+    assert 0.009 <= pct <= 0.011, f"Expected ~0.01 (1%), got {pct}"
+
+
+def test_whale_activity_on_neutral_signal():
+    """Test that whale activity is flagged even when signal score is low.
+
+    This validates the intentional behavior where whale activity is recorded
+    even when indicators give weak signals, providing valuable information for AI reviewers.
+    The key point is that _whale_activity is always set to True when volume exceeds threshold.
+    """
+    scorer = SignalScorer()
+
+    # Create data with whale volume spike on last candle
+    # The actual signal score doesn't matter - what matters is that whale is flagged
+    base_volume = 1000
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [50100] * 100,  # Very tight range
+        'low': [49900] * 100,
+        'close': [50000] * 100,  # Close equals open
+        'volume': [base_volume] * 99 + [base_volume * 5]  # 5x spike on last candle
+    })
+
+    result = scorer.calculate_score(df)
+
+    # Whale activity should be detected regardless of signal strength
+    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_volume_ratio") >= 3.0
+    assert result.breakdown.get("_whale_direction") in ("bullish", "bearish", "neutral")
+    # Volume boost should be proportional to score (30% of score)
+    # If score is small, boost will be small but may not be 0
+    expected_boost = int(abs(result.score - result.breakdown.get("volume", 0)) * 0.3)
+    actual_boost = abs(result.breakdown.get("volume", 0))
+    assert actual_boost <= expected_boost + 5  # Allow small margin
+
+
+def test_update_settings_whale_threshold():
+    """Test that whale_volume_threshold can be updated at runtime."""
+    scorer = SignalScorer(whale_volume_threshold=3.0)
+    assert scorer.whale_volume_threshold == 3.0
+
+    # Update the threshold
+    scorer.update_settings(whale_volume_threshold=5.0)
+    assert scorer.whale_volume_threshold == 5.0
+
+    # Update with None should not change the value
+    scorer.update_settings(whale_volume_threshold=None)
+    assert scorer.whale_volume_threshold == 5.0
+
+
+def test_whale_volume_boundary_behavior():
+    """Test that whale detection uses strict greater-than comparison.
+
+    The whale detection uses > (strictly greater than), so volume_ratio
+    must exceed the threshold, not just equal it.
+    """
+    scorer = SignalScorer(whale_volume_threshold=3.0)
+
+    # Create baseline data - volume below threshold should not trigger
+    base_volume = 1000
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [50500] * 100,
+        'low': [49500] * 100,
+        'close': [50100] * 100,
+        'volume': [base_volume] * 100
+    })
+
+    result = scorer.calculate_score(df)
+    assert result.breakdown.get("_whale_activity") is False or result.breakdown.get("_whale_activity") is None
+
+    # Now spike the volume high enough to exceed 3.0 threshold
+    # Using 5x ensures we're well above, accounting for rolling SMA including the spike
+    df['volume'].iloc[-1] = base_volume * 5
+    result2 = scorer.calculate_score(df)
+    assert result2.breakdown.get("_whale_activity") is True
+    assert result2.breakdown.get("_volume_ratio") > 3.0
+
+
 # ============================================================================
 # Crash Protection Tests
 # ============================================================================

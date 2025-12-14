@@ -194,6 +194,32 @@ class Settings(BaseSettings):
         description="Minimum score to trigger a trade (out of 100)"
     )
 
+    # Strategy Parameters - Volume/Whale Detection
+    whale_volume_threshold: float = Field(
+        default=3.0,
+        ge=1.5,
+        le=10.0,
+        description="Volume ratio threshold for whale activity detection (e.g., 3.0 = 3x average volume)"
+    )
+    whale_direction_threshold: float = Field(
+        default=0.003,
+        ge=0.0005,
+        le=0.01,
+        description="Price change threshold for whale direction classification (0.003 = 0.3%)"
+    )
+    whale_boost_percent: float = Field(
+        default=0.30,
+        ge=0.1,
+        le=0.5,
+        description="Signal boost multiplier for whale activity (0.30 = 30%)"
+    )
+    high_volume_boost_percent: float = Field(
+        default=0.20,
+        ge=0.1,
+        le=0.4,
+        description="Signal boost multiplier for high volume (0.20 = 20%)"
+    )
+
     # Risk Management
     stop_loss_atr_multiplier: float = Field(
         default=1.5,

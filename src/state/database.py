@@ -8,6 +8,7 @@ Tables:
 - daily_stats: Daily trading statistics
 - system_state: Key-value store for recovery state
 - rate_history: Historical OHLCV price data for analysis and replay
+- whale_events: Historical record of whale activity detections
 """
 
 import json
@@ -22,6 +23,7 @@ from sqlalchemy import (
     Column,
     Date,
     DateTime,
+    Float,
     Index,
     Integer,
     String,
@@ -304,6 +306,31 @@ class RateHistory(Base):
             raise ValueError(f"Invalid volume: {self.volume}") from e
 
 
+class WhaleEvent(Base):
+    """Historical record of whale activity detections.
+
+    Tracks volume spikes exceeding the whale threshold, including direction
+    and signal context for post-trade analysis and pattern recognition.
+    """
+
+    __tablename__ = "whale_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False, default="BTC-USD")
+    timestamp = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))  # When whale was detected
+    volume_ratio = Column(Float, nullable=False)  # e.g., 3.45
+    direction = Column(String(10), nullable=False)  # bullish/bearish/neutral
+    price_change_pct = Column(Float, nullable=True)  # e.g., 0.0035
+    signal_score = Column(Integer, nullable=False)  # -100 to +100
+    signal_action = Column(String(10), nullable=False)  # buy/sell/hold
+    is_paper = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index('ix_whale_events_lookup', 'symbol', 'is_paper', 'timestamp'),
+    )
+
+
 class Database:
     """
     Database manager for trading state persistence.
@@ -545,6 +572,50 @@ class Database:
                     conn.commit()
             except Exception as e:
                 logger.debug("rate_history_is_paper_migration_skipped", reason=str(e))
+
+            # Migrate whale_events from string to float columns (v1.27.38)
+            # SQLite doesn't support ALTER COLUMN, so we recreate the table
+            try:
+                result = conn.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type='table' AND name='whale_events'")
+                )
+                whale_schema = result.scalar()
+                # Check if table exists with old string-based schema (volume_ratio as VARCHAR)
+                if whale_schema and "volume_ratio VARCHAR" in whale_schema:
+                    # Backup existing data
+                    conn.execute(text("ALTER TABLE whale_events RENAME TO whale_events_old"))
+                    # Create new table with proper types (Float)
+                    conn.execute(text("""
+                        CREATE TABLE whale_events (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            symbol VARCHAR(20) NOT NULL DEFAULT 'BTC-USD',
+                            timestamp DATETIME NOT NULL DEFAULT (datetime('now')),
+                            volume_ratio FLOAT NOT NULL,
+                            direction VARCHAR(10) NOT NULL,
+                            price_change_pct FLOAT,
+                            signal_score INTEGER NOT NULL,
+                            signal_action VARCHAR(10) NOT NULL,
+                            is_paper BOOLEAN DEFAULT 0,
+                            created_at DATETIME
+                        )
+                    """))
+                    # Copy data with type conversion (SQLite handles string->float)
+                    conn.execute(text("""
+                        INSERT INTO whale_events (id, symbol, timestamp, volume_ratio, direction,
+                            price_change_pct, signal_score, signal_action, is_paper, created_at)
+                        SELECT id, symbol, timestamp, CAST(volume_ratio AS REAL), direction,
+                            CAST(price_change_pct AS REAL), signal_score, signal_action, is_paper, created_at
+                        FROM whale_events_old
+                    """))
+                    conn.execute(text("DROP TABLE whale_events_old"))
+                    # Recreate the index
+                    conn.execute(text(
+                        "CREATE INDEX ix_whale_events_lookup ON whale_events (symbol, is_paper, timestamp)"
+                    ))
+                    conn.commit()
+                    logger.info("migrated_whale_events_to_float_columns")
+            except Exception as e:
+                logger.debug("whale_events_float_migration_skipped", reason=str(e))
 
     @contextmanager
     def session(self) -> Generator[Session, None, None]:
@@ -1292,6 +1363,84 @@ class Database:
                 .first()
             )
             return record.profile_name if record else None
+
+    # Whale activity methods
+    def record_whale_event(
+        self,
+        symbol: str,
+        volume_ratio: float,
+        direction: str,
+        price_change_pct: Optional[float],
+        signal_score: int,
+        signal_action: str,
+        is_paper: bool = False,
+    ) -> WhaleEvent:
+        """Record a whale activity detection event.
+
+        Args:
+            symbol: Trading pair (e.g., "BTC-USD")
+            volume_ratio: Volume ratio vs average (e.g., 3.45)
+            direction: Whale direction ("bullish", "bearish", "neutral")
+            price_change_pct: Price change percentage during spike
+            signal_score: Signal score at time of detection (-100 to +100)
+            signal_action: Signal action ("buy", "sell", "hold")
+            is_paper: Whether this is paper trading
+
+        Returns:
+            WhaleEvent: The recorded event
+        """
+        # Validate direction
+        valid_directions = {"bullish", "bearish", "neutral", "unknown"}
+        if direction not in valid_directions:
+            logger.warning("invalid_whale_direction", direction=direction, defaulting_to="unknown")
+            direction = "unknown"
+
+        with self.session() as session:
+            record = WhaleEvent(
+                symbol=symbol,
+                timestamp=datetime.now(timezone.utc),
+                volume_ratio=volume_ratio,
+                direction=direction,
+                price_change_pct=price_change_pct,
+                signal_score=signal_score,
+                signal_action=signal_action,
+                is_paper=is_paper,
+            )
+            session.add(record)
+            session.flush()
+
+            logger.info(
+                "whale_event_recorded",
+                symbol=symbol,
+                volume_ratio=volume_ratio,
+                direction=direction,
+                signal_score=signal_score,
+            )
+            return record
+
+    def get_whale_events(
+        self, hours: int = 24, symbol: Optional[str] = None, is_paper: bool = False
+    ) -> list[WhaleEvent]:
+        """Get whale events for the past N hours.
+
+        Args:
+            hours: Number of hours to look back
+            symbol: Filter by symbol (optional)
+            is_paper: Whether to query paper or live data
+
+        Returns:
+            List of WhaleEvent records
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        with self.session() as session:
+            query = (
+                session.query(WhaleEvent)
+                .filter(WhaleEvent.is_paper == is_paper)
+                .filter(WhaleEvent.timestamp >= cutoff)
+            )
+            if symbol:
+                query = query.filter(WhaleEvent.symbol == symbol)
+            return query.order_by(WhaleEvent.timestamp.desc()).all()
 
     # Rate history methods
     def record_rate(
