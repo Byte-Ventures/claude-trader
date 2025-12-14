@@ -261,7 +261,8 @@ class TelegramNotifier:
         lines.append(f"\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
         message = "\n".join(lines)
-        self.send_message_sync(message)
+        if self.send_message_sync(message):
+            logger.info("trade_notification_sent", side=side, size=str(size), price=str(price))
         self._save_to_dashboard("trade", f"{side.upper()} {size:.6f}", message)
 
     def notify_trade_rejected(
@@ -274,6 +275,16 @@ class TelegramNotifier:
         is_paper: bool = False,
     ) -> None:
         """Send notification when a trade is rejected by validation."""
+        # Input validation
+        if side not in ("buy", "sell"):
+            logger.error("invalid_trade_side", side=side)
+            return
+        if signal_score is not None and not (-100 <= signal_score <= 100):
+            logger.warning("signal_score_out_of_range", score=signal_score)
+        if price is not None and price <= 0:
+            logger.error("invalid_price", price=str(price))
+            return
+
         mode = "[PAPER] " if is_paper else ""
         emoji = "⛔"
 
