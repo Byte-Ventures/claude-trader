@@ -194,7 +194,7 @@ class TelegramNotifier:
 
     def send_message_sync(self, message: str, parse_mode: str = "HTML") -> bool:
         """
-        Send a message synchronously (for non-async contexts).
+        Send a message synchronously (blocking).
 
         Args:
             message: Message text
@@ -203,17 +203,28 @@ class TelegramNotifier:
         Returns:
             True if sent successfully
         """
+        import concurrent.futures
+
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                # Create a new task if already in async context
-                asyncio.create_task(self.send_message(message, parse_mode))
-                return True
+                # In async context - run in thread pool to avoid blocking
+                # and actually wait for result (previous code used create_task
+                # which never awaited, so messages were never sent!)
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(asyncio.run, self.send_message(message, parse_mode))
+                    return future.result(timeout=30)
             else:
                 return loop.run_until_complete(self.send_message(message, parse_mode))
         except RuntimeError:
             # No event loop, create one
             return asyncio.run(self.send_message(message, parse_mode))
+        except concurrent.futures.TimeoutError:
+            logger.warning("telegram_send_timeout", timeout=30)
+            return False
+        except Exception as e:
+            logger.error("telegram_send_error", error=str(e))
+            return False
 
     # Convenience methods for common notifications
 
