@@ -881,9 +881,16 @@ class TradingDaemon:
 
                 if selection:
                     # Update weights in signal scorer
+                    # NOTE: Thread safety assumption - this runs in single-threaded event loop.
+                    # Weight updates happen before signal calculation in same iteration.
+                    # If threading is introduced, add locking around weight updates.
                     self.signal_scorer.update_weights(selection.weights)
 
-                    # Log and record profile change
+                    # Always update confidence/reasoning for dashboard display
+                    self._last_weight_profile_confidence = selection.confidence
+                    self._last_weight_profile_reasoning = selection.reasoning
+
+                    # Log and record profile change (only on actual change)
                     if selection.profile_name != self._last_weight_profile:
                         logger.info(
                             "weight_profile_changed",
@@ -926,10 +933,8 @@ class TradingDaemon:
                             is_paper=self.settings.is_paper_trading,
                         )
 
-                        # Update stored profile info
+                        # Update stored profile name (confidence/reasoning updated above)
                         self._last_weight_profile = selection.profile_name
-                        self._last_weight_profile_confidence = selection.confidence
-                        self._last_weight_profile_reasoning = selection.reasoning
 
             except Exception as e:
                 logger.warning("weight_profile_update_failed", error=str(e))

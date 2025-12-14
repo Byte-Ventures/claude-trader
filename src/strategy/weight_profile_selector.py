@@ -287,7 +287,11 @@ class WeightProfileSelector:
             logger.warning("ai_api_timeout", timeout=30.0, error=str(e))
             raise
 
-        data = response.json()
+        try:
+            data = response.json()
+        except json.JSONDecodeError as e:
+            logger.error("ai_api_invalid_json", error=str(e), response_text=response.text[:200])
+            raise ValueError(f"Invalid JSON in API response: {e}")
 
         # Validate response structure
         if not data.get("choices") or not isinstance(data["choices"], list):
