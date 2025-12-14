@@ -560,10 +560,14 @@ Focus on patterns that lead to losing trades and missed opportunities.
 
 ## Important Instructions
 
-- You have access to tools. If you need more data, you CAN query the database directly.
+- You have access to tools. If you need more data, you CAN read the database using sqlite3:
+  ```bash
+  sqlite3 {db_path} "SELECT * FROM signal_history WHERE is_paper={1 if is_paper else 0} ORDER BY timestamp DESC LIMIT 10"
+  ```
 - Database location: `{db_path}`
 - Key tables: `trades`, `signal_history`, `regime_history`, `whale_events`, `notifications`, `daily_stats`
-- All tables have `is_paper` column to filter paper vs live trades (is_paper={'1' if is_paper else '0'}).
+- All tables have `is_paper` column (1=paper, 0=live).
+- You can also read source files at `{source_root}` to understand the algorithm.
 - Provide concrete, actionable recommendations.
 - End with a summary of your top 3 recommendations.
 
@@ -696,13 +700,22 @@ def main() -> int:
     session = get_session(str(db_path))
 
     try:
-        # Parse date range if provided
+        # Parse and validate date range
         start_date = None
         end_date = None
-        if args.start:
-            start_date = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
-        if args.end:
-            end_date = datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc)
+        try:
+            if args.start:
+                start_date = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
+            if args.end:
+                end_date = datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc)
+
+            if start_date and end_date and end_date < start_date:
+                print("[ERROR] End date must be after start date")
+                return 1
+        except ValueError as e:
+            print(f"[ERROR] Invalid date format: {e}")
+            print("[HINT] Use YYYY-MM-DD format (e.g., 2024-12-01)")
+            return 1
 
         # Determine limit (default: 1 trade)
         limit = args.last if args.last else (None if args.start else 1)

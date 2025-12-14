@@ -1147,3 +1147,199 @@ def test_min_stop_loss_floor_for_sell_orders(very_low_volatility_df):
         assert stop_percent >= 1.5 - 0.01, (
             f"Sell stop distance {stop_percent:.2f}% should be >= 1.5%"
         )
+
+
+# =============================================================================
+# MIN_TAKE_PROFIT_PERCENT TESTS
+# =============================================================================
+
+
+def test_min_take_profit_floor_applied_when_atr_too_small(very_low_volatility_df):
+    """Test that min_take_profit_percent is used when ATR-based TP < min %."""
+    config = PositionSizeConfig(
+        min_take_profit_percent=2.0,  # 2% minimum take profit
+        min_stop_loss_percent=1.5,
+        stop_loss_atr_multiplier=1.5,
+        risk_per_trade_percent=0.5,
+        max_position_percent=40.0,
+    )
+    sizer = PositionSizer(config=config, take_profit_atr_multiplier=2.0)
+
+    current_price = Decimal("100000.00")
+    quote_balance = Decimal("50000.00")
+    base_balance = Decimal("0.0")
+    signal_strength = 80
+
+    result = sizer.calculate_size(
+        very_low_volatility_df,
+        current_price,
+        quote_balance,
+        base_balance,
+        signal_strength,
+        side="buy",
+    )
+
+    if result.size_quote > 0:
+        # For buys, take profit is ABOVE entry price
+        tp_distance = result.take_profit_price - current_price
+        tp_percent = float(tp_distance / current_price * 100)
+
+        # Take profit should be at least min_take_profit_percent
+        assert tp_percent >= 2.0 - 0.01, (
+            f"Take profit distance {tp_percent:.2f}% should be >= 2.0%"
+        )
+
+
+def test_atr_take_profit_used_when_larger_than_min(high_volatility_df):
+    """Test that ATR-based take profit is used when it's larger than min %."""
+    config = PositionSizeConfig(
+        min_take_profit_percent=0.5,  # 0.5% minimum (low floor)
+        min_stop_loss_percent=0.5,
+        stop_loss_atr_multiplier=2.0,
+        risk_per_trade_percent=0.5,
+        max_position_percent=40.0,
+    )
+    sizer = PositionSizer(config=config, take_profit_atr_multiplier=3.0)  # 3x ATR
+
+    current_price = Decimal("50000.00")
+    quote_balance = Decimal("50000.00")
+    base_balance = Decimal("0.0")
+    signal_strength = 80
+
+    result = sizer.calculate_size(
+        high_volatility_df,
+        current_price,
+        quote_balance,
+        base_balance,
+        signal_strength,
+        side="buy",
+    )
+
+    if result.size_quote > 0:
+        tp_distance = result.take_profit_price - current_price
+        tp_percent = float(tp_distance / current_price * 100)
+
+        # Min floor is 0.5%, but high volatility ATR should produce larger TP
+        assert tp_percent > 0.5, (
+            f"Take profit distance {tp_percent:.2f}% should be > 0.5% floor (using ATR)"
+        )
+
+
+def test_min_take_profit_floor_with_different_percentages():
+    """Test take profit floor works with different min_take_profit_percent values."""
+    # Create data with minimal ATR
+    length = 50
+    df = pd.DataFrame({
+        'open': [50000.0] * length,
+        'high': [50001.0] * length,  # Tiny range
+        'low': [49999.0] * length,
+        'close': [50000.0] * length,
+    })
+
+    for min_pct in [1.0, 1.5, 2.0, 3.0]:
+        config = PositionSizeConfig(
+            min_take_profit_percent=min_pct,
+            min_stop_loss_percent=1.0,
+            stop_loss_atr_multiplier=1.5,
+            risk_per_trade_percent=0.5,
+        )
+        sizer = PositionSizer(config=config, take_profit_atr_multiplier=2.0)
+
+        result = sizer.calculate_size(
+            df,
+            Decimal("50000.00"),
+            Decimal("50000.00"),
+            Decimal("0.0"),
+            signal_strength=80,
+            side="buy",
+        )
+
+        if result.size_quote > 0:
+            tp_distance = result.take_profit_price - Decimal("50000.00")
+            tp_percent = float(tp_distance / Decimal("50000.00") * 100)
+
+            assert tp_percent >= min_pct - 0.01, (
+                f"With min_pct={min_pct}, TP {tp_percent:.2f}% should be >= {min_pct}%"
+            )
+
+
+def test_min_take_profit_floor_for_sell_orders(very_low_volatility_df):
+    """Test min_take_profit_percent floor also applies to sell orders."""
+    config = PositionSizeConfig(
+        min_take_profit_percent=2.0,
+        min_stop_loss_percent=1.5,
+        stop_loss_atr_multiplier=1.5,
+    )
+    sizer = PositionSizer(config=config, take_profit_atr_multiplier=2.0)
+
+    current_price = Decimal("100000.00")
+    quote_balance = Decimal("10000.00")
+    base_balance = Decimal("1.0")  # Hold 1 BTC to sell
+    signal_strength = 80
+
+    result = sizer.calculate_size(
+        very_low_volatility_df,
+        current_price,
+        quote_balance,
+        base_balance,
+        signal_strength,
+        side="sell",
+    )
+
+    if result.size_quote > 0:
+        # For sells, take profit is BELOW entry price
+        tp_distance = current_price - result.take_profit_price
+        tp_percent = float(tp_distance / current_price * 100)
+
+        assert tp_percent >= 2.0 - 0.01, (
+            f"Sell take profit distance {tp_percent:.2f}% should be >= 2.0%"
+        )
+
+
+def test_min_take_profit_ensures_favorable_risk_reward():
+    """Test that min TP and min SL create favorable R:R ratio."""
+    # Create data with minimal ATR so both floors kick in
+    length = 50
+    df = pd.DataFrame({
+        'open': [50000.0] * length,
+        'high': [50001.0] * length,
+        'low': [49999.0] * length,
+        'close': [50000.0] * length,
+    })
+
+    # With min_stop_loss=1.5% and min_take_profit=2.0%
+    # R:R ratio should be 2.0/1.5 = 1.33
+    config = PositionSizeConfig(
+        min_take_profit_percent=2.0,
+        min_stop_loss_percent=1.5,
+        stop_loss_atr_multiplier=1.5,
+        risk_per_trade_percent=0.5,
+    )
+    sizer = PositionSizer(config=config, take_profit_atr_multiplier=2.0)
+
+    current_price = Decimal("50000.00")
+    result = sizer.calculate_size(
+        df,
+        current_price,
+        Decimal("50000.00"),
+        Decimal("0.0"),
+        signal_strength=80,
+        side="buy",
+    )
+
+    if result.size_quote > 0:
+        stop_distance = current_price - result.stop_loss_price
+        tp_distance = result.take_profit_price - current_price
+
+        # R:R ratio = reward / risk
+        rr_ratio = float(tp_distance / stop_distance) if stop_distance > 0 else 0
+
+        # Should be at least 1.0 (break-even), preferably > 1.0
+        assert rr_ratio >= 1.0, (
+            f"R:R ratio {rr_ratio:.2f} should be >= 1.0 for favorable trades"
+        )
+
+        # With these settings, should be approximately 2.0/1.5 = 1.33
+        assert rr_ratio >= 1.3, (
+            f"R:R ratio {rr_ratio:.2f} should be >= 1.3 with 2% TP and 1.5% SL floors"
+        )
