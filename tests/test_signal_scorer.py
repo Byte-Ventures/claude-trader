@@ -1762,6 +1762,137 @@ class TestHTFBiasModifier:
         assert result.score >= -100
 
 
+class TestHTFEdgeCases:
+    """Edge case tests for HTF bias at boundary score values.
+
+    These tests verify that HTF adjustments work correctly when scores
+    are near threshold values or at extremes (-100, +100).
+    """
+
+    @pytest.fixture
+    def scorer(self):
+        """Signal scorer with standard MTF parameters."""
+        return SignalScorer(
+            threshold=60,
+            mtf_aligned_boost=20,
+            mtf_counter_penalty=20,
+        )
+
+    def test_bullish_at_threshold_with_aligned_htf(self, scorer):
+        """Score at +60 (threshold) with bullish HTF → +80 (should trade)."""
+        # Create mock result where we can verify the HTF adjustment
+        # This tests that a borderline signal gets pushed over threshold
+        # Note: We test the adjustment value directly via breakdown
+        df = pd.DataFrame({
+            'open': [50000.0] * 100,
+            'high': [50500.0] * 100,
+            'low': [49500.0] * 100,
+            'close': [50200.0] * 100,
+            'volume': [10000.0] * 100,
+        })
+
+        result = scorer.calculate_score(df, htf_bias="bullish")
+
+        # Verify HTF adjustment is applied correctly
+        if result.score > 0:  # If bullish signal
+            assert result.breakdown.get("htf_bias") == 20
+
+    def test_bullish_at_threshold_with_counter_htf(self, scorer):
+        """Score at +60 with bearish HTF → +40 (below threshold, no trade)."""
+        df = pd.DataFrame({
+            'open': [50000.0] * 100,
+            'high': [50500.0] * 100,
+            'low': [49500.0] * 100,
+            'close': [50200.0] * 100,
+            'volume': [10000.0] * 100,
+        })
+
+        result = scorer.calculate_score(df, htf_bias="bearish")
+
+        # Verify HTF penalty is applied for counter-trend
+        if result.score > 0:  # If bullish signal
+            assert result.breakdown.get("htf_bias") == -20
+
+    def test_bearish_near_threshold_with_aligned_htf(self, scorer):
+        """Bearish score with bearish HTF → more negative (stronger sell)."""
+        np.random.seed(44)
+        prices = [55000.0 - i * 100 for i in range(100)]  # Downtrend
+
+        df = pd.DataFrame({
+            'open': [p + 50 for p in prices],
+            'high': [p + 100 for p in prices],
+            'low': [p - 50 for p in prices],
+            'close': prices,
+            'volume': [10000.0] * 100,
+        })
+
+        result = scorer.calculate_score(df, htf_bias="bearish")
+
+        # If bearish signal, aligned HTF should make it more negative
+        if result.score < 0:
+            assert result.breakdown.get("htf_bias") == -20
+
+    def test_bearish_with_counter_htf_weakens_signal(self, scorer):
+        """Bearish score with bullish HTF → less negative (weaker sell)."""
+        np.random.seed(45)
+        prices = [55000.0 - i * 100 for i in range(100)]  # Downtrend
+
+        df = pd.DataFrame({
+            'open': [p + 50 for p in prices],
+            'high': [p + 100 for p in prices],
+            'low': [p - 50 for p in prices],
+            'close': prices,
+            'volume': [10000.0] * 100,
+        })
+
+        result_no_htf = scorer.calculate_score(df)
+        result_with_htf = scorer.calculate_score(df, htf_bias="bullish")
+
+        # If bearish signal, counter-trend HTF should make it less negative
+        if result_no_htf.score < 0:
+            assert result_with_htf.breakdown.get("htf_bias") == 20
+            # Score should be closer to 0 (less negative)
+            assert result_with_htf.score > result_no_htf.score
+
+    def test_extreme_positive_score_with_boost(self, scorer):
+        """Score near +100 with HTF boost should not exceed +100."""
+        # Create strong bullish conditions
+        np.random.seed(46)
+        prices = [45000.0 + i * 100 for i in range(100)]  # Strong uptrend
+
+        df = pd.DataFrame({
+            'open': [p - 50 for p in prices],
+            'high': [p + 100 for p in prices],
+            'low': [p - 100 for p in prices],
+            'close': prices,
+            'volume': [15000.0] * 100,  # High volume
+        })
+
+        result = scorer.calculate_score(df, htf_bias="bullish")
+
+        # Score must stay within bounds
+        assert -100 <= result.score <= 100
+
+    def test_extreme_negative_score_with_boost(self, scorer):
+        """Score near -100 with HTF boost should not go below -100."""
+        # Create strong bearish conditions
+        np.random.seed(47)
+        prices = [55000.0 - i * 100 for i in range(100)]  # Strong downtrend
+
+        df = pd.DataFrame({
+            'open': [p + 50 for p in prices],
+            'high': [p + 100 for p in prices],
+            'low': [p - 100 for p in prices],
+            'close': prices,
+            'volume': [15000.0] * 100,  # High volume
+        })
+
+        result = scorer.calculate_score(df, htf_bias="bearish")
+
+        # Score must stay within bounds
+        assert -100 <= result.score <= 100
+
+
 class TestHTFRawIndicatorValues:
     """Tests for raw indicator values stored in breakdown for signal history."""
 

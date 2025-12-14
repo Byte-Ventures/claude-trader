@@ -568,6 +568,12 @@ class TradingDaemon:
             # Update AI recommendation TTL
             self._ai_recommendation_ttl_minutes = new_settings.ai_recommendation_ttl_minutes
 
+            # Invalidate HTF cache if MTF settings changed
+            mtf_settings = {"mtf_enabled", "mtf_candle_limit", "mtf_daily_cache_minutes",
+                           "mtf_6h_cache_minutes", "mtf_aligned_boost", "mtf_counter_penalty"}
+            if mtf_settings & set(changes.keys()):
+                self._invalidate_htf_cache()
+
             logger.info(
                 "config_reload_complete",
                 changed_fields=list(changes.keys()),
@@ -629,6 +635,17 @@ class TradingDaemon:
                 granularity=granularity,
                 limit=self.settings.mtf_candle_limit,
             )
+
+            # Validate candles before processing - need enough data for trend calculation
+            if candles is None or candles.empty or len(candles) < self.signal_scorer.ema_slow_period:
+                logger.warning(
+                    "htf_insufficient_data",
+                    timeframe=granularity,
+                    candle_count=len(candles) if candles is not None and not candles.empty else 0,
+                    required=self.signal_scorer.ema_slow_period,
+                )
+                return cached_trend or "neutral"
+
             trend = self.signal_scorer.get_trend(candles)
 
             # Update cache
@@ -672,6 +689,17 @@ class TradingDaemon:
             combined = "neutral"
 
         return combined, daily, six_hour
+
+    def _invalidate_htf_cache(self) -> None:
+        """
+        Invalidate HTF trend cache when settings change.
+
+        Called when MTF-related settings are updated at runtime to ensure
+        the next iteration uses fresh data with the new parameters.
+        """
+        self._daily_last_fetch = None
+        self._6h_last_fetch = None
+        logger.info("htf_cache_invalidated")
 
     def _store_signal_history(
         self,
@@ -723,6 +751,26 @@ class TradingDaemon:
         except SQLAlchemyError as e:
             # Database errors are non-critical - don't block trading for history storage
             logger.warning("signal_history_store_failed", error=str(e), error_type=type(e).__name__)
+
+    def _mark_signal_trade_executed(self) -> None:
+        """
+        Mark the most recent signal history record as having resulted in a trade.
+
+        Called after successful buy/sell to enable accurate post-mortem analysis.
+        """
+        try:
+            with self.db.get_session() as session:
+                latest_signal = session.query(SignalHistory).filter(
+                    SignalHistory.is_paper == self.settings.is_paper_trading,
+                    SignalHistory.symbol == self.settings.trading_pair,
+                ).order_by(SignalHistory.timestamp.desc()).first()
+                if latest_signal:
+                    latest_signal.trade_executed = True
+                    session.commit()
+                    logger.debug("signal_history_trade_marked", signal_id=latest_signal.id)
+        except SQLAlchemyError as e:
+            # Non-critical - don't block trading for history update
+            logger.warning("signal_history_trade_flag_update_failed", error=str(e))
 
     def run(self) -> None:
         """Run the main trading loop."""
@@ -1713,6 +1761,9 @@ class TradingDaemon:
                 self.signal_scorer.record_oversold_buy()
 
             self.circuit_breaker.record_order_success()
+
+            # Mark signal history as having resulted in trade (for post-mortem analysis)
+            self._mark_signal_trade_executed()
         else:
             logger.error("buy_failed", error=result.error)
             self.circuit_breaker.record_order_failure()
@@ -1894,6 +1945,9 @@ class TradingDaemon:
             )
 
             self.circuit_breaker.record_order_success()
+
+            # Mark signal history as having resulted in trade (for post-mortem analysis)
+            self._mark_signal_trade_executed()
         else:
             logger.error("sell_failed", error=result.error)
             self.circuit_breaker.record_order_failure()

@@ -1019,11 +1019,12 @@ class TradeReviewer:
             whale_activity_line = f"\n⚠️ WHALE ACTIVITY ({whale_direction}): Volume {breakdown.get('_volume_ratio', 0)}x average"
 
         # Check for HTF bias in breakdown - always show for full AI context
+        # Use `or` for null safety in case values are explicitly None
         htf_line = ""
-        htf_trend = breakdown.get("_htf_trend", "neutral")
+        htf_trend = breakdown.get("_htf_trend") or "neutral"
         if htf_trend:
-            daily = breakdown.get("_htf_daily", htf_trend)
-            six_h = breakdown.get("_htf_6h", htf_trend)
+            daily = breakdown.get("_htf_daily") or htf_trend
+            six_h = breakdown.get("_htf_6h") or htf_trend
             htf_line = f"\n📊 HIGHER TIMEFRAME BIAS: {htf_trend.upper()} (Daily: {daily}, 6H: {six_h})"
 
         # Build common context sections
