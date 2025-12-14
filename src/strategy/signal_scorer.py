@@ -151,6 +151,8 @@ class SignalScorer:
         whale_direction_threshold: float = 0.003,
         whale_boost_percent: float = 0.30,
         high_volume_boost_percent: float = 0.20,
+        mtf_aligned_boost: int = 20,
+        mtf_counter_penalty: int = 20,
     ):
         """
         Initialize signal scorer.
@@ -203,6 +205,10 @@ class SignalScorer:
         self.whale_boost_percent = whale_boost_percent
         self.high_volume_boost_percent = high_volume_boost_percent
 
+        # Multi-Timeframe confirmation parameters
+        self.mtf_aligned_boost = mtf_aligned_boost
+        self.mtf_counter_penalty = mtf_counter_penalty
+
     def update_settings(
         self,
         threshold: Optional[int] = None,
@@ -226,6 +232,8 @@ class SignalScorer:
         momentum_price_candles: Optional[int] = None,
         momentum_penalty_reduction: Optional[float] = None,
         candle_interval: Optional[str] = None,
+        mtf_aligned_boost: Optional[int] = None,
+        mtf_counter_penalty: Optional[int] = None,
     ) -> None:
         """
         Update scorer settings at runtime.
@@ -274,6 +282,10 @@ class SignalScorer:
             self.momentum_penalty_reduction = momentum_penalty_reduction
         if candle_interval is not None:
             self.candle_interval = candle_interval
+        if mtf_aligned_boost is not None:
+            self.mtf_aligned_boost = mtf_aligned_boost
+        if mtf_counter_penalty is not None:
+            self.mtf_counter_penalty = mtf_counter_penalty
 
         logger.info("signal_scorer_settings_updated")
 
@@ -398,6 +410,9 @@ class SignalScorer:
         self,
         df: pd.DataFrame,
         current_price: Optional[Decimal] = None,
+        htf_bias: Optional[str] = None,
+        htf_daily: Optional[str] = None,
+        htf_6h: Optional[str] = None,
     ) -> SignalResult:
         """
         Calculate composite signal score from OHLCV data.
@@ -405,6 +420,9 @@ class SignalScorer:
         Args:
             df: DataFrame with columns: open, high, low, close, volume
             current_price: Current price (uses latest close if not provided)
+            htf_bias: Combined HTF bias ("bullish", "bearish", "neutral", or None)
+            htf_daily: Daily timeframe trend (for AI context)
+            htf_6h: 6-hour timeframe trend (for AI context)
 
         Returns:
             SignalResult with score, action, and breakdown
@@ -498,6 +516,20 @@ class SignalScorer:
         total_score += bb_score
         breakdown["ema"] = ema_score
         total_score += ema_score
+
+        # Store raw indicator values for signal history
+        breakdown["_rsi_value"] = indicators.rsi
+        breakdown["_macd_histogram"] = indicators.macd_histogram
+        # Bollinger band position: 0 = at lower band, 1 = at upper band
+        if indicators.bb_upper and indicators.bb_lower and indicators.bb_upper != indicators.bb_lower:
+            breakdown["_bb_position"] = (price - float(indicators.bb_lower)) / (float(indicators.bb_upper) - float(indicators.bb_lower))
+        else:
+            breakdown["_bb_position"] = None
+        # EMA gap percent
+        if indicators.ema_fast and indicators.ema_slow and indicators.ema_slow != 0:
+            breakdown["_ema_gap_percent"] = ((float(indicators.ema_fast) - float(indicators.ema_slow)) / float(indicators.ema_slow)) * 100
+        else:
+            breakdown["_ema_gap_percent"] = None
 
         # Volume confirmation (boost on high volume, penalty on low volume)
         # Includes whale activity detection for extreme volume spikes
@@ -602,6 +634,9 @@ class SignalScorer:
                 signal_direction="bullish" if total_score > 0 else "bearish" if total_score < 0 else "neutral",
             )
 
+        # Store raw score before adjustments (for signal history)
+        breakdown["_raw_score"] = total_score
+
         # Trend filter: penalize counter-trend trades (scaled by signal strength)
         # Skip penalty for extreme RSI (mean-reversion zones) with crash protection
         trend = get_ema_trend(ema_result)
@@ -640,6 +675,46 @@ class SignalScorer:
             trend_adjustment = int(20 * (1 - signal_confidence * 0.5))
             total_score += trend_adjustment
         breakdown["trend_filter"] = trend_adjustment
+
+        # HTF (Higher Timeframe) bias modifier
+        # Purpose: Reduce false signals by aligning trades with the macro trend
+        # - Daily + 6-hour trends must agree for strong bias, otherwise neutral
+        # - Expected impact: 30-50% reduction in false signals
+        #
+        # Application logic (asymmetric for sell signals):
+        # - Bullish signal (+score): +boost if HTF bullish, -penalty if HTF bearish
+        # - Bearish signal (-score): -boost if HTF bearish (more negative = stronger sell),
+        #                            +penalty if HTF bullish (less negative = weaker sell)
+        htf_adjustment = 0
+        if htf_bias and htf_bias != "neutral":
+            if total_score > 0:  # Bullish signal (potential buy)
+                if htf_bias == "bullish":
+                    htf_adjustment = self.mtf_aligned_boost  # +20: stronger buy signal
+                elif htf_bias == "bearish":
+                    htf_adjustment = -self.mtf_counter_penalty  # -20: weaker buy signal
+            elif total_score < 0:  # Bearish signal (potential sell)
+                if htf_bias == "bearish":
+                    # Aligned: make more negative to strengthen sell signal
+                    htf_adjustment = -self.mtf_aligned_boost  # e.g., -60 → -80
+                elif htf_bias == "bullish":
+                    # Counter-trend: make less negative to weaken sell signal
+                    htf_adjustment = self.mtf_counter_penalty  # e.g., -60 → -40
+            total_score += htf_adjustment
+
+            if htf_adjustment != 0:
+                logger.info(
+                    "htf_bias_applied",
+                    htf_bias=htf_bias,
+                    htf_daily=htf_daily,
+                    htf_6h=htf_6h,
+                    signal_direction="bullish" if total_score > 0 else "bearish",
+                    adjustment=htf_adjustment,
+                )
+
+        breakdown["htf_bias"] = htf_adjustment
+        breakdown["_htf_trend"] = htf_bias or "neutral"
+        breakdown["_htf_daily"] = htf_daily or "neutral"
+        breakdown["_htf_6h"] = htf_6h or "neutral"
 
         # Clamp score to -100 to +100
         total_score = max(-100, min(100, total_score))

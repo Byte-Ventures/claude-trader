@@ -1,7 +1,7 @@
 # Performance Improvement Roadmap
 
 > Analysis Date: 2025-12-13 | Bot Version: 1.25.4
-> Last Updated: 2025-12-14 (v1.27.40)
+> Last Updated: 2025-12-14 (v1.28.0)
 
 This roadmap documents gaps identified compared to professional trading systems, prioritized by **P&L impact** rather than institutional features.
 
@@ -95,9 +95,21 @@ The bot already has excellent defensive architecture:
 
 ## Priority 1: Critical P&L Improvements
 
-### 1.1 Multi-Timeframe Confirmation
+### 1.1 Multi-Timeframe Confirmation (v1.28.0)
 
-**Problem:** Trading signals on a single timeframe (e.g., 15-min) without checking higher timeframe trend. Trading against the Daily/4H trend is the #1 cause of stop-outs.
+**Status:** DONE
+
+Multi-timeframe confirmation using Daily + 6-Hour trends to reduce false signals.
+
+- Fetches ONE_DAY and SIX_HOUR candles with caching (60min and 30min respectively)
+- Both timeframes must agree for strong bias (bullish/bearish), otherwise neutral
+- Score modifiers: +20 for aligned trades, -20 for counter-trend trades
+- HTF context shown to AI reviewers for better decision making
+- Signal history table (`signal_history`) stores every signal for post-mortem analysis
+
+**Expected Impact:** 30-50% reduction in false signals
+
+**Original Problem:** Trading signals on a single timeframe (e.g., 15-min) without checking higher timeframe trend. Trading against the Daily/4H trend is the #1 cause of stop-outs.
 
 **Current Behavior:**
 ```
@@ -437,7 +449,7 @@ elif self._ai_strategy_mode == "wait":
 | **Phase 1b** | 4.3 AI regime setter | DEFERRED (needs metrics) |
 | **Phase 1c** | 1.2 Adaptive weights | DONE (v1.27.x) |
 | **Phase 1d** | 2.3 Volume spikes / Whale detection | DONE (v1.27.40) |
-| **Phase 2** | 1.1 Multi-timeframe | Pending |
+| **Phase 2** | 1.1 Multi-timeframe | DONE (v1.28.0) |
 | **Phase 3** | 1.3 S/R awareness | Pending |
 | **Phase 4** | 3.1 Scale-out exits, 2.1 Divergence | Pending |
 | **Phase 5** | 2.2 Crypto sentiment APIs, 3.2 Time exits | Pending |

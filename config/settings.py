@@ -415,6 +415,12 @@ class Settings(BaseSettings):
         default=True,
         description="Allow AI models to search web during market analysis"
     )
+    ai_max_tokens: int = Field(
+        default=4000,
+        ge=500,
+        le=16000,
+        description="Maximum tokens for AI API responses (increase if seeing truncated JSON errors)"
+    )
     market_research_cache_minutes: int = Field(
         default=15,
         ge=5,
@@ -464,6 +470,42 @@ class Settings(BaseSettings):
         ge=0.0,
         le=2.0,
         description="Regime adjustment intensity (0=off, 1=normal, 2=aggressive)"
+    )
+
+    # Multi-Timeframe Confirmation (MTF)
+    mtf_enabled: bool = Field(
+        default=True,
+        description="Enable higher timeframe trend confirmation (Daily + 6H)"
+    )
+    mtf_candle_limit: int = Field(
+        default=50,
+        ge=20,
+        le=100,
+        description="Number of candles to fetch for HTF trend calculation"
+    )
+    mtf_daily_cache_minutes: int = Field(
+        default=60,
+        ge=15,
+        le=240,
+        description="Cache duration for daily candle data (minutes)"
+    )
+    mtf_6h_cache_minutes: int = Field(
+        default=30,
+        ge=10,
+        le=120,
+        description="Cache duration for 6-hour candle data (minutes)"
+    )
+    mtf_aligned_boost: int = Field(
+        default=20,
+        ge=5,
+        le=40,
+        description="Score boost for trades aligned with HTF trend"
+    )
+    mtf_counter_penalty: int = Field(
+        default=20,
+        ge=5,
+        le=40,
+        description="Score penalty for trades against HTF trend"
     )
 
     # Database

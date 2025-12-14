@@ -13,7 +13,7 @@ import asyncio
 import math
 import signal
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from threading import Event
 from typing import Optional, Union
@@ -31,7 +31,7 @@ from src.safety.loss_limiter import LossLimiter
 from src.safety.trade_cooldown import TradeCooldown, TradeCooldownConfig
 from src.safety.validator import OrderValidator, OrderRequest, ValidatorConfig
 from sqlalchemy.exc import SQLAlchemyError
-from src.state.database import Database
+from src.state.database import Database, SignalHistory
 from src.strategy.signal_scorer import SignalScorer
 from src.strategy.weight_profile_selector import (
     WeightProfileSelector,
@@ -81,6 +81,19 @@ class TradingDaemon:
         self._pending_post_volatility_analysis: bool = False  # Trigger analysis when volatility calms
         self._last_stop_check: Optional[datetime] = None  # For periodic stop protection checks
         self._last_ai_failure_notification: Optional[datetime] = None  # Cooldown for AI failure notifications
+
+        # Multi-Timeframe state (for HTF bias caching)
+        self._daily_trend: str = "neutral"
+        self._daily_last_fetch: Optional[datetime] = None
+        self._6h_trend: str = "neutral"
+        self._6h_last_fetch: Optional[datetime] = None
+
+        # Signal history tracking for marking executed trades.
+        # Thread-safety note: This is safe because TradingDaemon runs single-threaded.
+        # The ID is set in _trading_iteration() before any trade execution, and used
+        # in _execute_buy()/_execute_sell() within the same iteration. No concurrent
+        # iterations can occur because the main loop is synchronous.
+        self._current_signal_id: Optional[int] = None
 
         # Create persistent event loop for async operations (avoids repeated asyncio.run())
         self._loop = asyncio.new_event_loop()
@@ -166,6 +179,7 @@ class TradingDaemon:
                 market_research_cache_minutes=settings.market_research_cache_minutes,
                 candle_interval=settings.candle_interval,
                 signal_threshold=settings.signal_threshold,
+                max_tokens=settings.ai_max_tokens,
             )
             logger.info(
                 "multi_agent_trade_reviewer_initialized",
@@ -256,6 +270,8 @@ class TradingDaemon:
             whale_direction_threshold=settings.whale_direction_threshold,
             whale_boost_percent=settings.whale_boost_percent,
             high_volume_boost_percent=settings.high_volume_boost_percent,
+            mtf_aligned_boost=settings.mtf_aligned_boost,
+            mtf_counter_penalty=settings.mtf_counter_penalty,
         )
 
         self.position_sizer = PositionSizer(
@@ -299,6 +315,7 @@ class TradingDaemon:
                     cache_minutes=self._get_candle_interval_minutes(),
                     fallback_profile=settings.ai_weight_fallback_profile,
                     model=settings.ai_weight_profile_model,
+                    max_tokens=settings.ai_max_tokens,
                 ),
             )
             # Restore last weight profile from database
@@ -560,6 +577,12 @@ class TradingDaemon:
             # Update AI recommendation TTL
             self._ai_recommendation_ttl_minutes = new_settings.ai_recommendation_ttl_minutes
 
+            # Invalidate HTF cache if MTF settings changed
+            mtf_settings = {"mtf_enabled", "mtf_candle_limit", "mtf_daily_cache_minutes",
+                           "mtf_6h_cache_minutes", "mtf_aligned_boost", "mtf_counter_penalty"}
+            if mtf_settings & set(changes.keys()):
+                self._invalidate_htf_cache()
+
             logger.info(
                 "config_reload_complete",
                 changed_fields=list(changes.keys()),
@@ -591,6 +614,187 @@ class TradingDaemon:
             "extreme": self.settings.interval_extreme_volatility,
         }
         return interval_map.get(self._last_volatility, self.settings.check_interval_seconds)
+
+    def _get_timeframe_trend(self, granularity: str, cache_minutes: int) -> str:
+        """
+        Get trend for a specific timeframe with caching.
+
+        Args:
+            granularity: Candle granularity (e.g., "ONE_DAY", "SIX_HOUR")
+            cache_minutes: Cache TTL in minutes
+
+        Returns:
+            Trend direction: "bullish", "bearish", or "neutral"
+        """
+        # Select appropriate cache based on granularity
+        if granularity == "ONE_DAY":
+            last_fetch = self._daily_last_fetch
+            cached_trend = self._daily_trend
+        else:  # SIX_HOUR
+            last_fetch = self._6h_last_fetch
+            cached_trend = self._6h_trend
+
+        now = datetime.now(timezone.utc)
+        if last_fetch and (now - last_fetch) < timedelta(minutes=cache_minutes):
+            return cached_trend
+
+        try:
+            candles = self.client.get_candles(
+                self.settings.trading_pair,
+                granularity=granularity,
+                limit=self.settings.mtf_candle_limit,
+            )
+
+            # Validate candles before processing - need enough data for trend calculation
+            if candles is None or candles.empty or len(candles) < self.signal_scorer.ema_slow_period:
+                logger.warning(
+                    "htf_insufficient_data",
+                    timeframe=granularity,
+                    candle_count=len(candles) if candles is not None and not candles.empty else 0,
+                    required=self.signal_scorer.ema_slow_period,
+                )
+                return cached_trend or "neutral"
+
+            trend = self.signal_scorer.get_trend(candles)
+
+            # Update cache
+            if granularity == "ONE_DAY":
+                self._daily_trend = trend
+                self._daily_last_fetch = now
+            else:
+                self._6h_trend = trend
+                self._6h_last_fetch = now
+
+            logger.info("htf_trend_updated", timeframe=granularity, trend=trend)
+            return trend
+        except (ConnectionError, TimeoutError, OSError, ValueError, KeyError, NotImplementedError) as e:
+            # Expected failures: network issues, API errors, data parsing issues,
+            # or unsupported granularity (NotImplementedError).
+            # Fail-open: return cached trend or neutral, never block trading
+            logger.warning("htf_fetch_failed", timeframe=granularity, error=str(e), error_type=type(e).__name__)
+            return cached_trend or "neutral"
+        except Exception as e:
+            # Unexpected errors - log at error level but still fail-open
+            # Financial bot should never crash due to HTF analysis failure
+            logger.error("htf_fetch_unexpected_error", timeframe=granularity, error=str(e), error_type=type(e).__name__)
+            return cached_trend or "neutral"
+
+    def _get_htf_bias(self) -> tuple[str, str, str]:
+        """
+        Get combined HTF bias from daily + 6-hour trends.
+
+        Returns:
+            Tuple of (combined_bias, daily_trend, 6h_trend)
+            - Both bullish → "bullish"
+            - Both bearish → "bearish"
+            - Mixed/neutral → "neutral"
+        """
+        if not self.settings.mtf_enabled:
+            return "neutral", "neutral", "neutral"
+
+        daily = self._get_timeframe_trend("ONE_DAY", self.settings.mtf_daily_cache_minutes)
+        six_hour = self._get_timeframe_trend("SIX_HOUR", self.settings.mtf_6h_cache_minutes)
+
+        # Combine: both must agree for strong bias
+        if daily == "bullish" and six_hour == "bullish":
+            combined = "bullish"
+        elif daily == "bearish" and six_hour == "bearish":
+            combined = "bearish"
+        else:
+            combined = "neutral"
+
+        return combined, daily, six_hour
+
+    def _invalidate_htf_cache(self) -> None:
+        """
+        Invalidate HTF trend cache when settings change.
+
+        Called when MTF-related settings are updated at runtime to ensure
+        the next iteration uses fresh data with the new parameters.
+        """
+        self._daily_last_fetch = None
+        self._6h_last_fetch = None
+        logger.info("htf_cache_invalidated")
+
+    def _store_signal_history(
+        self,
+        signal_result,
+        current_price: Decimal,
+        htf_bias: str,
+        daily_trend: str,
+        six_hour_trend: str,
+        threshold: int,
+        trade_executed: bool = False,
+    ) -> Optional[int]:
+        """
+        Store signal calculation for historical analysis.
+
+        Called every iteration to enable post-mortem analysis of trades.
+
+        Returns:
+            The signal history record ID, or None if storage failed.
+        """
+        try:
+            breakdown = signal_result.breakdown
+            with self.db.get_session() as session:
+                history = SignalHistory(
+                    symbol=self.settings.trading_pair,
+                    is_paper=self.settings.is_paper_trading,
+                    current_price=str(current_price),
+                    rsi_score=breakdown.get("rsi", 0),
+                    macd_score=breakdown.get("macd", 0),
+                    bollinger_score=breakdown.get("bollinger", 0),
+                    ema_score=breakdown.get("ema", 0),
+                    volume_score=breakdown.get("volume", 0),
+                    rsi_value=breakdown.get("_rsi_value"),
+                    macd_histogram=breakdown.get("_macd_histogram"),
+                    bb_position=breakdown.get("_bb_position"),
+                    ema_gap_percent=breakdown.get("_ema_gap_percent"),
+                    volume_ratio=breakdown.get("_volume_ratio"),
+                    trend_filter_adj=breakdown.get("trend_filter", 0),
+                    momentum_mode_adj=breakdown.get("momentum_mode", 0),
+                    whale_activity_adj=breakdown.get("whale_activity", 0),
+                    htf_bias_adj=breakdown.get("htf_bias", 0),
+                    htf_bias=htf_bias,
+                    htf_daily_trend=daily_trend,
+                    htf_6h_trend=six_hour_trend,
+                    raw_score=breakdown.get("_raw_score", signal_result.score),
+                    final_score=signal_result.score,
+                    action=signal_result.action,
+                    threshold_used=threshold,
+                    trade_executed=trade_executed,
+                )
+                session.add(history)
+                session.commit()
+                return history.id
+        except SQLAlchemyError as e:
+            # Database errors are non-critical - don't block trading for history storage
+            logger.warning("signal_history_store_failed", error=str(e), error_type=type(e).__name__)
+            return None
+
+    def _mark_signal_trade_executed(self, signal_id: Optional[int]) -> None:
+        """
+        Mark a specific signal history record as having resulted in a trade.
+
+        Called after successful buy/sell to enable accurate post-mortem analysis.
+
+        Args:
+            signal_id: The ID of the signal history record to mark.
+                       If None, the operation is skipped (signal storage may have failed).
+        """
+        if signal_id is None:
+            return
+
+        try:
+            with self.db.get_session() as session:
+                session.query(SignalHistory).filter(
+                    SignalHistory.id == signal_id
+                ).update({"trade_executed": True})
+                session.commit()
+                logger.debug("signal_history_trade_marked", signal_id=signal_id)
+        except SQLAlchemyError as e:
+            # Non-critical - don't block trading for history update
+            logger.warning("signal_history_trade_flag_update_failed", error=str(e))
 
     def run(self) -> None:
         """Run the main trading loop."""
@@ -809,8 +1013,16 @@ class TradingDaemon:
                 min_room_pct=f"{min_room_pct:.2f}%",
             )
 
-        # Calculate signal
-        signal_result = self.signal_scorer.calculate_score(candles, current_price)
+        # Get HTF bias for multi-timeframe confirmation
+        htf_bias, daily_trend, six_hour_trend = self._get_htf_bias()
+
+        # Calculate signal with HTF context
+        signal_result = self.signal_scorer.calculate_score(
+            candles, current_price,
+            htf_bias=htf_bias,
+            htf_daily=daily_trend,
+            htf_6h=six_hour_trend,
+        )
 
         # Log indicator values for debugging
         ind = signal_result.indicators
@@ -1083,6 +1295,18 @@ class TradingDaemon:
             "is_paper": self.settings.is_paper_trading,
         }
         self.db.set_state("dashboard_state", dashboard_state)
+
+        # Store signal for historical analysis (every iteration)
+        # Store the ID to mark as executed if a trade occurs (avoids race condition)
+        self._current_signal_id = self._store_signal_history(
+            signal_result=signal_result,
+            current_price=current_price,
+            htf_bias=htf_bias,
+            daily_trend=daily_trend,
+            six_hour_trend=six_hour_trend,
+            threshold=effective_threshold,
+            trade_executed=False,  # Will be updated if trade executes
+        )
 
         # Claude AI trade review (if enabled)
         claude_veto_multiplier = 1.0  # Default: no reduction
@@ -1562,6 +1786,9 @@ class TradingDaemon:
                 self.signal_scorer.record_oversold_buy()
 
             self.circuit_breaker.record_order_success()
+
+            # Mark signal history as having resulted in trade (for post-mortem analysis)
+            self._mark_signal_trade_executed(self._current_signal_id)
         else:
             logger.error("buy_failed", error=result.error)
             self.circuit_breaker.record_order_failure()
@@ -1743,6 +1970,9 @@ class TradingDaemon:
             )
 
             self.circuit_breaker.record_order_success()
+
+            # Mark signal history as having resulted in trade (for post-mortem analysis)
+            self._mark_signal_trade_executed(self._current_signal_id)
         else:
             logger.error("sell_failed", error=result.error)
             self.circuit_breaker.record_order_failure()

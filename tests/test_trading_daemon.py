@@ -117,6 +117,24 @@ def mock_settings():
     settings.interval_high_volatility = 120
     settings.interval_extreme_volatility = 300
 
+    # Whale detection config
+    settings.whale_volume_threshold = 5.0
+    settings.whale_detection_enabled = False
+    settings.whale_direction_threshold = 0.6
+    settings.whale_boost_percent = 15.0
+    settings.high_volume_boost_percent = 10.0
+
+    # MTF config (defaults to disabled)
+    settings.mtf_enabled = False
+    settings.mtf_candle_limit = 50
+    settings.mtf_daily_cache_minutes = 60
+    settings.mtf_6h_cache_minutes = 30
+    settings.mtf_aligned_boost = 20
+    settings.mtf_counter_penalty = 20
+
+    # AI max tokens
+    settings.ai_max_tokens = 4000
+
     return settings
 
 
@@ -1372,3 +1390,285 @@ def test_hard_stop_uses_atr_when_larger_than_min_percent(mock_settings):
 
                     assert actual_hard_stop == expected_hard_stop, \
                         f"Hard stop should use ATR ({expected_hard_stop}), got {actual_hard_stop}"
+
+
+# ============================================================================
+# Multi-Timeframe (HTF) Method Tests
+# ============================================================================
+
+
+@pytest.fixture
+def htf_mock_settings(mock_settings):
+    """Extend mock settings with MTF configuration."""
+    mock_settings.mtf_enabled = True
+    mock_settings.mtf_candle_limit = 50
+    mock_settings.mtf_daily_cache_minutes = 60
+    mock_settings.mtf_6h_cache_minutes = 30
+    mock_settings.mtf_aligned_boost = 20
+    mock_settings.mtf_counter_penalty = 20
+    return mock_settings
+
+
+def test_get_htf_bias_both_bullish(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test HTF bias returns 'bullish' when both timeframes are bullish."""
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Mock _get_timeframe_trend to return bullish for both
+                daemon._get_timeframe_trend = Mock(return_value="bullish")
+
+                bias, daily, six_h = daemon._get_htf_bias()
+
+                assert bias == "bullish"
+                assert daily == "bullish"
+                assert six_h == "bullish"
+
+
+def test_get_htf_bias_both_bearish(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test HTF bias returns 'bearish' when both timeframes are bearish."""
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Mock _get_timeframe_trend to return bearish for both
+                daemon._get_timeframe_trend = Mock(return_value="bearish")
+
+                bias, daily, six_h = daemon._get_htf_bias()
+
+                assert bias == "bearish"
+                assert daily == "bearish"
+                assert six_h == "bearish"
+
+
+def test_get_htf_bias_mixed_returns_neutral(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test HTF bias returns 'neutral' when timeframes disagree."""
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Mock _get_timeframe_trend to return different values
+                daemon._get_timeframe_trend = Mock(side_effect=["bullish", "bearish"])
+
+                bias, daily, six_h = daemon._get_htf_bias()
+
+                assert bias == "neutral"
+                assert daily == "bullish"
+                assert six_h == "bearish"
+
+
+def test_get_htf_bias_disabled_returns_neutral(mock_settings, mock_exchange_client, mock_database):
+    """Test HTF bias returns 'neutral' when MTF is disabled."""
+    mock_settings.mtf_enabled = False
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                bias, daily, six_h = daemon._get_htf_bias()
+
+                assert bias == "neutral"
+                assert daily == "neutral"
+                assert six_h == "neutral"
+
+
+def test_get_timeframe_trend_caching(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test HTF trend caching works - second call uses cache."""
+    from datetime import datetime, timezone
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Mock signal scorer get_trend
+                daemon.signal_scorer.get_trend = Mock(return_value="bullish")
+
+                # First call should fetch
+                trend1 = daemon._get_timeframe_trend("ONE_DAY", 60)
+
+                # Verify get_candles was called
+                assert mock_exchange_client.get_candles.called
+
+                # Reset mock to verify caching
+                mock_exchange_client.get_candles.reset_mock()
+                daemon.signal_scorer.get_trend.reset_mock()
+
+                # Second call within cache period should use cache
+                trend2 = daemon._get_timeframe_trend("ONE_DAY", 60)
+
+                # Should NOT call get_candles again (cache hit)
+                assert not mock_exchange_client.get_candles.called
+                assert trend1 == trend2 == "bullish"
+
+
+def test_get_timeframe_trend_fail_open(htf_mock_settings, mock_database):
+    """Test HTF trend returns neutral on API errors (fail-open)."""
+    # Create client that fails on get_candles
+    mock_client = Mock()
+    mock_client.get_current_price.return_value = Decimal("50000")
+    mock_client.get_candles.side_effect = ConnectionError("API Timeout")
+    mock_client.get_balance.return_value = Balance("USD", Decimal("1000"), Decimal("0"))
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                htf_mock_settings.mtf_enabled = True
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Clear any cached trend
+                daemon._daily_last_fetch = None
+                daemon._daily_trend = "neutral"
+
+                # Should return neutral (fail-open) instead of raising
+                trend = daemon._get_timeframe_trend("ONE_DAY", 60)
+
+                assert trend == "neutral"
+
+
+def test_invalidate_htf_cache(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test HTF cache invalidation clears timestamps."""
+    from datetime import datetime, timezone
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Set cache timestamps
+                daemon._daily_last_fetch = datetime.now(timezone.utc)
+                daemon._6h_last_fetch = datetime.now(timezone.utc)
+
+                # Invalidate cache
+                daemon._invalidate_htf_cache()
+
+                # Verify timestamps are cleared
+                assert daemon._daily_last_fetch is None
+                assert daemon._6h_last_fetch is None
+
+
+def test_store_signal_history_returns_id(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test signal history storage returns the record ID."""
+    from src.strategy.signal_scorer import SignalResult, IndicatorValues
+
+    # Mock database session to return ID
+    mock_session = MagicMock()
+    mock_history = Mock()
+    mock_history.id = 42
+    mock_session.__enter__ = Mock(return_value=mock_session)
+    mock_session.__exit__ = Mock(return_value=False)
+    mock_session.add = Mock()
+    mock_session.commit = Mock(side_effect=lambda: setattr(mock_history, 'id', 42))
+    mock_database.get_session.return_value = mock_session
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                with patch('src.daemon.runner.SignalHistory') as mock_signal_history_class:
+                    # Make the SignalHistory class return our mock
+                    mock_signal_history_class.return_value = mock_history
+
+                    daemon = TradingDaemon(htf_mock_settings)
+
+                    signal_result = SignalResult(
+                        score=65,
+                        action="buy",
+                        indicators=IndicatorValues(
+                            rsi=35.0, macd_line=100.0, macd_signal=50.0,
+                            macd_histogram=50.0, bb_upper=51000.0, bb_middle=50000.0,
+                            bb_lower=49000.0, ema_fast=50100.0, ema_slow=50000.0,
+                            volatility="normal"
+                        ),
+                        breakdown={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                        confidence=0.8,
+                    )
+
+                    signal_id = daemon._store_signal_history(
+                        signal_result=signal_result,
+                        current_price=Decimal("50000"),
+                        htf_bias="bullish",
+                        daily_trend="bullish",
+                        six_hour_trend="bullish",
+                        threshold=60,
+                    )
+
+                    assert signal_id == 42
+
+
+def test_store_signal_history_handles_db_error(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test signal history storage gracefully handles database errors."""
+    from src.strategy.signal_scorer import SignalResult, IndicatorValues
+    from sqlalchemy.exc import SQLAlchemyError
+
+    # Mock database to raise error
+    mock_database.get_session.side_effect = SQLAlchemyError("Database locked")
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(htf_mock_settings)
+
+                signal_result = SignalResult(
+                    score=65,
+                    action="buy",
+                    indicators=IndicatorValues(
+                        rsi=35.0, macd_line=100.0, macd_signal=50.0,
+                        macd_histogram=50.0, bb_upper=51000.0, bb_middle=50000.0,
+                        bb_lower=49000.0, ema_fast=50100.0, ema_slow=50000.0,
+                        volatility="normal"
+                    ),
+                    breakdown={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                    confidence=0.8,
+                )
+
+                # Should return None (not raise) on DB error
+                signal_id = daemon._store_signal_history(
+                    signal_result=signal_result,
+                    current_price=Decimal("50000"),
+                    htf_bias="bullish",
+                    daily_trend="bullish",
+                    six_hour_trend="bullish",
+                    threshold=60,
+                )
+
+                assert signal_id is None
+
+
+def test_mark_signal_trade_executed_with_none_id(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test marking trade executed handles None signal_id gracefully."""
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Should not raise or call database
+                daemon._mark_signal_trade_executed(None)
+
+                # Verify no database session was requested
+                mock_database.get_session.assert_not_called()
+
+
+def test_mark_signal_trade_executed_with_valid_id(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test marking trade executed updates the correct record."""
+    mock_session = MagicMock()
+    mock_session.__enter__ = Mock(return_value=mock_session)
+    mock_session.__exit__ = Mock(return_value=False)
+    mock_query = Mock()
+    mock_session.query.return_value = mock_query
+    mock_query.filter.return_value = mock_query
+    mock_query.update = Mock()
+    mock_database.get_session.return_value = mock_session
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(htf_mock_settings)
+
+                daemon._mark_signal_trade_executed(42)
+
+                # Verify update was called with trade_executed=True
+                mock_query.update.assert_called_once_with({"trade_executed": True})
