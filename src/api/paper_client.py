@@ -6,7 +6,7 @@ with virtual balances. Perfect for strategy testing before live trading.
 """
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 import uuid
@@ -191,7 +191,7 @@ class PaperTradingClient:
         # Record trade
         trade = PaperTrade(
             trade_id=str(uuid.uuid4()),
-            timestamp=datetime.now(),
+            timestamp=datetime.now(timezone.utc),
             side="buy",
             size=base_received,
             price=fill_price,
@@ -284,7 +284,7 @@ class PaperTradingClient:
         # Record trade
         trade = PaperTrade(
             trade_id=str(uuid.uuid4()),
-            timestamp=datetime.now(),
+            timestamp=datetime.now(timezone.utc),
             side="sell",
             size=base_size,
             price=fill_price,
@@ -392,7 +392,7 @@ class PaperTradingClient:
         # Record trade
         trade = PaperTrade(
             trade_id=str(uuid.uuid4()),
-            timestamp=datetime.now(),
+            timestamp=datetime.now(timezone.utc),
             side="buy",
             size=base_size,
             price=fill_price,
@@ -498,7 +498,7 @@ class PaperTradingClient:
         # Record trade
         trade = PaperTrade(
             trade_id=str(uuid.uuid4()),
-            timestamp=datetime.now(),
+            timestamp=datetime.now(timezone.utc),
             side="sell",
             size=base_size,
             price=fill_price,

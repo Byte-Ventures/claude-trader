@@ -107,6 +107,7 @@ def mock_settings():
     settings.circuit_breaker_enabled = True
     settings.kill_switch_enabled = True
     settings.loss_limiter_enabled = True
+    settings.trade_cooldown_enabled = False
 
     # Adaptive interval
     settings.adaptive_interval_enabled = True
@@ -183,7 +184,7 @@ def mock_database():
     db.save_state.return_value = None  # Void method
     db.get_daily_stats.return_value = None  # No daily stats
     db.get_or_create_daily_stats.return_value = Mock(
-        date=date.today(),
+        date=datetime.now(timezone.utc).date(),
         starting_balance=Decimal("10000"),
         ending_balance=Decimal("10000"),
         realized_pnl=Decimal("0"),

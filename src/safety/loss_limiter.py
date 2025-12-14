@@ -155,7 +155,7 @@ class LossLimiter:
             Current loss limit status
         """
         trade = TradeRecord(
-            timestamp=datetime.now(),
+            timestamp=datetime.now(timezone.utc),
             realized_pnl=realized_pnl,
             side=side,
             size=size,
@@ -171,12 +171,12 @@ class LossLimiter:
 
     def _cleanup_old_trades(self) -> None:
         """Remove trades older than 24 hours."""
-        cutoff = datetime.now() - timedelta(hours=24)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
         self._trades = [t for t in self._trades if t.timestamp > cutoff]
 
     def _get_daily_pnl(self) -> Decimal:
-        """Get total realized P&L for today."""
-        today = datetime.now().date()
+        """Get total realized P&L for today (UTC)."""
+        today = datetime.now(timezone.utc).date()
         daily_trades = [
             t for t in self._trades if t.timestamp.date() == today
         ]
@@ -184,7 +184,7 @@ class LossLimiter:
 
     def _get_hourly_pnl(self) -> Decimal:
         """Get total realized P&L for the last hour."""
-        hour_ago = datetime.now() - timedelta(hours=1)
+        hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
         hourly_trades = [
             t for t in self._trades if t.timestamp > hour_ago
         ]
@@ -203,7 +203,7 @@ class LossLimiter:
         self._check_daily_reset()
 
         # Check cooldown expiry
-        if self._cooldown_until and datetime.now() >= self._cooldown_until:
+        if self._cooldown_until and datetime.now(timezone.utc) >= self._cooldown_until:
             self._hourly_limit_hit = False
             self._cooldown_until = None
             logger.info("loss_limiter_hourly_cooldown_expired")
@@ -238,7 +238,7 @@ class LossLimiter:
         if hourly_loss_percent >= self.config.max_hourly_loss_percent:
             if not self._hourly_limit_hit:
                 self._hourly_limit_hit = True
-                self._cooldown_until = datetime.now() + timedelta(
+                self._cooldown_until = datetime.now(timezone.utc) + timedelta(
                     seconds=self.config.hourly_cooldown_seconds
                 )
                 logger.warning(

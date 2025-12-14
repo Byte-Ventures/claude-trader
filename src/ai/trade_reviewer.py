@@ -578,7 +578,7 @@ class TradeReviewer:
     def _check_circuit_breaker_reset(self) -> None:
         """Check if circuit breaker should auto-reset after timeout."""
         if self._last_failure_time and self._consecutive_failures >= self._max_failures:
-            hours_since = (datetime.now() - self._last_failure_time).total_seconds() / 3600
+            hours_since = (datetime.now(timezone.utc) - self._last_failure_time).total_seconds() / 3600
             if hours_since >= self._circuit_breaker_reset_hours:
                 self._consecutive_failures = 0
                 self._last_failure_time = None
@@ -686,7 +686,7 @@ class TradeReviewer:
 
         except Exception as e:
             self._consecutive_failures += 1
-            self._last_failure_time = datetime.now()
+            self._last_failure_time = datetime.now(timezone.utc)
             logger.error(
                 "multi_agent_review_failed",
                 error=str(e),
@@ -1235,7 +1235,7 @@ Explain what the indicators are showing, considering the trading timeframe."""
 
         except Exception as e:
             self._consecutive_failures += 1
-            self._last_failure_time = datetime.now()
+            self._last_failure_time = datetime.now(timezone.utc)
             logger.error(
                 "multi_agent_market_analysis_failed",
                 error=str(e),

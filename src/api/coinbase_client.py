@@ -194,7 +194,7 @@ class CoinbaseClient:
             bid=Decimal(product.get("bid", "0")),
             ask=Decimal(product.get("ask", "0")),
             volume_24h=Decimal(product.get("volume_24h", "0")),
-            timestamp=datetime.now(),
+            timestamp=datetime.now(timezone.utc),
         )
 
     @retry(
