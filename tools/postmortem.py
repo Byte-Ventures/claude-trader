@@ -146,18 +146,26 @@ Examples:
         action="store_true",
         help="Print context only without Claude analysis (debug)",
     )
+    # Auto-detect paths: try local first, fallback to production
+    local_db = project_root / "data" / "trading.db"
+    prod_db = Path("/opt/claude-trader/data/trading.db")
+    default_db = local_db if local_db.exists() else prod_db
     parser.add_argument(
         "--db",
         type=str,
-        default="/opt/claude-trader/data/trading.db",
-        help="Database path (default: /opt/claude-trader/data/trading.db)",
+        default=str(default_db),
+        help=f"Database path (default: {default_db})",
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    # Source root: try local first, fallback to production
+    local_source = project_root
+    prod_source = Path("/opt/claude-trader")
+    default_source = local_source if (local_source / "src").exists() else prod_source
     parser.add_argument(
         "--source-root",
         type=str,
-        default="/opt/claude-trader",
-        help="Path to trading bot source code (default: /opt/claude-trader)",
+        default=str(default_source),
+        help=f"Path to trading bot source code (default: {default_source})",
     )
     parser.add_argument(
         "--no-source",
@@ -191,7 +199,7 @@ def fetch_trades_with_context(
     Fetch trades and correlate with signals, regime, and whale events.
 
     Signal correlation: Find signal_history where trade_executed=True
-    within 60 seconds before trade.executed_at.
+    within 120 seconds before trade.executed_at (accounts for order placement latency).
     """
     # Build trade query
     query = session.query(Trade).filter(Trade.is_paper == is_paper)
@@ -688,8 +696,12 @@ def main() -> int:
     # Determine mode (paper is default, --live overrides)
     is_paper = not args.live
 
-    # Check database exists
-    db_path = Path(args.db)
+    # Validate and check database path
+    db_path = Path(args.db).resolve()  # Resolve to absolute path
+    if ".." in args.db or not db_path.is_absolute():
+        print(f"[ERROR] Invalid database path: {args.db}")
+        print("[HINT] Use absolute paths without '..' components")
+        return 1
     if not db_path.exists():
         print(f"[ERROR] Database not found: {db_path}")
         return 1
