@@ -57,6 +57,14 @@ Always update `src/version.py` when making commits:
 
 Update the version BEFORE committing.
 
+## Configuration Parameters
+
+When creating new configuration parameters:
+
+1. Add the field to `config/settings.py` with proper Field validation
+2. **MUST** update `.env.example` with the recommended default and documentation
+3. Use descriptive comments explaining the parameter's purpose and valid range
+
 ## Branching
 
 - `main`: Production branch (deployed to server)

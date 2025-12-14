@@ -1015,7 +1015,8 @@ class TradeReviewer:
         breakdown = context['breakdown']
         whale_activity_line = ""
         if breakdown.get("_whale_activity"):
-            whale_activity_line = f"\n⚠️ WHALE ACTIVITY DETECTED: Volume is {breakdown.get('_volume_ratio', 0)}x average (3x+ = institutional activity)"
+            whale_direction = breakdown.get("_whale_direction", "unknown").upper()
+            whale_activity_line = f"\n⚠️ WHALE ACTIVITY ({whale_direction}): Volume {breakdown.get('_volume_ratio', 0)}x average - {whale_direction.lower()} pressure detected"
 
         # Build common context sections
         common_context = f"""Price: ¤{context['price']:,.2f}
@@ -1079,7 +1080,8 @@ Analyze this trade from your assigned perspective, considering the trading timef
         breakdown = context.get('breakdown', {})
         whale_line = ""
         if breakdown.get("_whale_activity"):
-            whale_line = f"\n⚠️ WHALE ACTIVITY: Volume {breakdown.get('_volume_ratio', 0)}x average"
+            whale_direction = breakdown.get("_whale_direction", "unknown").upper()
+            whale_line = f"\n⚠️ WHALE ACTIVITY ({whale_direction}): Volume {breakdown.get('_volume_ratio', 0)}x average"
 
         if review_type == "interesting_hold":
             return f"""Hold Decision Review at ¤{context['price']:,.2f}

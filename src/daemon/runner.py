@@ -251,6 +251,7 @@ class TradingDaemon:
             ema_slow=settings.ema_slow,
             atr_period=settings.atr_period,
             candle_interval=settings.candle_interval,
+            whale_volume_threshold=settings.whale_volume_threshold,
         )
 
         self.position_sizer = PositionSizer(

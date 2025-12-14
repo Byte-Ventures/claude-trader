@@ -466,10 +466,75 @@ def test_whale_boost_is_30_percent():
     high_boost = abs(result_high.breakdown.get("volume", 0))
 
     # Whale boost (30%) should be larger than high volume boost (20%)
-    # Only compare if both have non-zero signals
+    # Expected ratio is 1.5x (30% / 20%)
     if whale_boost > 0 and high_boost > 0:
-        # 30% / 20% = 1.5x ratio
-        assert whale_boost >= high_boost, "Whale boost should be >= high volume boost"
+        ratio = whale_boost / high_boost
+        assert 1.4 <= ratio <= 1.6, f"Expected ~1.5x ratio (30%/20%), got {ratio:.2f}"
+
+
+def test_whale_direction_bullish():
+    """Test that whale direction is detected as bullish on price increase."""
+    scorer = SignalScorer()
+
+    # Create data with price going UP on whale volume spike
+    closes = [50000] * 99 + [50500]  # Last candle is 1% higher
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': closes,
+        'volume': [10000] * 99 + [50000]  # 5x spike
+    })
+
+    result = scorer.calculate_score(df)
+
+    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_direction") == "bullish"
+
+
+def test_whale_direction_bearish():
+    """Test that whale direction is detected as bearish on price decrease."""
+    scorer = SignalScorer()
+
+    # Create data with price going DOWN on whale volume spike
+    closes = [50000] * 99 + [49500]  # Last candle is 1% lower
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': closes,
+        'volume': [10000] * 99 + [50000]  # 5x spike
+    })
+
+    result = scorer.calculate_score(df)
+
+    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_direction") == "bearish"
+
+
+def test_configurable_whale_threshold():
+    """Test that whale threshold is configurable."""
+    # Lower threshold (2.0x) should detect whale activity at lower volume
+    scorer_low = SignalScorer(whale_volume_threshold=2.0)
+    # Higher threshold (5.0x) should require more volume
+    scorer_high = SignalScorer(whale_volume_threshold=5.0)
+
+    # Create data with 3x volume spike
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': [50500] * 100,
+        'volume': [10000] * 99 + [30000]  # 3x spike
+    })
+
+    result_low = scorer_low.calculate_score(df)
+    result_high = scorer_high.calculate_score(df)
+
+    # Low threshold (2.0x) should detect 3x as whale
+    assert result_low.breakdown.get("_whale_activity") is True
+    # High threshold (5.0x) should NOT detect 3x as whale
+    assert result_high.breakdown.get("_whale_activity") is False
 
 
 def test_high_volume_not_whale():

@@ -147,6 +147,7 @@ class SignalScorer:
         momentum_price_candles: int = 12,
         momentum_penalty_reduction: float = 0.5,
         candle_interval: Optional[str] = None,
+        whale_volume_threshold: float = 3.0,
     ):
         """
         Initialize signal scorer.
@@ -192,6 +193,9 @@ class SignalScorer:
         self.momentum_rsi_candles = momentum_rsi_candles
         self.momentum_price_candles = momentum_price_candles
         self.momentum_penalty_reduction = momentum_penalty_reduction
+
+        # Whale detection parameters
+        self.whale_volume_threshold = whale_volume_threshold
 
     def update_settings(
         self,
@@ -486,8 +490,8 @@ class SignalScorer:
             if not pd.isna(volume_sma) and volume_sma > 0:
                 volume_ratio = current_volume / volume_sma
 
-                if volume_ratio > 3.0:
-                    # WHALE ACTIVITY: Extreme volume spike (3x+ average)
+                if volume_ratio > self.whale_volume_threshold:
+                    # WHALE ACTIVITY: Extreme volume spike (configurable threshold, default 3x)
                     # Apply 30% boost - stronger signal than normal high volume
                     # Note: On neutral signals (total_score=0), boost is 0 but _whale_activity
                     # is still set True. This is intentional - whale activity on neutral signals
@@ -503,6 +507,18 @@ class SignalScorer:
                         breakdown["volume"] = 0
                     breakdown["_whale_activity"] = True
                     breakdown["_volume_ratio"] = round(volume_ratio, 2)
+
+                    # Determine whale direction based on price movement during volume spike
+                    if len(close) >= 2:
+                        price_change_pct = (close.iloc[-1] - close.iloc[-2]) / close.iloc[-2]
+                        if price_change_pct > 0.001:  # >0.1% up
+                            breakdown["_whale_direction"] = "bullish"
+                        elif price_change_pct < -0.001:  # >0.1% down
+                            breakdown["_whale_direction"] = "bearish"
+                        else:
+                            breakdown["_whale_direction"] = "neutral"
+                    else:
+                        breakdown["_whale_direction"] = "unknown"
                 elif volume_ratio > 1.5:
                     # High volume: boost signal by 20%
                     volume_boost = int(abs(total_score) * 0.2)
