@@ -535,8 +535,9 @@ class SignalScorer:
                     # Determine whale direction based on price movement during volume spike
                     if len(close) >= 2:
                         prev_price = close.iloc[-2]
-                        if prev_price > 0:
-                            price_change_pct = (close.iloc[-1] - prev_price) / prev_price
+                        current_price = close.iloc[-1]
+                        if prev_price > 0 and not pd.isna(current_price) and current_price > 0:
+                            price_change_pct = (current_price - prev_price) / prev_price
                             breakdown["_price_change_pct"] = round(price_change_pct, 6)
                             if price_change_pct > self.whale_direction_threshold:
                                 breakdown["_whale_direction"] = "bullish"
@@ -597,6 +598,7 @@ class SignalScorer:
                 "whale_activity_detected",
                 volume_ratio=breakdown["_volume_ratio"],
                 volume_boost=breakdown["volume"],
+                whale_direction=breakdown.get("_whale_direction", "unknown"),
                 signal_direction="bullish" if total_score > 0 else "bearish" if total_score < 0 else "neutral",
             )
 

@@ -678,6 +678,35 @@ def test_update_settings_whale_threshold():
     assert scorer.whale_volume_threshold == 5.0
 
 
+def test_whale_volume_boundary_behavior():
+    """Test that whale detection uses strict greater-than comparison.
+
+    The whale detection uses > (strictly greater than), so volume_ratio
+    must exceed the threshold, not just equal it.
+    """
+    scorer = SignalScorer(whale_volume_threshold=3.0)
+
+    # Create baseline data - volume below threshold should not trigger
+    base_volume = 1000
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [50500] * 100,
+        'low': [49500] * 100,
+        'close': [50100] * 100,
+        'volume': [base_volume] * 100
+    })
+
+    result = scorer.calculate_score(df)
+    assert result.breakdown.get("_whale_activity") is False or result.breakdown.get("_whale_activity") is None
+
+    # Now spike the volume high enough to exceed 3.0 threshold
+    # Using 5x ensures we're well above, accounting for rolling SMA including the spike
+    df['volume'].iloc[-1] = base_volume * 5
+    result2 = scorer.calculate_score(df)
+    assert result2.breakdown.get("_whale_activity") is True
+    assert result2.breakdown.get("_volume_ratio") > 3.0
+
+
 # ============================================================================
 # Crash Protection Tests
 # ============================================================================

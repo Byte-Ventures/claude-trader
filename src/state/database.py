@@ -317,7 +317,7 @@ class WhaleEvent(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     symbol = Column(String(20), nullable=False, default="BTC-USD")
-    timestamp = Column(DateTime, nullable=False)  # When whale was detected
+    timestamp = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))  # When whale was detected
     volume_ratio = Column(Float, nullable=False)  # e.g., 3.45
     direction = Column(String(10), nullable=False)  # bullish/bearish/neutral
     price_change_pct = Column(Float, nullable=True)  # e.g., 0.0035
@@ -580,8 +580,8 @@ class Database:
                     text("SELECT sql FROM sqlite_master WHERE type='table' AND name='whale_events'")
                 )
                 whale_schema = result.scalar()
-                # Check if table exists with old string-based schema
-                if whale_schema and "VARCHAR" in whale_schema and "volume_ratio" in whale_schema:
+                # Check if table exists with old string-based schema (volume_ratio as VARCHAR)
+                if whale_schema and "volume_ratio VARCHAR" in whale_schema:
                     # Backup existing data
                     conn.execute(text("ALTER TABLE whale_events RENAME TO whale_events_old"))
                     # Create new table with proper types (Float)
@@ -589,7 +589,7 @@ class Database:
                         CREATE TABLE whale_events (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             symbol VARCHAR(20) NOT NULL DEFAULT 'BTC-USD',
-                            timestamp DATETIME NOT NULL,
+                            timestamp DATETIME NOT NULL DEFAULT (datetime('now')),
                             volume_ratio FLOAT NOT NULL,
                             direction VARCHAR(10) NOT NULL,
                             price_change_pct FLOAT,
@@ -1389,6 +1389,12 @@ class Database:
         Returns:
             WhaleEvent: The recorded event
         """
+        # Validate direction
+        valid_directions = {"bullish", "bearish", "neutral", "unknown"}
+        if direction not in valid_directions:
+            logger.warning("invalid_whale_direction", direction=direction, defaulting_to="unknown")
+            direction = "unknown"
+
         with self.session() as session:
             record = WhaleEvent(
                 symbol=symbol,

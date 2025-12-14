@@ -30,6 +30,7 @@ from src.safety.kill_switch import KillSwitch
 from src.safety.loss_limiter import LossLimiter
 from src.safety.trade_cooldown import TradeCooldown, TradeCooldownConfig
 from src.safety.validator import OrderValidator, OrderRequest, ValidatorConfig
+from sqlalchemy.exc import SQLAlchemyError
 from src.state.database import Database
 from src.strategy.signal_scorer import SignalScorer
 from src.strategy.weight_profile_selector import (
@@ -834,8 +835,12 @@ class TradingDaemon:
                     signal_action=signal_result.action,
                     is_paper=self.settings.is_paper_trading,
                 )
-            except Exception as e:
+            except SQLAlchemyError as e:
+                # Database errors - expected failure mode, non-critical
                 logger.warning("whale_event_record_failed", error=str(e), exc_info=True)
+            except Exception as e:
+                # Unexpected errors - log as error for visibility
+                logger.error("whale_event_record_unexpected", error=str(e), exc_info=True)
 
         # Track volatility for adaptive interval and post-volatility analysis
         if ind.volatility:

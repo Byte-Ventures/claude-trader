@@ -1243,6 +1243,33 @@ def test_whale_event_null_price_change(db):
     assert event.direction == "unknown"
 
 
+def test_whale_event_invalid_direction_defaults_to_unknown(db):
+    """Test that invalid direction values default to 'unknown'."""
+    event = db.record_whale_event(
+        symbol="BTC-USD",
+        volume_ratio=4.0,
+        direction="INVALID_DIRECTION",  # Invalid value
+        price_change_pct=0.005,
+        signal_score=50,
+        signal_action="buy",
+        is_paper=True
+    )
+
+    assert event.id is not None
+    assert event.direction == "unknown"  # Should be corrected to "unknown"
+
+
+def test_whale_events_empty_results(db):
+    """Test get_whale_events returns empty list when no matching events."""
+    # Query for a symbol that has no events
+    events = db.get_whale_events(hours=24, symbol="NONEXISTENT-USD", is_paper=True)
+    assert events == []
+
+    # Query for paper mode when only live events exist (none in this case)
+    live_events = db.get_whale_events(hours=24, is_paper=False)
+    assert live_events == []
+
+
 # ============================================================================
 # Session Management Tests - Commit/Rollback
 # ============================================================================
