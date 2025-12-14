@@ -486,3 +486,24 @@ def test_sell_cooldown_disabled_by_default(cooldown):
     # Should be allowed immediately (sell cooldown = 0)
     can_execute, reason = cooldown.can_execute("sell", Decimal("100000"))
     assert can_execute is True
+
+
+def test_invalid_price_zero_blocked(cooldown):
+    """Zero price should be blocked."""
+    can_execute, reason = cooldown.can_execute("buy", Decimal("0"))
+    assert can_execute is False
+    assert reason == "invalid price"
+
+
+def test_invalid_price_negative_blocked(cooldown):
+    """Negative price should be blocked."""
+    can_execute, reason = cooldown.can_execute("buy", Decimal("-100"))
+    assert can_execute is False
+    assert reason == "invalid price"
+
+
+def test_invalid_price_none_blocked(cooldown):
+    """None price should be blocked."""
+    can_execute, reason = cooldown.can_execute("buy", None)
+    assert can_execute is False
+    assert reason == "invalid price"

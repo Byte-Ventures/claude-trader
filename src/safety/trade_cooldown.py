@@ -143,6 +143,11 @@ class TradeCooldown:
         Returns:
             Tuple of (allowed, reason_if_blocked)
         """
+        # Validate input price
+        if current_price is None or current_price <= 0:
+            logger.error("invalid_price_for_cooldown", price=str(current_price))
+            return False, "invalid price"
+
         self._ensure_cache_initialized()
 
         if side == "buy":

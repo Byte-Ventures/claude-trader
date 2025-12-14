@@ -624,7 +624,8 @@ class TradingDaemon:
             # Main loop
             while not self.shutdown_event.is_set():
                 # Check for Telegram commands (/reset, /status, /help)
-                self.notifier.check_commands()
+                # Pass event loop to avoid creating a new one each time
+                self.notifier.check_commands(loop=self._loop)
 
                 # Check for config reload request
                 if reload_pending():
@@ -922,10 +923,11 @@ class TradingDaemon:
                 )
 
                 if selection:
-                    # Update weights in signal scorer
-                    # NOTE: Thread safety assumption - this runs in single-threaded event loop.
-                    # Weight updates happen before signal calculation in same iteration.
-                    # If threading is introduced, add locking around weight updates.
+                    # Update weights in signal scorer for NEXT iteration
+                    # NOTE: Weight updates happen AFTER signal calculation in the current iteration.
+                    # This means new weights take effect on the next candle, not the current one.
+                    # This 1-candle lag is acceptable for a trading system since weight profiles
+                    # are meant to adapt gradually to market conditions, not react instantly.
                     self.signal_scorer.update_weights(selection.weights)
 
                     # Always update confidence/reasoning for dashboard display

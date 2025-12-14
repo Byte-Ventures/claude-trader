@@ -258,11 +258,16 @@ class TelegramNotifier:
         self._kill_switch = kill_switch
         logger.info("telegram_command_handling_enabled")
 
-    def check_commands(self) -> None:
+    def check_commands(self, loop: asyncio.AbstractEventLoop = None) -> None:
         """
         Check for and process incoming Telegram commands.
 
         Call this periodically from the main loop. It's rate-limited internally.
+
+        Args:
+            loop: Optional event loop to use. If provided, uses run_until_complete()
+                  instead of creating a new loop with asyncio.run(). This is more
+                  efficient and avoids potential conflicts with existing event loops.
         """
         if not self.enabled or not self._bot:
             return
@@ -274,8 +279,12 @@ class TelegramNotifier:
         self._last_command_check = now
 
         try:
-            # Run async check synchronously
-            asyncio.run(self._async_check_commands())
+            if loop:
+                # Use provided event loop (more efficient, avoids conflicts)
+                loop.run_until_complete(self._async_check_commands())
+            else:
+                # Fallback: create new event loop (less efficient)
+                asyncio.run(self._async_check_commands())
         except Exception as e:
             logger.debug("telegram_command_check_error", error=str(e))
 
