@@ -261,11 +261,26 @@ function updateDashboard(state) {
 
     // Update indicators
     const indicators = state.indicators;
-    document.getElementById('volatility-value').textContent = indicators.volatility ?
-        indicators.volatility.toUpperCase() : '--';
 
-    // Update regime
-    document.getElementById('regime-value').textContent = state.regime || '--';
+    // Update weight profile
+    const weightProfile = state.weight_profile;
+    if (weightProfile) {
+        const profileEmoji = {
+            'trending': '📈',
+            'ranging': '↔️',
+            'volatile': '⚡',
+            'default': '⚖️'
+        };
+        const emoji = profileEmoji[weightProfile.name] || '🔄';
+        document.getElementById('weight-profile-value').textContent =
+            `${emoji} ${weightProfile.name.charAt(0).toUpperCase() + weightProfile.name.slice(1)}`;
+        const confidencePct = Math.round(weightProfile.confidence * 100);
+        document.getElementById('weight-profile-confidence').textContent =
+            confidencePct > 0 ? `${confidencePct}% confidence` : '--';
+    } else {
+        document.getElementById('weight-profile-value').textContent = 'Disabled';
+        document.getElementById('weight-profile-confidence').textContent = '--';
+    }
 
     // Update circuit breaker
     const cbEl = document.getElementById('circuit-breaker');
