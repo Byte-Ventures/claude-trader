@@ -94,6 +94,7 @@ class TradingDaemon:
         # in _execute_buy()/_execute_sell() within the same iteration. No concurrent
         # iterations can occur because the main loop is synchronous.
         self._current_signal_id: Optional[int] = None
+        self._signal_history_failures: int = 0  # Track consecutive storage failures
 
         # Create persistent event loop for async operations (avoids repeated asyncio.run())
         self._loop = asyncio.new_event_loop()
@@ -768,10 +769,26 @@ class TradingDaemon:
                 )
                 session.add(history)
                 session.commit()
+                self._signal_history_failures = 0  # Reset on success
                 return history.id
         except SQLAlchemyError as e:
             # Database errors are non-critical - don't block trading for history storage
-            logger.warning("signal_history_store_failed", error=str(e), error_type=type(e).__name__)
+            self._signal_history_failures += 1
+            logger.warning(
+                "signal_history_store_failed",
+                error=str(e),
+                error_type=type(e).__name__,
+                consecutive_failures=self._signal_history_failures,
+            )
+            # Alert at 10 failures, then every 50 additional failures (60, 110, 160...)
+            if self._signal_history_failures == 10 or (
+                self._signal_history_failures > 10
+                and (self._signal_history_failures - 10) % 50 == 0
+            ):
+                self.notifier.notify_error(
+                    f"Signal history storage failing ({self._signal_history_failures} consecutive failures)",
+                    context=f"Last error: {e}",
+                )
             return None
 
     def _mark_signal_trade_executed(self, signal_id: Optional[int]) -> None:
