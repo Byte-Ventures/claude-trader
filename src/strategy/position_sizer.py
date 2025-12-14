@@ -154,7 +154,7 @@ class PositionSizer:
             return self._zero_result(current_price, side)
 
         # Step 1: Calculate risk amount (% of portfolio willing to lose)
-        risk_amount = total_value * Decimal(str(self.config.risk_per_trade_percent / 100))
+        risk_amount = total_value * Decimal(str(self.config.risk_per_trade_percent)) / Decimal("100")
 
         # Step 2: Calculate stop-loss distance
         # Use the LARGER of ATR-based distance or minimum percentage distance
