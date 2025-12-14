@@ -2193,7 +2193,7 @@ class TradingDaemon:
                     )
                     self.notifier.send_message(
                         f"🛡️ Break-even protection activated\n"
-                        f"Entry: ${entry_price:,.2f} | Current: ${current_price:,.2f} (+{profit_pct}%)\n"
+                        f"Entry: ¤{entry_price:,.2f} | Current: ¤{current_price:,.2f} (+{profit_pct}%)\n"
                         f"Position now protected at entry"
                     )
                     # Update local hard_stop for subsequent checks this iteration

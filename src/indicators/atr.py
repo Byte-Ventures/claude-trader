@@ -112,7 +112,7 @@ def get_atr_stop_loss(
     Returns:
         Stop-loss price
     """
-    atr_distance = Decimal(str(atr_value * multiplier))
+    atr_distance = Decimal(str(atr_value)) * Decimal(str(multiplier))
 
     if side == "buy":
         return entry_price - atr_distance
@@ -138,7 +138,7 @@ def get_atr_take_profit(
     Returns:
         Take-profit price
     """
-    atr_distance = Decimal(str(atr_value * multiplier))
+    atr_distance = Decimal(str(atr_value)) * Decimal(str(multiplier))
 
     if side == "buy":
         return entry_price + atr_distance

@@ -182,7 +182,7 @@ class PositionSizer:
         size_base *= Decimal(str(safety_multiplier))
 
         # Step 7: Apply maximum position limit (accounting for existing position)
-        max_position_base = (total_value * Decimal(str(self.config.max_position_percent / 100))) / current_price
+        max_position_base = (total_value * Decimal(str(self.config.max_position_percent)) / Decimal("100")) / current_price
 
         if side == "buy":
             # Calculate how much more we can buy before hitting the position limit

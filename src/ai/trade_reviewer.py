@@ -994,7 +994,7 @@ class TradeReviewer:
         price_action_line = f"\n{price_action}" if price_action else ""
 
         # Build common context sections
-        common_context = f"""Price: ${context['price']:,.2f}
+        common_context = f"""Price: ¤{context['price']:,.2f}
 Signal Score: {context['score']:+d} (threshold: ±{context['threshold']})
 Signal Breakdown: {json.dumps(context['breakdown'])}
 
@@ -1010,7 +1010,7 @@ Market Context:
 
 Recent Performance (7 days):
 - Win Rate: {context['win_rate']:.0f}%
-- Net P&L: ${context['net_pnl']:+,.2f}
+- Net P&L: ¤{context['net_pnl']:+,.2f}
 - Total Trades: {context['total_trades']}"""
 
         if review_type == "interesting_hold":
@@ -1052,7 +1052,7 @@ Analyze this trade from your assigned perspective, considering the trading timef
             )
 
         if review_type == "interesting_hold":
-            return f"""Hold Decision Review at ${context['price']:,.2f}
+            return f"""Hold Decision Review at ¤{context['price']:,.2f}
 Signal Score: {context['score']:+d} (below threshold ±{context['threshold']})
 Trading Style: {context['trading_style_desc']}
 
@@ -1063,7 +1063,7 @@ Agent Reviews:
 
 Based on these perspectives, decide: Is the hold correct (stay passive) or should the bot act?"""
         else:
-            return f"""Trade Decision: {context['action'].upper()} at ${context['price']:,.2f}
+            return f"""Trade Decision: {context['action'].upper()} at ¤{context['price']:,.2f}
 Signal Score: {context['score']:+d}
 Trading Style: {context['trading_style_desc']}
 
@@ -1077,7 +1077,7 @@ Based on these three perspectives and the trading timeframe, make the final deci
         return f"""Analyze this hold decision:
 
 Signal Score: {context['score']:+d} (need ≥+{context['threshold']} for buy or ≤-{context['threshold']} for sell)
-Price: ${context['price']:,.2f}
+Price: ¤{context['price']:,.2f}
 Signal Breakdown: {json.dumps(context['breakdown'])}
 
 Trading Style: {context['trading_style_desc']}
@@ -1329,7 +1329,7 @@ Explain what the indicators are showing, considering the trading timeframe."""
         return f"""Analyze current Bitcoin market conditions:
 
 === MARKET DATA ===
-Price: ${context['price']:,.2f}
+Price: ¤{context['price']:,.2f}
 Price Changes: {price_change_str}
 Volatility: {context['volatility'].upper()}
 Market Regime: {context['regime']}
@@ -1358,7 +1358,7 @@ Provide your market analysis from your assigned perspective."""
                 f"  Reasoning: {review.reasoning}"
             )
 
-        return f"""Market Analysis at ${context['price']:,.2f}
+        return f"""Market Analysis at ¤{context['price']:,.2f}
 Volatility: {context['volatility'].upper()}
 Fear & Greed: {context['fear_greed']} ({context['fear_greed_class']})
 

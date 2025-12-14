@@ -227,7 +227,7 @@ def test_position_size_respects_max_position_percent(sizer, sample_df):
 
     # Calculate portfolio value
     total_value = quote_balance
-    max_position_quote = total_value * Decimal(str(sizer.config.max_position_percent / 100))
+    max_position_quote = total_value * Decimal(str(sizer.config.max_position_percent)) / Decimal("100")
 
     # Position should not exceed max
     assert result.size_quote <= max_position_quote

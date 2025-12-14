@@ -239,8 +239,8 @@ class TelegramNotifier:
             f"{emoji} <b>{mode}Trade Executed</b>\n",
             f"Side: {side.upper()}",
             f"Size: {size:.8f}",
-            f"Price: ${price:,.2f}",
-            f"Fee: ${fee:.2f}",
+            f"Price: ¤{price:,.2f}",
+            f"Fee: ¤{fee:.2f}",
         ]
 
         # Add optional context
@@ -248,15 +248,15 @@ class TelegramNotifier:
             lines.append(f"Signal Score: {signal_score}")
         if stop_loss is not None and side == "buy":
             stop_pct = ((price - stop_loss) / price * 100) if price > 0 else 0
-            lines.append(f"Stop Loss: ${stop_loss:,.2f} ({stop_pct:.1f}% below)")
+            lines.append(f"Stop Loss: ¤{stop_loss:,.2f} ({stop_pct:.1f}% below)")
         if take_profit is not None and side == "buy":
             tp_pct = ((take_profit - price) / price * 100) if price > 0 else 0
-            lines.append(f"Take Profit: ${take_profit:,.2f} ({tp_pct:.1f}% above)")
+            lines.append(f"Take Profit: ¤{take_profit:,.2f} ({tp_pct:.1f}% above)")
         if position_percent is not None:
             lines.append(f"Position Size: {position_percent:.1f}% of portfolio")
         if realized_pnl is not None and side == "sell":
             pnl_emoji = "📈" if realized_pnl >= 0 else "📉"
-            lines.append(f"{pnl_emoji} Realized P&L: ${realized_pnl:+,.2f}")
+            lines.append(f"{pnl_emoji} Realized P&L: ¤{realized_pnl:+,.2f}")
 
         lines.append(f"\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -284,17 +284,18 @@ class TelegramNotifier:
         ]
 
         if price is not None:
-            lines.append(f"Price: ${price:,.2f}")
+            lines.append(f"Price: ¤{price:,.2f}")
         if signal_score is not None:
             lines.append(f"Signal Score: {signal_score}")
         if size_quote is not None:
-            lines.append(f"Intended Size: ${size_quote:,.2f}")
+            lines.append(f"Intended Size: ¤{size_quote:,.2f}")
 
         lines.append(f"\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
         message = "\n".join(lines)
 
-        self.send_message_sync(message)
+        if self.send_message_sync(message):
+            logger.info("trade_rejected_notification_sent", side=side, reason=reason)
         self._save_to_dashboard("trade_rejected", f"{side.upper()} Rejected", message)
 
     def notify_order_failed(
@@ -503,7 +504,7 @@ class TelegramNotifier:
             message = (
                 f"{title}\n\n"
                 f"Signal Score: {ctx.get('score', 0)}/100 (threshold: 60)\n"
-                f"Price: ${ctx.get('price', 0):,.2f}\n"
+                f"Price: ¤{ctx.get('price', 0):,.2f}\n"
                 f"📊 Fear & Greed: {ctx.get('fear_greed', 'N/A')} ({ctx.get('fear_greed_class', '')})\n\n"
                 f"<b>Signal Breakdown</b>:\n{breakdown_text}\n\n"
                 f"<b>Agent Reviews</b>:\n{agents_text}\n\n"
@@ -579,7 +580,7 @@ class TelegramNotifier:
 
             message = (
                 f"🤖 <b>Multi-Agent Trade Review</b>\n\n"
-                f"📊 <b>Trade</b>: {action} @ ${ctx.get('price', 0):,.2f}\n"
+                f"📊 <b>Trade</b>: {action} @ ¤{ctx.get('price', 0):,.2f}\n"
                 f"Signal Score: {ctx.get('score', 0)}/100\n"
                 f"Fear & Greed: {ctx.get('fear_greed', 'N/A')} ({ctx.get('fear_greed_class', '')})\n\n"
                 f"<b>Agent Reviews</b>:\n{agents_text}\n\n"
@@ -797,7 +798,7 @@ class TelegramNotifier:
             f"{title}\n\n"
             f"<b>Volatility</b>: {vol_emoji.get(volatility, '☀️')} {volatility.title()}\n\n"
             f"<b>Current Indicators</b>:\n"
-            f"  💰 Price: ${float(current_price):,.2f}\n"
+            f"  💰 Price: ¤{float(current_price):,.2f}\n"
             f"  📊 RSI: {rsi_status}\n"
             f"  📈 MACD: {macd_status}\n"
             f"  😨 Fear & Greed: {fear_greed} ({fear_greed_class})\n\n"
