@@ -7,7 +7,7 @@ Provides:
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -86,7 +86,7 @@ async def fetch_fear_greed_index(timeout: float = 10.0) -> FearGreedResult:
                 return FearGreedResult(
                     value=50,
                     classification="Neutral",
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                     error="No data in response",
                 )
 
@@ -112,7 +112,7 @@ async def fetch_fear_greed_index(timeout: float = 10.0) -> FearGreedResult:
         return FearGreedResult(
             value=50,
             classification="Neutral",
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             error=str(e),
         )
     except Exception as e:
@@ -120,7 +120,7 @@ async def fetch_fear_greed_index(timeout: float = 10.0) -> FearGreedResult:
         return FearGreedResult(
             value=50,
             classification="Neutral",
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             error=str(e),
         )
 
@@ -139,7 +139,7 @@ def get_trade_summary(db, days: int = 7, is_paper: Optional[bool] = None) -> Tra
     """
     from src.state.database import Trade
 
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
     with db.session() as session:
         query = session.query(Trade).filter(

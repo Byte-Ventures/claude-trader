@@ -9,7 +9,7 @@ import asyncio
 import json
 import random
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -973,7 +973,7 @@ class TradeReviewer:
             "total_trades": trade_summary.total_trades,
             "net_pnl": float(trade_summary.net_pnl),
             "breakdown": signal_result.breakdown,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "candle_interval": self.candle_interval,
             "trading_style": trading_style,
             "trading_style_desc": trading_style_desc,
@@ -1157,7 +1157,7 @@ Explain what the indicators are showing, considering the trading timeframe."""
             "price_change_24h": price_change_24h,
             "indicators": indicators,
             "research": research_text,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
         try:

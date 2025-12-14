@@ -667,7 +667,7 @@ class Database:
     ) -> list[Order]:
         """Get recent orders."""
         with self.session() as session:
-            cutoff = datetime.utcnow() - timedelta(hours=hours)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
             return (
                 session.query(Order)
                 .filter(Order.symbol == symbol, Order.created_at > cutoff)
@@ -723,7 +723,7 @@ class Database:
     def get_trades_today(self, symbol: str = "BTC-USD") -> list[Trade]:
         """Get all trades from today."""
         with self.session() as session:
-            today = datetime.utcnow().date()
+            today = datetime.now(timezone.utc).date()
             return (
                 session.query(Trade)
                 .filter(
@@ -836,7 +836,7 @@ class Database:
 
     def increment_daily_trade_count(self, is_paper: bool = False) -> None:
         """Increment today's trade count by 1 (UTC)."""
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
 
         with self.session() as session:
             stats = (
@@ -859,7 +859,7 @@ class Database:
 
     def count_todays_trades(self, is_paper: bool = False, symbol: Optional[str] = None) -> int:
         """Count trades executed today (UTC)."""
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
         today_start = datetime.combine(today, datetime.min.time())
         today_end = datetime.combine(today, datetime.max.time())
 
@@ -875,7 +875,7 @@ class Database:
 
     def get_todays_realized_pnl(self, is_paper: bool = False, symbol: Optional[str] = None) -> Decimal:
         """Sum realized P&L from today's trades (UTC) using SQL aggregation."""
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
         today_start = datetime.combine(today, datetime.min.time())
         today_end = datetime.combine(today, datetime.max.time())
 
@@ -1205,7 +1205,7 @@ class Database:
     ) -> list[RegimeHistory]:
         """Get regime change history for the past N hours."""
         with self.session() as session:
-            cutoff = datetime.utcnow() - timedelta(hours=hours)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
             return (
                 session.query(RegimeHistory)
                 .filter(

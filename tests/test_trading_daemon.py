@@ -16,7 +16,7 @@ All tests use mocked components - NO real trades or API calls.
 
 import pytest
 from decimal import Decimal
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from unittest.mock import Mock, MagicMock, patch, PropertyMock
 from threading import Event
 import pandas as pd
@@ -632,7 +632,7 @@ def test_ai_threshold_adjustment_accumulate_lowers_buy_threshold(mock_settings, 
                 # Set accumulate recommendation with high confidence
                 daemon._ai_recommendation = "accumulate"
                 daemon._ai_recommendation_confidence = 0.9
-                daemon._ai_recommendation_time = datetime.utcnow()
+                daemon._ai_recommendation_time = datetime.now(timezone.utc)
 
                 buy_adj = daemon._get_ai_threshold_adjustment("buy")
                 sell_adj = daemon._get_ai_threshold_adjustment("sell")
@@ -656,7 +656,7 @@ def test_ai_threshold_adjustment_reduce_lowers_sell_threshold(mock_settings, moc
                 # Set reduce recommendation with high confidence
                 daemon._ai_recommendation = "reduce"
                 daemon._ai_recommendation_confidence = 0.9
-                daemon._ai_recommendation_time = datetime.utcnow()
+                daemon._ai_recommendation_time = datetime.now(timezone.utc)
 
                 buy_adj = daemon._get_ai_threshold_adjustment("buy")
                 sell_adj = daemon._get_ai_threshold_adjustment("sell")
@@ -677,7 +677,7 @@ def test_ai_threshold_adjustment_wait_has_no_effect(mock_settings, mock_exchange
                 # Set wait recommendation
                 daemon._ai_recommendation = "wait"
                 daemon._ai_recommendation_confidence = 0.9
-                daemon._ai_recommendation_time = datetime.utcnow()
+                daemon._ai_recommendation_time = datetime.now(timezone.utc)
 
                 # Neither threshold should be affected
                 assert daemon._get_ai_threshold_adjustment("buy") == 0
@@ -699,11 +699,11 @@ def test_ai_threshold_adjustment_decays_over_time(mock_settings, mock_exchange_c
                 daemon._ai_recommendation_ttl_minutes = 20
 
                 # Test at start (no decay)
-                daemon._ai_recommendation_time = datetime.utcnow()
+                daemon._ai_recommendation_time = datetime.now(timezone.utc)
                 adj_at_start = daemon._get_ai_threshold_adjustment("buy")
 
                 # Test at 50% through TTL (should be ~50% of original)
-                daemon._ai_recommendation_time = datetime.utcnow() - timedelta(minutes=10)
+                daemon._ai_recommendation_time = datetime.now(timezone.utc) - timedelta(minutes=10)
                 adj_at_half = daemon._get_ai_threshold_adjustment("buy")
 
                 # Adjustment should decay (less negative over time)
@@ -725,7 +725,7 @@ def test_ai_threshold_adjustment_expires_after_ttl(mock_settings, mock_exchange_
                 daemon._ai_recommendation_ttl_minutes = 20
 
                 # Set time to beyond TTL
-                daemon._ai_recommendation_time = datetime.utcnow() - timedelta(minutes=25)
+                daemon._ai_recommendation_time = datetime.now(timezone.utc) - timedelta(minutes=25)
 
                 # Should return 0 and clear the recommendation
                 assert daemon._get_ai_threshold_adjustment("buy") == 0
@@ -741,7 +741,7 @@ def test_ai_threshold_adjustment_scales_with_confidence(mock_settings, mock_exch
                 daemon = TradingDaemon(mock_settings)
 
                 daemon._ai_recommendation = "accumulate"
-                daemon._ai_recommendation_time = datetime.utcnow()
+                daemon._ai_recommendation_time = datetime.now(timezone.utc)
 
                 # Test with high confidence
                 daemon._ai_recommendation_confidence = 1.0

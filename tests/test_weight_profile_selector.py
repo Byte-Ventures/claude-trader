@@ -11,7 +11,7 @@ Tests cover:
 """
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -133,13 +133,13 @@ def test_should_update_true_when_no_cache(selector):
 
 def test_should_update_false_when_cache_fresh(selector):
     """Should not update when cache is fresh."""
-    selector._last_selection_time = datetime.utcnow()
+    selector._last_selection_time = datetime.now(timezone.utc)
     assert selector.should_update() is False
 
 
 def test_should_update_true_when_cache_expired(selector):
     """Should update when cache has expired."""
-    selector._last_selection_time = datetime.utcnow() - timedelta(minutes=20)
+    selector._last_selection_time = datetime.now(timezone.utc) - timedelta(minutes=20)
     selector.config.cache_minutes = 15
     assert selector.should_update() is True
 
@@ -158,10 +158,10 @@ def test_cache_invalidation(selector):
         weights=WEIGHT_PROFILES["trending"],
         confidence=0.8,
         reasoning="Test",
-        selected_at=datetime.utcnow(),
+        selected_at=datetime.now(timezone.utc),
         market_context={},
     )
-    selector._last_selection_time = datetime.utcnow()
+    selector._last_selection_time = datetime.now(timezone.utc)
 
     selector.invalidate_cache()
 
@@ -414,11 +414,11 @@ async def test_select_profile_returns_cached(selector):
         weights=WEIGHT_PROFILES["trending"],
         confidence=0.8,
         reasoning="Cached",
-        selected_at=datetime.utcnow(),
+        selected_at=datetime.now(timezone.utc),
         market_context={},
     )
     selector._cached_selection = cached
-    selector._last_selection_time = datetime.utcnow()
+    selector._last_selection_time = datetime.now(timezone.utc)
 
     result = await selector.select_profile(
         indicators={"rsi": 50},

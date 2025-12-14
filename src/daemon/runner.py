@@ -403,7 +403,7 @@ class TradingDaemon:
             return 0
 
         # Check if recommendation has expired
-        elapsed = (datetime.utcnow() - self._ai_recommendation_time).total_seconds() / 60
+        elapsed = (datetime.now(timezone.utc) - self._ai_recommendation_time).total_seconds() / 60
         if elapsed > self._ai_recommendation_ttl_minutes:
             # Clear expired recommendation
             self._ai_recommendation = None
@@ -954,7 +954,7 @@ class TradingDaemon:
 
         # Log when AI adjustment is active
         if ai_buy_adj != 0 or ai_sell_adj != 0:
-            elapsed = (datetime.utcnow() - self._ai_recommendation_time).total_seconds() / 60
+            elapsed = (datetime.now(timezone.utc) - self._ai_recommendation_time).total_seconds() / 60
             decay_pct = (1.0 - elapsed / self._ai_recommendation_ttl_minutes) * 100
             logger.info(
                 "ai_threshold_adjustment_active",
@@ -985,7 +985,7 @@ class TradingDaemon:
         # Persist state for dashboard
         ind = signal_result.indicators
         dashboard_state = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "price": str(current_price),
             "signal": {
                 "score": signal_result.score,
@@ -1129,7 +1129,7 @@ class TradingDaemon:
                             if review.judge_recommendation in ("accumulate", "reduce"):
                                 self._ai_recommendation = review.judge_recommendation
                                 self._ai_recommendation_confidence = review.judge_confidence
-                                self._ai_recommendation_time = datetime.utcnow()
+                                self._ai_recommendation_time = datetime.now(timezone.utc)
                                 logger.info(
                                     "ai_recommendation_stored",
                                     recommendation=review.judge_recommendation,

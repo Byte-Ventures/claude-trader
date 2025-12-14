@@ -10,7 +10,7 @@ Profiles are designed for different market regimes:
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -132,7 +132,7 @@ class WeightProfileSelector:
             return False
         if self._last_selection_time is None:
             return True
-        elapsed = (datetime.utcnow() - self._last_selection_time).total_seconds() / 60
+        elapsed = (datetime.now(timezone.utc) - self._last_selection_time).total_seconds() / 60
         return elapsed >= self.config.cache_minutes
 
     async def select_profile(
@@ -173,7 +173,7 @@ class WeightProfileSelector:
                 indicators, volatility, trend, current_price, fear_greed
             )
             self._cached_selection = selection
-            self._last_selection_time = datetime.utcnow()
+            self._last_selection_time = datetime.now(timezone.utc)
             self._consecutive_failures = 0
 
             logger.info(
@@ -222,13 +222,13 @@ class WeightProfileSelector:
             weights=WEIGHT_PROFILES[profile],
             confidence=0.5,  # Lower confidence for fallback
             reasoning=reasoning,
-            selected_at=datetime.utcnow(),
+            selected_at=datetime.now(timezone.utc),
             market_context={"fallback": True, "volatility": volatility, "trend": trend},
         )
 
         # Cache the fallback selection too
         self._cached_selection = selection
-        self._last_selection_time = datetime.utcnow()
+        self._last_selection_time = datetime.now(timezone.utc)
 
         logger.info(
             "weight_profile_fallback_used",
@@ -281,7 +281,7 @@ class WeightProfileSelector:
                 weights=WEIGHT_PROFILES[result["profile"]],
                 confidence=result["confidence"],
                 reasoning=result["reasoning"],
-                selected_at=datetime.utcnow(),
+                selected_at=datetime.now(timezone.utc),
                 market_context={
                     "volatility": volatility,
                     "trend": trend,
