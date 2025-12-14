@@ -32,6 +32,7 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     func,
+    inspect,
     text,
 )
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
@@ -433,12 +434,21 @@ class Database:
 
         # Create tables - we use create_all() instead of Alembic for simplicity.
         # SQLite handles new tables automatically; schema changes use _run_migrations().
+        # create_all() is idempotent - creates missing tables, skips existing ones.
         Base.metadata.create_all(self.engine)
 
         # Run migrations for existing databases (column renames, etc.)
         self._run_migrations()
 
-        logger.info("database_initialized", path=str(db_path))
+        # Verify critical tables exist (especially for upgrades from older versions)
+        inspector = inspect(self.engine)
+        tables = inspector.get_table_names()
+        logger.info(
+            "database_initialized",
+            path=str(db_path),
+            tables=tables,
+            signal_history_exists="signal_history" in tables,
+        )
 
     def _run_migrations(self) -> None:
         """Run database migrations for schema changes."""

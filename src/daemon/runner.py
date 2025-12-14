@@ -88,7 +88,11 @@ class TradingDaemon:
         self._6h_trend: str = "neutral"
         self._6h_last_fetch: Optional[datetime] = None
 
-        # Signal history tracking (to avoid race condition when marking trades)
+        # Signal history tracking for marking executed trades.
+        # Thread-safety note: This is safe because TradingDaemon runs single-threaded.
+        # The ID is set in _trading_iteration() before any trade execution, and used
+        # in _execute_buy()/_execute_sell() within the same iteration. No concurrent
+        # iterations can occur because the main loop is synchronous.
         self._current_signal_id: Optional[int] = None
 
         # Create persistent event loop for async operations (avoids repeated asyncio.run())
@@ -663,8 +667,9 @@ class TradingDaemon:
 
             logger.info("htf_trend_updated", timeframe=granularity, trend=trend)
             return trend
-        except (ConnectionError, TimeoutError, OSError, ValueError, KeyError) as e:
-            # Expected failures: network issues, API errors, data parsing issues
+        except (ConnectionError, TimeoutError, OSError, ValueError, KeyError, NotImplementedError) as e:
+            # Expected failures: network issues, API errors, data parsing issues,
+            # or unsupported granularity (NotImplementedError).
             # Fail-open: return cached trend or neutral, never block trading
             logger.warning("htf_fetch_failed", timeframe=granularity, error=str(e), error_type=type(e).__name__)
             return cached_trend or "neutral"
