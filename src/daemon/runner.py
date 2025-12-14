@@ -879,6 +879,11 @@ class TradingDaemon:
         if not self.settings.postmortem_enabled or not self._postmortem_available:
             return
 
+        # Validate trade_id type (defense-in-depth against injection)
+        if trade_id is not None and not isinstance(trade_id, int):
+            logger.error("postmortem_invalid_trade_id_type", trade_id_type=type(trade_id).__name__)
+            return
+
         def run_postmortem():
             try:
                 # Build command
