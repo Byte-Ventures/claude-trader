@@ -757,6 +757,37 @@ class Database:
                 query = query.filter(Trade.symbol == symbol)
             return query.order_by(Trade.executed_at.desc()).limit(limit).all()
 
+    def get_last_trade_by_side(
+        self,
+        side: str,
+        symbol: str = "BTC-USD",
+        is_paper: bool = False,
+    ) -> Optional[Trade]:
+        """
+        Get the most recent trade for a specific side (buy/sell).
+
+        Used for trade cooldown calculations.
+
+        Args:
+            side: Trade side ("buy" or "sell")
+            symbol: Trading pair symbol
+            is_paper: Whether to query paper trades
+
+        Returns:
+            Most recent Trade object for the given side, or None
+        """
+        with self.session() as session:
+            return (
+                session.query(Trade)
+                .filter(
+                    Trade.side == side,
+                    Trade.symbol == symbol,
+                    Trade.is_paper == is_paper,
+                )
+                .order_by(Trade.executed_at.desc())
+                .first()
+            )
+
     def get_last_paper_balance(
         self, symbol: str = "BTC-USD"
     ) -> Optional[tuple[Decimal, Decimal, Decimal]]:

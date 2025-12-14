@@ -20,11 +20,15 @@ import hashlib
 from datetime import datetime
 from decimal import Decimal
 from time import time
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import structlog
 from telegram import Bot
 from telegram.error import TelegramError
+
+if TYPE_CHECKING:
+    from src.safety.circuit_breaker import CircuitBreaker
+    from src.safety.kill_switch import KillSwitch
 
 logger = structlog.get_logger(__name__)
 
@@ -98,6 +102,15 @@ class TelegramNotifier:
         self._last_message_by_type: dict[str, float] = {}
         # Track last message content hash to detect duplicates
         self._last_message_hash: dict[str, str] = {}
+
+        # Safety system references for command handling
+        self._circuit_breaker: Optional["CircuitBreaker"] = None
+        self._kill_switch: Optional["KillSwitch"] = None
+
+        # Command handling state
+        self._last_update_id: int = 0
+        self._command_check_interval: float = 10.0  # Check every 10 seconds
+        self._last_command_check: float = 0.0
 
         if enabled and bot_token and chat_id:
             self._bot = Bot(token=bot_token)
@@ -226,6 +239,159 @@ class TelegramNotifier:
         except Exception as e:
             logger.error("telegram_send_error", error=str(e))
             return False
+
+    # Command handling methods
+
+    def set_safety_systems(
+        self,
+        circuit_breaker: "CircuitBreaker",
+        kill_switch: "KillSwitch",
+    ) -> None:
+        """
+        Set references to safety systems for command handling.
+
+        Args:
+            circuit_breaker: Circuit breaker instance
+            kill_switch: Kill switch instance
+        """
+        self._circuit_breaker = circuit_breaker
+        self._kill_switch = kill_switch
+        logger.info("telegram_command_handling_enabled")
+
+    def check_commands(self) -> None:
+        """
+        Check for and process incoming Telegram commands.
+
+        Call this periodically from the main loop. It's rate-limited internally.
+        """
+        if not self.enabled or not self._bot:
+            return
+
+        # Rate limit command checks
+        now = time()
+        if now - self._last_command_check < self._command_check_interval:
+            return
+        self._last_command_check = now
+
+        try:
+            # Run async check synchronously
+            asyncio.run(self._async_check_commands())
+        except Exception as e:
+            logger.debug("telegram_command_check_error", error=str(e))
+
+    async def _async_check_commands(self) -> None:
+        """Async implementation of command checking."""
+        try:
+            updates = await self._bot.get_updates(
+                offset=self._last_update_id + 1,
+                timeout=1,
+                allowed_updates=["message"],
+            )
+
+            for update in updates:
+                self._last_update_id = update.update_id
+
+                if update.message and update.message.text:
+                    # Only process commands from authorized chat
+                    if str(update.message.chat_id) != self.chat_id:
+                        logger.warning(
+                            "telegram_unauthorized_command",
+                            chat_id=update.message.chat_id,
+                        )
+                        continue
+
+                    text = update.message.text.strip()
+                    await self._handle_command(text)
+
+        except TelegramError as e:
+            logger.debug("telegram_get_updates_error", error=str(e))
+
+    async def _handle_command(self, text: str) -> None:
+        """Handle a single command."""
+        if text == "/reset":
+            await self._cmd_reset()
+        elif text == "/status":
+            await self._cmd_status()
+        elif text == "/help":
+            await self._cmd_help()
+        # Ignore non-commands
+
+    async def _cmd_reset(self) -> None:
+        """Handle /reset command - reset circuit breaker from BLACK state."""
+        if not self._circuit_breaker:
+            await self.send_message("❌ Circuit breaker not available")
+            return
+
+        from src.safety.circuit_breaker import BreakerLevel
+
+        status = self._circuit_breaker.status
+        if status.level == BreakerLevel.BLACK:
+            success = self._circuit_breaker.manual_reset("RESET_CONFIRMED")
+            if success:
+                await self.send_message(
+                    "✅ <b>Circuit Breaker Reset</b>\n\n"
+                    "Status: BLACK → GREEN\n"
+                    "Trading has resumed."
+                )
+                logger.info("circuit_breaker_reset_via_telegram")
+            else:
+                await self.send_message("❌ Reset failed - check logs")
+        elif status.level == BreakerLevel.RED:
+            await self.send_message(
+                f"⚠️ Circuit breaker is RED (not BLACK)\n\n"
+                f"Reason: {status.reason}\n"
+                f"Auto-recovery: {status.cooldown_until.strftime('%H:%M:%S') if status.cooldown_until else 'N/A'}\n\n"
+                "RED state auto-recovers. Use /reset only for BLACK state."
+            )
+        else:
+            await self.send_message(
+                f"ℹ️ Circuit breaker is {status.level.name}\n\n"
+                "No reset needed - trading is active."
+            )
+
+    async def _cmd_status(self) -> None:
+        """Handle /status command - show current system status."""
+        lines = ["📊 <b>System Status</b>\n"]
+
+        # Circuit breaker status
+        if self._circuit_breaker:
+            from src.safety.circuit_breaker import BreakerLevel
+            status = self._circuit_breaker.status
+            level_emoji = {
+                BreakerLevel.GREEN: "🟢",
+                BreakerLevel.YELLOW: "🟡",
+                BreakerLevel.RED: "🔴",
+                BreakerLevel.BLACK: "⚫",
+            }
+            lines.append(
+                f"Circuit Breaker: {level_emoji.get(status.level, '⚪')} {status.level.name}"
+            )
+            if status.reason:
+                lines.append(f"  └ {status.reason}")
+            if status.cooldown_until:
+                lines.append(f"  └ Recovers: {status.cooldown_until.strftime('%H:%M:%S')}")
+
+        # Kill switch status
+        if self._kill_switch:
+            if self._kill_switch.is_active:
+                lines.append(f"Kill Switch: 🛑 ACTIVE - {self._kill_switch.reason}")
+            else:
+                lines.append("Kill Switch: ✅ Inactive")
+
+        # Trading mode
+        mode = "📝 PAPER" if self._is_paper else "💰 LIVE"
+        lines.append(f"Mode: {mode}")
+
+        await self.send_message("\n".join(lines))
+
+    async def _cmd_help(self) -> None:
+        """Handle /help command - show available commands."""
+        await self.send_message(
+            "🤖 <b>Trading Bot Commands</b>\n\n"
+            "/status - Show system status\n"
+            "/reset - Reset circuit breaker (BLACK → GREEN)\n"
+            "/help - Show this message"
+        )
 
     # Convenience methods for common notifications
 

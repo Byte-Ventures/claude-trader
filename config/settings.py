@@ -254,6 +254,36 @@ class Settings(BaseSettings):
         description="Maximum position size as percentage of portfolio"
     )
 
+    # Trade Cooldown - prevents rapid consecutive trades
+    trade_cooldown_enabled: bool = Field(
+        default=True,
+        description="Enable cooldown between same-direction trades"
+    )
+    buy_cooldown_minutes: int = Field(
+        default=15,
+        ge=0,
+        le=60,
+        description="Minimum minutes between buy trades (0 = disabled)"
+    )
+    sell_cooldown_minutes: int = Field(
+        default=0,
+        ge=0,
+        le=60,
+        description="Minimum minutes between sell trades (0 = disabled for safety)"
+    )
+    buy_price_change_percent: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=10.0,
+        description="Price must drop this % from last buy to buy again (0 = disabled)"
+    )
+    sell_price_change_percent: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=10.0,
+        description="Price must rise this % from last sell to sell again (0 = disabled)"
+    )
+
     # Circuit Breaker
     black_recovery_hours: Optional[int] = Field(
         default=None,

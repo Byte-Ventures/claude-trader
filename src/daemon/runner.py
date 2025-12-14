@@ -28,6 +28,7 @@ from src.notifications.telegram import TelegramNotifier
 from src.safety.circuit_breaker import CircuitBreaker, CircuitBreakerConfig, BreakerLevel
 from src.safety.kill_switch import KillSwitch
 from src.safety.loss_limiter import LossLimiter
+from src.safety.trade_cooldown import TradeCooldown, TradeCooldownConfig
 from src.safety.validator import OrderValidator, OrderRequest, ValidatorConfig
 from src.state.database import Database
 from src.strategy.signal_scorer import SignalScorer
@@ -212,6 +213,27 @@ class TradingDaemon:
             kill_switch=self.kill_switch,
             circuit_breaker=self.circuit_breaker,
             loss_limiter=self.loss_limiter,
+        )
+
+        # Initialize trade cooldown (optional, prevents rapid consecutive trades)
+        self.trade_cooldown: Optional[TradeCooldown] = None
+        if settings.trade_cooldown_enabled:
+            self.trade_cooldown = TradeCooldown(
+                config=TradeCooldownConfig(
+                    buy_cooldown_minutes=settings.buy_cooldown_minutes,
+                    sell_cooldown_minutes=settings.sell_cooldown_minutes,
+                    buy_price_change_percent=settings.buy_price_change_percent,
+                    sell_price_change_percent=settings.sell_price_change_percent,
+                ),
+                db=self.db,
+                is_paper=settings.is_paper_trading,
+                symbol=settings.trading_pair,
+            )
+
+        # Enable Telegram command handling (for /reset, /status, /help)
+        self.notifier.set_safety_systems(
+            circuit_breaker=self.circuit_breaker,
+            kill_switch=self.kill_switch,
         )
 
         # Initialize strategy components
@@ -508,6 +530,15 @@ class TradingDaemon:
                 max_hourly_loss_percent=new_settings.max_hourly_loss_percent,
             )
 
+            # Update TradeCooldown (if enabled)
+            if self.trade_cooldown:
+                self.trade_cooldown.update_settings(
+                    buy_cooldown_minutes=new_settings.buy_cooldown_minutes,
+                    sell_cooldown_minutes=new_settings.sell_cooldown_minutes,
+                    buy_price_change_percent=new_settings.buy_price_change_percent,
+                    sell_price_change_percent=new_settings.sell_price_change_percent,
+                )
+
             # Update TradeReviewer (if enabled)
             if self.trade_reviewer:
                 self.trade_reviewer.review_all = new_settings.ai_review_all
@@ -592,6 +623,9 @@ class TradingDaemon:
 
             # Main loop
             while not self.shutdown_event.is_set():
+                # Check for Telegram commands (/reset, /status, /help)
+                self.notifier.check_commands()
+
                 # Check for config reload request
                 if reload_pending():
                     self._reload_config()
@@ -1052,6 +1086,7 @@ class TradingDaemon:
                     try:
                         # Estimate trade size for context (before AI veto adjustments)
                         # This gives users visibility into what the trade would be
+                        # Use 1.0 multiplier for estimation - actual safety check happens later
                         estimated_size = None
                         if signal_result.action == "buy":
                             est_position = self.position_sizer.calculate_size(
@@ -1061,7 +1096,7 @@ class TradingDaemon:
                                 base_balance=base_balance,
                                 signal_strength=signal_result.score,
                                 side="buy",
-                                safety_multiplier=safety_check.position_multiplier,
+                                safety_multiplier=1.0,
                             )
                             if est_position.size_quote > 0:
                                 estimated_size = {
@@ -1217,6 +1252,18 @@ class TradingDaemon:
 
         if effective_action == "buy":
             if can_buy:
+                # Check trade cooldown
+                if self.trade_cooldown:
+                    cooldown_ok, cooldown_reason = self.trade_cooldown.can_execute("buy", current_price)
+                    if not cooldown_ok:
+                        logger.info(
+                            "decision",
+                            action="skip_buy",
+                            reason=f"trade_cooldown: {cooldown_reason}",
+                            signal_score=signal_result.score,
+                        )
+                        return
+
                 logger.info(
                     "decision",
                     action="buy",
@@ -1240,6 +1287,18 @@ class TradingDaemon:
 
         elif effective_action == "sell":
             if can_sell:
+                # Check trade cooldown (disabled by default for sells, but here for completeness)
+                if self.trade_cooldown:
+                    cooldown_ok, cooldown_reason = self.trade_cooldown.can_execute("sell", current_price)
+                    if not cooldown_ok:
+                        logger.info(
+                            "decision",
+                            action="skip_sell",
+                            reason=f"trade_cooldown: {cooldown_reason}",
+                            signal_score=signal_result.score,
+                        )
+                        return
+
                 logger.info(
                     "decision",
                     action="sell",
@@ -1397,6 +1456,10 @@ class TradingDaemon:
                 spot_rate=current_price,
             )
             self.db.increment_daily_trade_count(is_paper=is_paper)
+
+            # Update trade cooldown
+            if self.trade_cooldown:
+                self.trade_cooldown.record_trade("buy", filled_price)
 
             # Update position tracking and create stop protection
             # CRITICAL: If stop creation fails, immediately close position (fail-safe)
@@ -1629,6 +1692,10 @@ class TradingDaemon:
                 size=result.size,
                 price=filled_price,
             )
+
+            # Update trade cooldown
+            if self.trade_cooldown:
+                self.trade_cooldown.record_trade("sell", filled_price)
 
             # Send notification
             self.notifier.notify_trade(
