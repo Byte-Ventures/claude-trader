@@ -1018,10 +1018,18 @@ class TradeReviewer:
             whale_direction = breakdown.get("_whale_direction", "unknown").upper()
             whale_activity_line = f"\n⚠️ WHALE ACTIVITY ({whale_direction}): Volume {breakdown.get('_volume_ratio', 0)}x average"
 
+        # Check for HTF bias in breakdown
+        htf_line = ""
+        htf_trend = breakdown.get("_htf_trend", "neutral")
+        if htf_trend and htf_trend != "neutral":
+            daily = breakdown.get("_htf_daily", htf_trend)
+            six_h = breakdown.get("_htf_6h", htf_trend)
+            htf_line = f"\n📊 HIGHER TIMEFRAME BIAS: {htf_trend.upper()} (Daily: {daily}, 6H: {six_h})"
+
         # Build common context sections
         common_context = f"""Price: ¤{context['price']:,.2f}
 Signal Score: {context['score']:+d} (threshold: ±{context['threshold']})
-Signal Breakdown: {json.dumps(context['breakdown'])}{whale_activity_line}
+Signal Breakdown: {json.dumps(context['breakdown'])}{whale_activity_line}{htf_line}
 
 Trading Style: {context['trading_style_desc']}
 Timeframe: {context['candle_interval']} candles

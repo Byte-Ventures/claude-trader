@@ -9,6 +9,7 @@ Tables:
 - system_state: Key-value store for recovery state
 - rate_history: Historical OHLCV price data for analysis and replay
 - whale_events: Historical record of whale activity detections
+- signal_history: Historical signal calculations for post-mortem analysis
 """
 
 import json
@@ -328,6 +329,63 @@ class WhaleEvent(Base):
 
     __table_args__ = (
         Index('ix_whale_events_lookup', 'symbol', 'is_paper', 'timestamp'),
+    )
+
+
+class SignalHistory(Base):
+    """Historical signal calculations for post-mortem analysis.
+
+    Stores every signal calculation with full indicator breakdown,
+    enabling analysis of why trades were taken or missed.
+    """
+
+    __tablename__ = "signal_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False, default="BTC-USD")
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    is_paper = Column(Boolean, default=False)
+
+    # Price context
+    current_price = Column(String(50), nullable=False)
+
+    # Individual indicator scores
+    rsi_score = Column(Float, nullable=False)
+    macd_score = Column(Float, nullable=False)
+    bollinger_score = Column(Float, nullable=False)
+    ema_score = Column(Float, nullable=False)
+    volume_score = Column(Float, nullable=False)
+
+    # Raw indicator values (for debugging)
+    rsi_value = Column(Float, nullable=True)
+    macd_histogram = Column(Float, nullable=True)
+    bb_position = Column(Float, nullable=True)  # % position in bands
+    ema_gap_percent = Column(Float, nullable=True)
+    volume_ratio = Column(Float, nullable=True)
+
+    # Adjustments applied
+    trend_filter_adj = Column(Float, default=0)
+    momentum_mode_adj = Column(Float, default=0)
+    whale_activity_adj = Column(Float, default=0)
+    htf_bias_adj = Column(Float, default=0)
+
+    # HTF context
+    htf_bias = Column(String(10), nullable=True)  # combined: bullish/bearish/neutral
+    htf_daily_trend = Column(String(10), nullable=True)
+    htf_6h_trend = Column(String(10), nullable=True)
+
+    # Final result
+    raw_score = Column(Float, nullable=False)  # Before adjustments
+    final_score = Column(Float, nullable=False)  # After all adjustments
+    action = Column(String(10), nullable=False)  # buy/sell/hold
+    threshold_used = Column(Integer, nullable=False)
+
+    # Whether this signal resulted in a trade
+    trade_executed = Column(Boolean, default=False)
+
+    __table_args__ = (
+        Index('ix_signal_history_timestamp', 'timestamp'),
+        Index('ix_signal_history_paper_timestamp', 'is_paper', 'timestamp'),
     )
 
 

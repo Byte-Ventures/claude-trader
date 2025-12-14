@@ -466,6 +466,42 @@ class Settings(BaseSettings):
         description="Regime adjustment intensity (0=off, 1=normal, 2=aggressive)"
     )
 
+    # Multi-Timeframe Confirmation (MTF)
+    mtf_enabled: bool = Field(
+        default=True,
+        description="Enable higher timeframe trend confirmation (Daily + 6H)"
+    )
+    mtf_candle_limit: int = Field(
+        default=50,
+        ge=20,
+        le=100,
+        description="Number of candles to fetch for HTF trend calculation"
+    )
+    mtf_daily_cache_minutes: int = Field(
+        default=60,
+        ge=15,
+        le=240,
+        description="Cache duration for daily candle data (minutes)"
+    )
+    mtf_6h_cache_minutes: int = Field(
+        default=30,
+        ge=10,
+        le=120,
+        description="Cache duration for 6-hour candle data (minutes)"
+    )
+    mtf_aligned_boost: int = Field(
+        default=20,
+        ge=5,
+        le=40,
+        description="Score boost for trades aligned with HTF trend"
+    )
+    mtf_counter_penalty: int = Field(
+        default=20,
+        ge=5,
+        le=40,
+        description="Score penalty for trades against HTF trend"
+    )
+
     # Database
     database_path: Path = Field(
         default=Path("data/trading.db"),
