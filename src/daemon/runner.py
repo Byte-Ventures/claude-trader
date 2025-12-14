@@ -230,6 +230,7 @@ class TradingDaemon:
             config=PositionSizeConfig(
                 max_position_percent=settings.position_size_percent,
                 stop_loss_atr_multiplier=settings.stop_loss_atr_multiplier,
+                min_stop_loss_percent=settings.min_stop_loss_percent,
             ),
             atr_period=settings.atr_period,
             take_profit_atr_multiplier=settings.take_profit_atr_multiplier,
@@ -437,6 +438,7 @@ class TradingDaemon:
                 stop_loss_atr_multiplier=new_settings.stop_loss_atr_multiplier,
                 take_profit_atr_multiplier=new_settings.take_profit_atr_multiplier,
                 atr_period=new_settings.atr_period,
+                min_stop_loss_percent=new_settings.min_stop_loss_percent,
             )
 
             # Update OrderValidator
@@ -1131,6 +1133,14 @@ class TradingDaemon:
         validation = self.validator.validate(order_request, stop_distance_percent)
         if not validation.valid:
             logger.info("buy_rejected", reason=validation.reason)
+            self.notifier.notify_trade_rejected(
+                side="buy",
+                reason=validation.reason,
+                price=current_price,
+                signal_score=signal_score,
+                size_quote=position.size_quote,
+                is_paper=self.settings.is_paper_trading,
+            )
             return
 
         # Execute order (IOC limit -> market fallback)
@@ -1267,6 +1277,10 @@ class TradingDaemon:
                 price=filled_price,
                 fee=result.fee,
                 is_paper=is_paper,
+                signal_score=signal_score,
+                stop_loss=position.stop_loss_price,
+                take_profit=position.take_profit_price,
+                position_percent=position.position_percent,
             )
 
             logger.info(
@@ -1326,6 +1340,14 @@ class TradingDaemon:
         validation = self.validator.validate(order_request)
         if not validation.valid:
             logger.info("sell_rejected", reason=validation.reason)
+            self.notifier.notify_trade_rejected(
+                side="sell",
+                reason=validation.reason,
+                price=current_price,
+                signal_score=signal_score,
+                size_quote=size_base * current_price,
+                is_paper=self.settings.is_paper_trading,
+            )
             return
 
         # Execute order (IOC limit -> market fallback)
@@ -1429,6 +1451,8 @@ class TradingDaemon:
                 price=filled_price,
                 fee=result.fee,
                 is_paper=is_paper,
+                signal_score=signal_score,
+                realized_pnl=realized_pnl,
             )
 
             logger.info(

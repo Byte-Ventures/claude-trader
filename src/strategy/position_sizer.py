@@ -34,6 +34,7 @@ class PositionSizeConfig:
     stop_loss_atr_multiplier: float = 1.5  # Stop at 1.5x ATR
     min_trade_quote: float = 100.0  # Minimum trade size in quote currency
     min_trade_base: float = 0.0001  # Minimum trade size in base currency (e.g., BTC)
+    min_stop_loss_percent: float = 1.5  # Minimum stop as % of price (floor for short timeframes)
 
 
 @dataclass
@@ -84,6 +85,7 @@ class PositionSizer:
         stop_loss_atr_multiplier: Optional[float] = None,
         take_profit_atr_multiplier: Optional[float] = None,
         atr_period: Optional[int] = None,
+        min_stop_loss_percent: Optional[float] = None,
     ) -> None:
         """
         Update position sizer settings at runtime.
@@ -98,6 +100,8 @@ class PositionSizer:
             self.take_profit_multiplier = take_profit_atr_multiplier
         if atr_period is not None:
             self.atr_period = atr_period
+        if min_stop_loss_percent is not None:
+            self.config.min_stop_loss_percent = min_stop_loss_percent
 
         logger.info("position_sizer_settings_updated")
 
@@ -153,7 +157,11 @@ class PositionSizer:
         risk_amount = total_value * Decimal(str(self.config.risk_per_trade_percent / 100))
 
         # Step 2: Calculate stop-loss distance
-        stop_distance = atr_decimal * Decimal(str(self.config.stop_loss_atr_multiplier))
+        # Use the LARGER of ATR-based distance or minimum percentage distance
+        # This ensures stop is never too tight on short timeframes (e.g., 15-min candles)
+        atr_stop_distance = atr_decimal * Decimal(str(self.config.stop_loss_atr_multiplier))
+        min_pct_distance = current_price * Decimal(str(self.config.min_stop_loss_percent / 100))
+        stop_distance = max(atr_stop_distance, min_pct_distance)
 
         # Step 3: Calculate base position size from risk
         # size = risk_amount / stop_distance
@@ -221,6 +229,16 @@ class PositionSizer:
             position_percent=position_percent,
         )
 
+        # Log which method determined the stop distance
+        used_min_pct = min_pct_distance > atr_stop_distance
+        if used_min_pct:
+            logger.info(
+                "stop_using_min_percent",
+                atr_distance=str(atr_stop_distance),
+                min_pct_distance=str(min_pct_distance),
+                min_pct=self.config.min_stop_loss_percent,
+            )
+
         logger.debug(
             "position_size_calculated",
             size_base=str(result.size_base),
@@ -228,6 +246,8 @@ class PositionSizer:
             stop_loss=str(result.stop_loss_price),
             take_profit=str(result.take_profit_price),
             atr=str(atr_decimal),
+            stop_distance=str(stop_distance),
+            stop_method="min_pct" if used_min_pct else "atr",
             volatility_mult=volatility_multiplier,
             safety_mult=safety_multiplier,
         )

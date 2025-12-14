@@ -202,10 +202,10 @@ class Settings(BaseSettings):
         description="Stop loss distance as ATR multiple"
     )
     min_stop_loss_percent: float = Field(
-        default=0.5,
+        default=1.5,
         ge=0.1,
-        le=5.0,
-        description="Minimum stop loss distance as percentage below entry (safety floor)"
+        le=10.0,
+        description="Minimum stop loss distance as percentage below entry (safety floor for short timeframes)"
     )
     take_profit_atr_multiplier: float = Field(
         default=2.0,

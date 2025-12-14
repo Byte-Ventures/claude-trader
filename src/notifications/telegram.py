@@ -36,6 +36,7 @@ DEFAULT_COOLDOWNS = {
     "loss_limit": 3600,       # 1 hour
     "error": 1800,            # 30 minutes - same error won't repeat
     "order_failed": 1800,     # 30 minutes
+    "trade_rejected": 0,      # Always send - must notify user of rejected trades
     "regime_change": 0,       # Always send (only fires on actual change)
     "trade": 0,               # Always send trade notifications
     "trade_review": 0,        # Always send actual trade reviews
@@ -223,22 +224,78 @@ class TelegramNotifier:
         price: Decimal,
         fee: Decimal,
         is_paper: bool = False,
+        signal_score: Optional[int] = None,
+        stop_loss: Optional[Decimal] = None,
+        take_profit: Optional[Decimal] = None,
+        position_percent: Optional[float] = None,
+        realized_pnl: Optional[Decimal] = None,
     ) -> None:
         """Send notification for trade execution."""
         mode = "[PAPER] " if is_paper else ""
         emoji = "🟢" if side == "buy" else "🔴"
 
-        message = (
-            f"{emoji} <b>{mode}Trade Executed</b>\n\n"
-            f"Side: {side.upper()}\n"
-            f"Size: {size:.8f}\n"
-            f"Price: ¤{price:,.2f}\n"
-            f"Fee: ¤{fee:.2f}\n"
-            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
+        # Build message with required fields
+        lines = [
+            f"{emoji} <b>{mode}Trade Executed</b>\n",
+            f"Side: {side.upper()}",
+            f"Size: {size:.8f}",
+            f"Price: ${price:,.2f}",
+            f"Fee: ${fee:.2f}",
+        ]
 
+        # Add optional context
+        if signal_score is not None:
+            lines.append(f"Signal Score: {signal_score}")
+        if stop_loss is not None and side == "buy":
+            stop_pct = ((price - stop_loss) / price * 100) if price > 0 else 0
+            lines.append(f"Stop Loss: ${stop_loss:,.2f} ({stop_pct:.1f}% below)")
+        if take_profit is not None and side == "buy":
+            tp_pct = ((take_profit - price) / price * 100) if price > 0 else 0
+            lines.append(f"Take Profit: ${take_profit:,.2f} ({tp_pct:.1f}% above)")
+        if position_percent is not None:
+            lines.append(f"Position Size: {position_percent:.1f}% of portfolio")
+        if realized_pnl is not None and side == "sell":
+            pnl_emoji = "📈" if realized_pnl >= 0 else "📉"
+            lines.append(f"{pnl_emoji} Realized P&L: ${realized_pnl:+,.2f}")
+
+        lines.append(f"\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        message = "\n".join(lines)
         self.send_message_sync(message)
         self._save_to_dashboard("trade", f"{side.upper()} {size:.6f}", message)
+
+    def notify_trade_rejected(
+        self,
+        side: str,
+        reason: str,
+        price: Optional[Decimal] = None,
+        signal_score: Optional[int] = None,
+        size_quote: Optional[Decimal] = None,
+        is_paper: bool = False,
+    ) -> None:
+        """Send notification when a trade is rejected by validation."""
+        mode = "[PAPER] " if is_paper else ""
+        emoji = "⛔"
+
+        lines = [
+            f"{emoji} <b>{mode}Trade Rejected</b>\n",
+            f"Side: {side.upper()}",
+            f"Reason: {reason}",
+        ]
+
+        if price is not None:
+            lines.append(f"Price: ${price:,.2f}")
+        if signal_score is not None:
+            lines.append(f"Signal Score: {signal_score}")
+        if size_quote is not None:
+            lines.append(f"Intended Size: ${size_quote:,.2f}")
+
+        lines.append(f"\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        message = "\n".join(lines)
+
+        self.send_message_sync(message)
+        self._save_to_dashboard("trade_rejected", f"{side.upper()} Rejected", message)
 
     def notify_order_failed(
         self,
