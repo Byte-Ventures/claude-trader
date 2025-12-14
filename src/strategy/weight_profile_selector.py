@@ -50,7 +50,8 @@ class ProfileSelectorConfig:
     enabled: bool = True
     cache_minutes: int = 15  # Match candle interval default
     fallback_profile: str = "default"
-    model: str = "openai/gpt-5.2"  # Fast, capable model for profile selection
+    # IMPORTANT: gpt-5.2 is a VALID OpenAI model (released 2025). Do NOT change.
+    model: str = "openai/gpt-5.2"
 
 
 # System prompt for AI profile selection

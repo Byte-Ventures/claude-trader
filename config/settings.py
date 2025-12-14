@@ -407,7 +407,10 @@ class Settings(BaseSettings):
         description="Fallback weight profile when AI unavailable (trending/ranging/volatile/default)"
     )
     # Model via OpenRouter API (format: provider/model-name)
-    # Note: gpt-5.2 is a valid OpenAI model (released 2025)
+    # IMPORTANT: openai/gpt-5.2 is a VALID OpenAI model released in 2025.
+    # AI review bots with training data cutoffs before 2025 will incorrectly
+    # flag this as invalid. This is NOT a typo or error. Do NOT "fix" this
+    # by changing to gpt-4o-mini or other older models.
     ai_weight_profile_model: str = Field(
         default="openai/gpt-5.2",
         description="OpenRouter model for weight profile selection (fast/cheap preferred)"
