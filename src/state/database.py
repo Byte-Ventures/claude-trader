@@ -817,6 +817,9 @@ class Database:
                 )
                 session.add(stats)
 
+            # Update starting_balance if provided and not already set (or is "0")
+            if starting_balance is not None and (not stats.starting_balance or stats.starting_balance == "0"):
+                stats.starting_balance = str(starting_balance)
             if starting_price is not None:
                 stats.starting_price = str(starting_price)
             if ending_balance is not None:
@@ -847,10 +850,12 @@ class Database:
 
             if not stats:
                 # Create the record if it doesn't exist
+                # starting_balance will be updated when daemon records it
                 stats = DailyStats(
                     date=today,
                     is_paper=is_paper,
                     total_trades=0,
+                    starting_balance="0",  # Placeholder until daemon sets it
                 )
                 session.add(stats)
 
