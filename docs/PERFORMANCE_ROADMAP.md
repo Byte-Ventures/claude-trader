@@ -1,7 +1,7 @@
 # Performance Improvement Roadmap
 
 > Analysis Date: 2025-12-13 | Bot Version: 1.25.4
-> Last Updated: 2025-12-14 (v1.27.33)
+> Last Updated: 2025-12-14 (v1.27.40)
 
 This roadmap documents gaps identified compared to professional trading systems, prioritized by **P&L impact** rather than institutional features.
 
@@ -62,11 +62,14 @@ AI-driven weight profile selection that adapts indicator weights to market condi
 - `runner.py:1444-1467` moves stop to break-even when profit threshold reached
 - Missing: Multi-level scale-out and partial sells
 
-### Volume Analysis with Whale Detection (2.3) - DONE
+### Volume Analysis with Whale Detection (2.3) - DONE (v1.27.40)
 - `signal_scorer.py:481-544` checks volume_ratio thresholds
-- 1.5-3x: High volume (20% signal boost)
-- 3x+: Whale activity (30% signal boost, `_whale_activity` flag)
+- 1.5-3x: High volume (20% signal boost, configurable)
+- 3x+: Whale activity (30% signal boost, `_whale_activity` flag, configurable)
+- Whale direction detection (bullish/bearish/neutral based on price movement)
 - Whale alerts integrated into AI reviewer/judge prompts
+- Database persistence in `whale_events` table with paper/live separation
+- Configurable thresholds: `WHALE_VOLUME_THRESHOLD`, `WHALE_DIRECTION_THRESHOLD`, `WHALE_BOOST_PERCENT`, `HIGH_VOLUME_BOOST_PERCENT`
 
 ### Fear & Greed Sentiment (part of 2.2)
 - `src/ai/sentiment.py` fetches Fear & Greed Index
@@ -277,7 +280,7 @@ if funding_rate > 0.001:  # 0.1%
 
 ### 2.3 Volume Spike Detection
 
-**Status:** DONE (v1.27.33) - See Partial Implementations section above for details.
+**Status:** DONE (v1.27.40) - See Partial Implementations section above for details.
 
 ---
 
@@ -433,7 +436,7 @@ elif self._ai_strategy_mode == "wait":
 | **Phase 1a** | 4.1 Maker fees | REVERTED (v1.25.4) - race conditions |
 | **Phase 1b** | 4.3 AI regime setter | DEFERRED (needs metrics) |
 | **Phase 1c** | 1.2 Adaptive weights | DONE (v1.27.x) |
-| **Phase 1d** | 2.3 Volume spikes / Whale detection | DONE (v1.27.33) |
+| **Phase 1d** | 2.3 Volume spikes / Whale detection | DONE (v1.27.40) |
 | **Phase 2** | 1.1 Multi-timeframe | Pending |
 | **Phase 3** | 1.3 S/R awareness | Pending |
 | **Phase 4** | 3.1 Scale-out exits, 2.1 Divergence | Pending |
