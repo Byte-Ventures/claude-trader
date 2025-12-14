@@ -17,7 +17,7 @@ Features:
 
 import asyncio
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from time import time
 from typing import Optional, TYPE_CHECKING
@@ -445,7 +445,7 @@ class TelegramNotifier:
             pnl_emoji = "📈" if realized_pnl >= 0 else "📉"
             lines.append(f"{pnl_emoji} Realized P&L: ¤{realized_pnl:+,.2f}")
 
-        lines.append(f"\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append(f"\nTime: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
 
         message = "\n".join(lines)
         if self.send_message_sync(message):
@@ -488,7 +488,7 @@ class TelegramNotifier:
         if size_quote is not None:
             lines.append(f"Intended Size: ¤{size_quote:,.2f}")
 
-        lines.append(f"\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append(f"\nTime: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
 
         message = "\n".join(lines)
 
@@ -508,7 +508,7 @@ class TelegramNotifier:
             f"Side: {side.upper()}\n"
             f"Size: {size:.8f}\n"
             f"Error: {error}\n"
-            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
         # Deduplicate order failed messages (same error)
@@ -534,7 +534,7 @@ class TelegramNotifier:
         message = (
             f"{emoji} <b>Circuit Breaker: {level.upper()}</b>\n\n"
             f"Reason: {reason}\n"
-            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}\n\n"
             f"Trading has been {'paused' if level != 'black' else 'HALTED (manual reset required)'}."
         )
 
@@ -551,7 +551,7 @@ class TelegramNotifier:
         message = (
             f"🚨 <b>KILL SWITCH ACTIVATED</b>\n\n"
             f"Reason: {reason}\n"
-            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}\n\n"
             f"⚠️ ALL TRADING HALTED\n"
             f"Manual reset required to resume."
         )
@@ -564,7 +564,7 @@ class TelegramNotifier:
         message = (
             f"🛑 <b>{limit_type.title()} Loss Limit Hit</b>\n\n"
             f"Loss: {loss_percent:.1f}%\n"
-            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}\n\n"
             f"Trading paused until limit resets."
         )
 
@@ -600,7 +600,7 @@ class TelegramNotifier:
             f"Ending Balance: ¤{ending_balance:,.2f}\n"
             f"{pnl_emoji} P&L: ¤{realized_pnl:+,.2f} ({pnl_percent:+.1f}%)\n"
             f"Total Trades: {total_trades}\n"
-            f"Date: {datetime.now().strftime('%Y-%m-%d')}"
+            f"Date: {datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
         )
 
         self.send_message_sync(message)
@@ -614,7 +614,7 @@ class TelegramNotifier:
             f"Exchange: {exchange}\n"
             f"Mode: {display_mode}\n"
             f"Balance: ¤{balance:,.2f}\n"
-            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
         self.send_message_sync(message)
@@ -625,7 +625,7 @@ class TelegramNotifier:
         message = (
             f"🔌 <b>Trading Bot Stopped</b>\n\n"
             f"Reason: {reason}\n"
-            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
         self.send_message_sync(message)
@@ -637,7 +637,7 @@ class TelegramNotifier:
             f"❌ <b>System Error</b>\n\n"
             f"Error: {error}\n"
             f"Context: {context}\n"
-            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
         # Deduplicate error messages
@@ -719,7 +719,7 @@ class TelegramNotifier:
                 f"{judge_decision_text} ({review.judge_confidence*100:.0f}% confidence)\n"
                 f"{rec_emoji.get(recommendation, '📌')} Recommendation: <b>{rec_text.get(recommendation, recommendation.upper())}</b>\n\n"
                 f"<i>{review.judge_reasoning}</i>\n\n"
-                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
             )
         else:
             # Multi-agent trade review notification
@@ -844,7 +844,7 @@ class TelegramNotifier:
                 f"<i>{review.judge_reasoning}</i>"
                 f"{veto_text}\n\n"
                 f"{outcome}\n\n"
-                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
             )
 
         # For interesting holds, use deduplication to avoid spam
@@ -927,7 +927,7 @@ class TelegramNotifier:
             f"  Threshold: {threshold_text}\n"
             f"  Position size: {position_mult:.2f}×\n\n"
             f"<b>Market Conditions</b>:\n{components_text}\n\n"
-            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
         self.send_message_sync(message)
@@ -1115,7 +1115,7 @@ class TelegramNotifier:
             f"Confidence: {review.judge_confidence*100:.0f}%\n"
             f"{rec_emoji.get(recommendation, '📌')} Recommendation: <b>{rec_text.get(recommendation, recommendation.upper())}</b>\n\n"
             f"<i>{review.judge_reasoning}</i>\n\n"
-            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
         self.send_message_sync(message)

@@ -8,7 +8,7 @@ Trade execution requires score magnitude >= threshold (default: 60).
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -336,7 +336,7 @@ class SignalScorer:
 
     def record_oversold_buy(self) -> None:
         """Record an oversold buy for rate limiting during crashes."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         self._oversold_buy_times.append(now)
         # Clean old entries
         cutoff = now - timedelta(hours=24)
@@ -345,7 +345,7 @@ class SignalScorer:
 
     def can_buy_oversold(self) -> bool:
         """Check if we can make another oversold buy (max 2 per 24h)."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         cutoff = now - timedelta(hours=24)
         recent_buys = [t for t in self._oversold_buy_times if t > cutoff]
         return len(recent_buys) < 2

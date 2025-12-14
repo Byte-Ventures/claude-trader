@@ -7,7 +7,7 @@ from free APIs with caching to avoid rate limits.
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
@@ -253,7 +253,7 @@ async def fetch_market_research() -> MarketResearch:
     return MarketResearch(
         news=news,
         onchain=onchain,
-        fetched_at=datetime.now(),
+        fetched_at=datetime.now(timezone.utc),
         errors=errors,
     )
 
@@ -295,7 +295,7 @@ def format_research_for_prompt(research: MarketResearch) -> str:
 
 def _time_ago(dt: datetime) -> str:
     """Format datetime as relative time string."""
-    delta = datetime.now() - dt
+    delta = datetime.now(timezone.utc) - dt
     hours = delta.total_seconds() / 3600
 
     if hours < 1:
