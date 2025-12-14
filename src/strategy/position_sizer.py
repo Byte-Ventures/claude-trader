@@ -160,7 +160,7 @@ class PositionSizer:
         # Use the LARGER of ATR-based distance or minimum percentage distance
         # This ensures stop is never too tight on short timeframes (e.g., 15-min candles)
         atr_stop_distance = atr_decimal * Decimal(str(self.config.stop_loss_atr_multiplier))
-        min_pct_distance = current_price * Decimal(str(self.config.min_stop_loss_percent / 100))
+        min_pct_distance = current_price * Decimal(str(self.config.min_stop_loss_percent)) / Decimal("100")
         stop_distance = max(atr_stop_distance, min_pct_distance)
 
         # Step 3: Calculate base position size from risk
