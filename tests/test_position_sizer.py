@@ -227,7 +227,7 @@ def test_position_size_respects_max_position_percent(sizer, sample_df):
 
     # Calculate portfolio value
     total_value = quote_balance
-    max_position_quote = total_value * Decimal(str(sizer.config.max_position_percent / 100))
+    max_position_quote = total_value * Decimal(str(sizer.config.max_position_percent)) / Decimal("100")
 
     # Position should not exceed max
     assert result.size_quote <= max_position_quote
@@ -969,3 +969,181 @@ def test_price_precision(sizer, sample_df):
         if '.' in str_tp:
             decimals = len(str_tp.split('.')[1])
             assert decimals <= 2
+
+
+# ============================================================================
+# Minimum Stop Loss Floor Tests
+# ============================================================================
+
+@pytest.fixture
+def very_low_volatility_df():
+    """Generate OHLCV data with extremely low ATR (simulates 15-min candles)."""
+    length = 100
+    prices = [100000.0] * length  # $100k BTC
+
+    data = {
+        'open': [],
+        'high': [],
+        'low': [],
+        'close': [],
+    }
+
+    for price in prices:
+        # Very tight range - ATR will be ~0.01% of price
+        # This simulates short timeframe candles (15-min)
+        o = price * 0.99995
+        c = price * 1.00005
+        h = price * 1.00010
+        l = price * 0.99990
+
+        data['open'].append(o)
+        data['high'].append(h)
+        data['low'].append(l)
+        data['close'].append(c)
+
+    return pd.DataFrame(data)
+
+
+def test_min_stop_loss_floor_applied_when_atr_too_small(very_low_volatility_df):
+    """Test that min_stop_loss_percent is used when ATR < min %."""
+    # Configure with specific min_stop_loss_percent
+    config = PositionSizeConfig(
+        min_stop_loss_percent=1.5,  # 1.5% minimum stop
+        stop_loss_atr_multiplier=1.5,
+        risk_per_trade_percent=0.5,
+        max_position_percent=40.0,
+    )
+    sizer = PositionSizer(config=config)
+
+    current_price = Decimal("100000.00")
+    quote_balance = Decimal("50000.00")
+    base_balance = Decimal("0.0")
+    signal_strength = 80
+
+    result = sizer.calculate_size(
+        very_low_volatility_df,
+        current_price,
+        quote_balance,
+        base_balance,
+        signal_strength,
+        side="buy",
+    )
+
+    if result.size_quote > 0:
+        # Calculate expected minimum stop distance
+        min_pct_distance = current_price * Decimal("1.5") / Decimal("100")  # 1500.00
+        expected_stop_loss = current_price - min_pct_distance  # 98500.00
+
+        # Stop loss should be at or below the minimum % distance
+        # (could be slightly different due to ATR but should use the floor)
+        stop_distance = current_price - result.stop_loss_price
+        stop_percent = float(stop_distance / current_price * 100)
+
+        # Stop should be at least min_stop_loss_percent
+        assert stop_percent >= 1.5 - 0.01, (
+            f"Stop distance {stop_percent:.2f}% should be >= 1.5%"
+        )
+
+
+def test_atr_stop_used_when_larger_than_min(high_volatility_df):
+    """Test that ATR-based stop is used when it's larger than min %."""
+    config = PositionSizeConfig(
+        min_stop_loss_percent=0.5,  # 0.5% minimum (low floor)
+        stop_loss_atr_multiplier=2.0,  # 2x ATR
+        risk_per_trade_percent=0.5,
+        max_position_percent=40.0,
+    )
+    sizer = PositionSizer(config=config)
+
+    current_price = Decimal("50000.00")
+    quote_balance = Decimal("50000.00")
+    base_balance = Decimal("0.0")
+    signal_strength = 80
+
+    result = sizer.calculate_size(
+        high_volatility_df,
+        current_price,
+        quote_balance,
+        base_balance,
+        signal_strength,
+        side="buy",
+    )
+
+    if result.size_quote > 0:
+        stop_distance = current_price - result.stop_loss_price
+        stop_percent = float(stop_distance / current_price * 100)
+
+        # Min floor is 0.5%, but high volatility ATR should produce larger stop
+        # High volatility data should have ATR >> 0.5%
+        assert stop_percent > 0.5, (
+            f"Stop distance {stop_percent:.2f}% should be > 0.5% floor (using ATR)"
+        )
+
+
+def test_min_stop_loss_floor_with_different_percentages():
+    """Test stop floor works with different min_stop_loss_percent values."""
+    # Create data with minimal ATR
+    length = 50
+    df = pd.DataFrame({
+        'open': [50000.0] * length,
+        'high': [50001.0] * length,  # Tiny range
+        'low': [49999.0] * length,
+        'close': [50000.0] * length,
+    })
+
+    for min_pct in [1.0, 1.5, 2.0, 3.0]:
+        config = PositionSizeConfig(
+            min_stop_loss_percent=min_pct,
+            stop_loss_atr_multiplier=1.5,
+            risk_per_trade_percent=0.5,
+        )
+        sizer = PositionSizer(config=config)
+
+        result = sizer.calculate_size(
+            df,
+            Decimal("50000.00"),
+            Decimal("50000.00"),
+            Decimal("0.0"),
+            signal_strength=80,
+            side="buy",
+        )
+
+        if result.size_quote > 0:
+            stop_distance = Decimal("50000.00") - result.stop_loss_price
+            stop_percent = float(stop_distance / Decimal("50000.00") * 100)
+
+            assert stop_percent >= min_pct - 0.01, (
+                f"With min_pct={min_pct}, stop {stop_percent:.2f}% should be >= {min_pct}%"
+            )
+
+
+def test_min_stop_loss_floor_for_sell_orders(very_low_volatility_df):
+    """Test min_stop_loss_percent floor also applies to sell orders."""
+    config = PositionSizeConfig(
+        min_stop_loss_percent=1.5,
+        stop_loss_atr_multiplier=1.5,
+    )
+    sizer = PositionSizer(config=config)
+
+    current_price = Decimal("100000.00")
+    quote_balance = Decimal("10000.00")
+    base_balance = Decimal("1.0")  # Hold 1 BTC to sell
+    signal_strength = 80
+
+    result = sizer.calculate_size(
+        very_low_volatility_df,
+        current_price,
+        quote_balance,
+        base_balance,
+        signal_strength,
+        side="sell",
+    )
+
+    if result.size_quote > 0:
+        # For sells, stop loss is ABOVE entry price
+        stop_distance = result.stop_loss_price - current_price
+        stop_percent = float(stop_distance / current_price * 100)
+
+        assert stop_percent >= 1.5 - 0.01, (
+            f"Sell stop distance {stop_percent:.2f}% should be >= 1.5%"
+        )

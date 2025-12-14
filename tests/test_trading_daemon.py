@@ -197,8 +197,8 @@ def _create_sample_candles(length=100, base_price=50000.0):
         data.append({
             "timestamp": datetime.now(),
             "open": Decimal(str(base_price)),
-            "high": Decimal(str(base_price * 1.01)),
-            "low": Decimal(str(base_price * 0.99)),
+            "high": Decimal(str(base_price)) * Decimal("1.01"),
+            "low": Decimal(str(base_price)) * Decimal("0.99"),
             "close": Decimal(str(base_price)),
             "volume": Decimal("100"),
         })
