@@ -16,9 +16,8 @@ import subprocess
 import time
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from typing import Optional, Union
 
 import structlog
@@ -871,17 +870,12 @@ class TradingDaemon:
         Run post-mortem analysis asynchronously after a trade.
 
         Spawns a background thread to run the postmortem script without blocking trading.
-        Only runs if postmortem is enabled AND Claude CLI is available.
+        Only runs if postmortem_enabled is True in settings.
 
         Args:
             trade_id: Optional specific trade ID. If None, analyzes the last trade.
         """
-        if not self.settings.postmortem_enabled or not self._postmortem_available:
-            return
-
-        # Validate trade_id type (defense-in-depth against injection)
-        if trade_id is not None and not isinstance(trade_id, int):
-            logger.error("postmortem_invalid_trade_id_type", trade_id_type=type(trade_id).__name__)
+        if not self.settings.postmortem_enabled:
             return
 
         def run_postmortem():
@@ -936,9 +930,9 @@ class TradingDaemon:
             except Exception as e:
                 logger.warning("postmortem_error", error=str(e))
 
-        # Submit to executor (single-worker prevents resource exhaustion)
-        if self._postmortem_executor:
-            self._postmortem_executor.submit(run_postmortem)
+        # Run in background thread
+        thread = Thread(target=run_postmortem, daemon=True)
+        thread.start()
 
     def run(self) -> None:
         """Run the main trading loop."""
