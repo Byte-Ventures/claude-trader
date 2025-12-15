@@ -582,7 +582,8 @@ Focus on patterns that lead to losing trades and missed opportunities.
 - Database location: `{db_path}`
 - Key tables: `trades`, `signal_history`, `regime_history`, `whale_events`, `notifications`, `daily_stats`
 - All tables have `is_paper` column (1=paper, 0=live).
-- You can also read source files at `{source_root}` to understand the algorithm.
+- Log files: `{source_root}/logs/trading.log` contains detailed bot activity including regime calculations, indicator values, and trade decisions. Use grep/read to search for specific trade timestamps.
+- Source code is at `{source_root}/src/` - key files: `strategy/signal_scorer.py`, `strategy/regime.py`, `daemon/runner.py`.
 - Provide concrete, actionable recommendations.
 - End with a summary of your top 3 recommendations.
 
