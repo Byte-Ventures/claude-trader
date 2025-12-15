@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 30
 
     concurrency:
-      group: address-review-${{ github.event.issue.number }}
+      group: fix-issue-${{ github.event.issue.number }}
       cancel-in-progress: false
 
     permissions:
