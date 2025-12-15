@@ -1,19 +1,16 @@
 name: Claude Post-Mortem Review
 
 on:
-  discussion:
-    types: [created]
+  repository_dispatch:
+    types: [postmortem-review]
 
 jobs:
   review-postmortem:
-    # Only run for discussions in 'post-mortems' category
-    # (Announcement format restricts creation to maintainers/admins)
-    if: github.event.discussion.category.slug == 'post-mortems'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     concurrency:
-      group: postmortem-${{ github.event.discussion.number }}
+      group: postmortem-review
       cancel-in-progress: false
 
     permissions:
@@ -37,11 +34,11 @@ jobs:
             Analyze this post-mortem discussion and determine if it contains valid, implementable fixes.
 
             ## Discussion Details
-            **Title:** ${{ github.event.discussion.title }}
-            **URL:** ${{ github.event.discussion.html_url }}
+            **Title:** ${{ github.event.client_payload.title }}
+            **URL:** ${{ github.event.client_payload.discussion_url }}
 
             **Body:**
-            ${{ github.event.discussion.body }}
+            ${{ github.event.client_payload.body }}
 
             ## Your Task
 
@@ -150,7 +147,7 @@ jobs:
               title: `${{ steps.parse.outputs.issue_title }}`,
               body: `## Auto-generated from Post-Mortem Analysis
 
-            **Source Discussion:** ${{ github.event.discussion.html_url }}
+            **Source Discussion:** ${{ github.event.client_payload.discussion_url }}
 
             ---
 

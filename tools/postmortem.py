@@ -511,12 +511,12 @@ The trading bot source code is located at: `{source_root}`
 Key files for analysis:
 - `{source_root}/src/strategy/signal_scorer.py` - Signal calculation logic (RSI, MACD, Bollinger, EMA, Volume scoring)
 - `{source_root}/src/daemon/runner.py` - Main trading loop and trade execution
-- `{source_root}/config/settings.py` - Configuration schema and defaults
-- `{source_root}/.env` - **ACTIVE CONFIGURATION** (read this to see actual thresholds, weights, etc.)
+- `{source_root}/config/settings.py` - Configuration schema and defaults (parameter names and types)
 - `{source_root}/src/safety/` - Safety systems (circuit breaker, loss limiter)
 
-IMPORTANT: Read `{source_root}/.env` to see the actual configuration values being used.
-When suggesting config changes, reference the exact parameter names from .env.
+IMPORTANT: When suggesting config changes, reference parameter names from config/settings.py.
+**NEVER read or include .env file contents** - it contains secrets (API keys, tokens).
+**NEVER include any credentials, API keys, or secrets in your analysis.**
 """
 
     # Optionally include source code
@@ -746,6 +746,60 @@ def create_github_discussion(
     return response["data"]["createDiscussion"]["discussion"]["url"]
 
 
+def trigger_postmortem_review(
+    discussion_url: str,
+    title: str,
+    body: str,
+    verbose: bool = False,
+) -> bool:
+    """Trigger repository_dispatch event to start post-mortem review workflow.
+
+    The claude-code-action doesn't support discussion events, so we use
+    repository_dispatch to trigger the review workflow with discussion data.
+
+    Returns True if successful, False otherwise.
+    """
+    import json as json_module
+
+    if verbose:
+        print("[INFO] Triggering post-mortem review workflow...")
+
+    # repository_dispatch payload (max 10 keys, max 65535 chars total)
+    # Truncate body to leave room for other fields
+    max_body_len = 60000
+    truncated_body = body[:max_body_len] + "..." if len(body) > max_body_len else body
+
+    payload = json_module.dumps({
+        "event_type": "postmortem-review",
+        "client_payload": {
+            "discussion_url": discussion_url,
+            "title": title,
+            "body": truncated_body,
+        }
+    })
+
+    result = subprocess.run(
+        [
+            "gh", "api",
+            "-X", "POST",
+            "/repos/{owner}/{repo}/dispatches",
+            "--input", "-",
+        ],
+        input=payload,
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        if verbose:
+            print(f"[WARNING] Failed to trigger review workflow: {result.stderr}")
+        return False
+
+    if verbose:
+        print("[INFO] Post-mortem review workflow triggered")
+    return True
+
+
 def format_discussion_body(
     trades: list[TradeContext],
     analysis: str,
@@ -909,6 +963,17 @@ def main() -> int:
                     verbose=args.verbose,
                 )
                 print(f"[SUCCESS] GitHub Discussion created: {discussion_url}")
+
+                # Trigger the post-mortem review workflow
+                success = trigger_postmortem_review(
+                    discussion_url=discussion_url,
+                    title=title,
+                    body=body,
+                    verbose=args.verbose,
+                )
+                if not success:
+                    print("[WARNING] Failed to trigger post-mortem review workflow")
+                    print("[INFO] You can manually trigger it or add the 'auto-fix' label to an issue")
             except Exception as e:
                 print(f"[WARNING] Failed to create GitHub Discussion: {e}")
                 print("[INFO] Analysis completed but discussion not created")
