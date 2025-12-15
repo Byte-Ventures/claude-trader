@@ -207,11 +207,14 @@ class MarketRegime:
             )
 
             # Apply modifiers to base adjustments
+            # Example: extreme_greed (base_position=0.75) with amplifier (position_mult=1.2)
+            # modified = 1.0 + (0.75 - 1.0) * 1.2 = 1.0 + (-0.25 * 1.2) = 0.7
+            # This amplifies the 25% reduction to a 30% reduction
             modified_threshold = base_threshold * modifier["threshold_mult"]
             modified_position = 1.0 + (base_position - 1.0) * modifier["position_mult"]
 
-            # Apply scale
-            sentiment_threshold = int(modified_threshold * scale)
+            # Apply scale (use round() to avoid truncation bias with small values)
+            sentiment_threshold = round(modified_threshold * scale)
             sentiment_position = 1.0 + (modified_position - 1.0) * scale
 
             threshold_adj += sentiment_threshold

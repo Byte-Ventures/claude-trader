@@ -703,7 +703,8 @@ class SignalScorer:
         elif htf_daily and htf_daily != "neutral":
             # HTF bias is neutral (daily + 4H disagree), but daily has clear direction
             # Apply half penalty when daily trend opposes signal direction
-            half_penalty = self.mtf_counter_penalty // 2  # 10 points (half of 20)
+            # Use round() to handle odd mtf_counter_penalty values correctly
+            half_penalty = round(self.mtf_counter_penalty / 2)
             if total_score > 0 and htf_daily == "bearish":
                 # Buying into bearish daily trend - apply half penalty
                 htf_adjustment = -half_penalty
@@ -720,7 +721,7 @@ class SignalScorer:
                 htf_4h=htf_4h,
                 signal_direction="bullish" if total_score > 0 else "bearish",
                 adjustment=htf_adjustment,
-                partial=htf_bias == "neutral" or htf_bias is None,
+                partial_penalty=htf_bias == "neutral" or htf_bias is None,
             )
 
         breakdown["htf_bias"] = htf_adjustment

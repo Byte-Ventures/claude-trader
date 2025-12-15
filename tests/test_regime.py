@@ -913,8 +913,8 @@ class TestTrendAwareSentimentModifiers:
             signal_action="buy",
         )
 
-        # threshold_mult=0.5 should reduce +15 to +7
-        assert result.components["sentiment"]["threshold_adj"] == 7
+        # threshold_mult=0.5 should reduce +15 to +8 (round(15 * 0.5) = 8)
+        assert result.components["sentiment"]["threshold_adj"] == 8
         assert result.components["sentiment"]["trend_modified"] is True
         assert result.components["sentiment"]["original_threshold_adj"] == 15
 
@@ -1000,8 +1000,8 @@ class TestTrendAwareSentimentModifiers:
             signal_action="buy",
         )
 
-        # threshold_mult=1.1 should amplify -5 to -5 (int(-5 * 1.1) = -5)
-        assert result.components["sentiment"]["threshold_adj"] == -5
+        # threshold_mult=1.1 should amplify -5 to -6 (round(-5 * 1.1) = round(-5.5) = -6)
+        assert result.components["sentiment"]["threshold_adj"] == -6
         assert result.components["sentiment"]["trend_modified"] is True
 
     # ------------------------------------------------------------------------
@@ -1017,8 +1017,8 @@ class TestTrendAwareSentimentModifiers:
             signal_action="buy",
         )
 
-        # threshold_mult=0.7 should reduce +5 to +3
-        assert result.components["sentiment"]["threshold_adj"] == 3
+        # threshold_mult=0.7 should reduce +5 to +4 (round(5 * 0.7) = round(3.5) = 4)
+        assert result.components["sentiment"]["threshold_adj"] == 4
         assert result.components["sentiment"]["trend_modified"] is True
 
     def test_greed_bullish_sell_good_for_profits(self, regime, greed_sentiment):
