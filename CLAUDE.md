@@ -11,9 +11,21 @@ python -m src.main
 # Install dependencies
 pip install -r requirements.txt
 
+# Run tests
+python3 -m pytest tests/ -v
+
 # Deploy to server (from repo root)
 sudo ./scripts/update.sh
 ```
+
+## Testing Requirements
+
+**CRITICAL: Never create a PR without running all tests first.**
+
+Before creating any pull request:
+1. Run the full test suite: `python3 -m pytest tests/ -v`
+2. Ensure all tests pass (no failures)
+3. If tests fail due to your changes, fix them before creating the PR
 
 ## Architecture
 

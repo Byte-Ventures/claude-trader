@@ -1656,6 +1656,13 @@ class TradingDaemon:
                             reason=f"trade_cooldown: {cooldown_reason}",
                             signal_score=signal_result.score,
                         )
+                        self.notifier.notify_trade_rejected(
+                            side="buy",
+                            reason=cooldown_reason,
+                            price=current_price,
+                            signal_score=signal_result.score,
+                            is_paper=self.settings.is_paper_trading,
+                        )
                         return
 
                 logger.info(
@@ -1690,6 +1697,13 @@ class TradingDaemon:
                             action="skip_sell",
                             reason=f"trade_cooldown: {cooldown_reason}",
                             signal_score=signal_result.score,
+                        )
+                        self.notifier.notify_trade_rejected(
+                            side="sell",
+                            reason=cooldown_reason,
+                            price=current_price,
+                            signal_score=signal_result.score,
+                            is_paper=self.settings.is_paper_trading,
                         )
                         return
 

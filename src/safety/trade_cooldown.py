@@ -9,6 +9,11 @@ Features:
 - Time-based cooldown: Minimum minutes between same-direction trades
 - Price-based cooldown: Only trade if price moved X% from last trade
 - Per-direction tracking: Independent cooldowns for buys vs sells
+
+Logic: Either condition can unlock the cooldown (OR, not AND).
+- Time passed: After X minutes, cooldown expires regardless of price
+- Price moved: If price moved Y%, can trade regardless of time
+This prevents old trades from blocking new ones indefinitely.
 """
 
 from dataclasses import dataclass
@@ -133,8 +138,10 @@ class TradeCooldown:
         """
         Check if a trade is allowed based on cooldown rules.
 
-        For buys: Both time AND price conditions must be satisfied.
-        For sells: Both conditions must be satisfied (but defaults have both disabled).
+        Either time OR price condition can unlock the cooldown:
+        - If enough time has passed since last trade: allowed
+        - If price has moved enough from last trade: allowed
+        - Otherwise: blocked
 
         Args:
             side: Trade side ("buy" or "sell")
@@ -158,7 +165,13 @@ class TradeCooldown:
             return True, None
 
     def _check_buy_cooldown(self, current_price: Decimal) -> tuple[bool, Optional[str]]:
-        """Check buy cooldown conditions."""
+        """Check buy cooldown conditions.
+
+        Logic: Either time OR price condition can unlock the cooldown.
+        - If enough time has passed since last buy: allowed
+        - If price has dropped enough from last buy: allowed
+        - Otherwise: blocked
+        """
         # No previous buy = no cooldown
         if self._last_buy_time is None:
             return True, None
@@ -192,18 +205,21 @@ class TradeCooldown:
                 price_ok = False
                 price_reason = f"price drop {-price_change:.2f}% < {self.config.buy_price_change_percent}%"
 
-        # Both must pass
-        if not time_ok and not price_ok:
-            return False, f"{time_reason}, {price_reason}"
-        elif not time_ok:
-            return False, time_reason
-        elif not price_ok:
-            return False, price_reason
+        # Either condition passing unlocks the cooldown
+        if time_ok or price_ok:
+            return True, None
 
-        return True, None
+        # Both failed - return combined reason
+        return False, f"{time_reason}, {price_reason}"
 
     def _check_sell_cooldown(self, current_price: Decimal) -> tuple[bool, Optional[str]]:
-        """Check sell cooldown conditions."""
+        """Check sell cooldown conditions.
+
+        Logic: Either time OR price condition can unlock the cooldown.
+        - If enough time has passed since last sell: allowed
+        - If price has risen enough from last sell: allowed
+        - Otherwise: blocked
+        """
         # No previous sell = no cooldown
         if self._last_sell_time is None:
             return True, None
@@ -237,15 +253,12 @@ class TradeCooldown:
                 price_ok = False
                 price_reason = f"price rise {price_change:.2f}% < {self.config.sell_price_change_percent}%"
 
-        # Both must pass
-        if not time_ok and not price_ok:
-            return False, f"{time_reason}, {price_reason}"
-        elif not time_ok:
-            return False, time_reason
-        elif not price_ok:
-            return False, price_reason
+        # Either condition passing unlocks the cooldown
+        if time_ok or price_ok:
+            return True, None
 
-        return True, None
+        # Both failed - return combined reason
+        return False, f"{time_reason}, {price_reason}"
 
     def record_trade(self, side: str, price: Decimal) -> None:
         """

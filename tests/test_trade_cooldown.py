@@ -123,19 +123,19 @@ def test_no_previous_sell_allows_trade(cooldown):
 # Time-Based Cooldown Tests
 # ============================================================================
 
-def test_buy_blocked_within_time_cooldown(cooldown_no_price):
-    """Buy should be blocked within time cooldown period."""
+def test_buy_allowed_when_only_time_enabled(cooldown_no_price):
+    """Buy allowed when only time cooldown enabled (price disabled = always passes with OR logic)."""
     # Record a buy
     cooldown_no_price.record_trade("buy", Decimal("100000"))
 
-    # Immediately try another buy - should be blocked
+    # Immediately try another buy - allowed because price condition is disabled (passes)
     can_execute, reason = cooldown_no_price.can_execute("buy", Decimal("100000"))
-    assert can_execute is False
-    assert "wait" in reason
+    assert can_execute is True  # OR logic: disabled price condition = passes
+    assert reason is None
 
 
-def test_sell_blocked_within_time_cooldown():
-    """Sell should be blocked within time cooldown period when enabled."""
+def test_sell_allowed_when_only_time_enabled():
+    """Sell allowed when only time cooldown enabled (price disabled = always passes with OR logic)."""
     config = TradeCooldownConfig(
         buy_cooldown_minutes=0,
         sell_cooldown_minutes=15,
@@ -147,10 +147,10 @@ def test_sell_blocked_within_time_cooldown():
     # Record a sell
     cooldown.record_trade("sell", Decimal("100000"))
 
-    # Immediately try another sell - should be blocked
+    # Immediately try another sell - allowed because price condition is disabled (passes)
     can_execute, reason = cooldown.can_execute("sell", Decimal("100000"))
-    assert can_execute is False
-    assert "wait" in reason
+    assert can_execute is True  # OR logic: disabled price condition = passes
+    assert reason is None
 
 
 def test_buy_allowed_after_time_cooldown_expires(cooldown_no_price):
@@ -169,15 +169,15 @@ def test_buy_allowed_after_time_cooldown_expires(cooldown_no_price):
 # Price-Based Cooldown Tests
 # ============================================================================
 
-def test_buy_blocked_price_not_dropped_enough(cooldown_no_time):
-    """Buy blocked if price hasn't dropped enough."""
+def test_buy_allowed_when_only_price_enabled(cooldown_no_time):
+    """Buy allowed when only price cooldown enabled (time disabled = always passes with OR logic)."""
     # Record a buy at 100000
     cooldown_no_time.record_trade("buy", Decimal("100000"))
 
-    # Try to buy at 99500 (only 0.5% drop, need 1%)
+    # Try to buy at 99500 (only 0.5% drop, need 1%) - allowed because time disabled (passes)
     can_execute, reason = cooldown_no_time.can_execute("buy", Decimal("99500"))
-    assert can_execute is False
-    assert "price drop" in reason
+    assert can_execute is True  # OR logic: disabled time condition = passes
+    assert reason is None
 
 
 def test_buy_allowed_price_dropped_enough(cooldown_no_time):
@@ -191,15 +191,15 @@ def test_buy_allowed_price_dropped_enough(cooldown_no_time):
     assert reason is None
 
 
-def test_sell_blocked_price_not_risen_enough(cooldown_no_time):
-    """Sell blocked if price hasn't risen enough."""
+def test_sell_allowed_when_only_price_enabled(cooldown_no_time):
+    """Sell allowed when only price cooldown enabled (time disabled = always passes with OR logic)."""
     # Record a sell at 100000
     cooldown_no_time.record_trade("sell", Decimal("100000"))
 
-    # Try to sell at 100500 (only 0.5% rise, need 1%)
+    # Try to sell at 100500 (only 0.5% rise, need 1%) - allowed because time disabled (passes)
     can_execute, reason = cooldown_no_time.can_execute("sell", Decimal("100500"))
-    assert can_execute is False
-    assert "price rise" in reason
+    assert can_execute is True  # OR logic: disabled time condition = passes
+    assert reason is None
 
 
 def test_sell_allowed_price_risen_enough(cooldown_no_time):
@@ -237,8 +237,8 @@ def test_buy_blocked_time_and_price_both_fail():
     assert "price drop" in reason
 
 
-def test_buy_blocked_time_ok_but_price_fails():
-    """Buy blocked when time is OK but price hasn't dropped."""
+def test_buy_allowed_when_time_expires():
+    """Buy allowed when time cooldown expires (OR logic - time condition passes)."""
     config = TradeCooldownConfig(
         buy_cooldown_minutes=15,
         sell_cooldown_minutes=0,
@@ -247,18 +247,18 @@ def test_buy_blocked_time_ok_but_price_fails():
     )
     cooldown = TradeCooldown(config=config)
 
-    # Set last buy to 20 minutes ago
+    # Set last buy to 20 minutes ago (time OK)
     cooldown._last_buy_time = datetime.now(timezone.utc) - timedelta(minutes=20)
     cooldown._last_buy_price = Decimal("100000")
 
-    # Try at same price - price condition fails
+    # Try at same price - allowed because time passed (OR logic)
     can_execute, reason = cooldown.can_execute("buy", Decimal("100000"))
-    assert can_execute is False
-    assert "price drop" in reason
+    assert can_execute is True
+    assert reason is None
 
 
-def test_buy_blocked_price_ok_but_time_fails():
-    """Buy blocked when price dropped but time cooldown not expired."""
+def test_buy_allowed_when_price_moves():
+    """Buy allowed when price drops enough (OR logic - price condition passes)."""
     config = TradeCooldownConfig(
         buy_cooldown_minutes=15,
         sell_cooldown_minutes=0,
@@ -267,13 +267,13 @@ def test_buy_blocked_price_ok_but_time_fails():
     )
     cooldown = TradeCooldown(config=config)
 
-    # Record a buy just now
+    # Record a buy just now (time NOT OK)
     cooldown.record_trade("buy", Decimal("100000"))
 
-    # Try at lower price - time condition fails
+    # Try at 2% lower price - allowed because price dropped (OR logic)
     can_execute, reason = cooldown.can_execute("buy", Decimal("98000"))
-    assert can_execute is False
-    assert "wait" in reason
+    assert can_execute is True
+    assert reason is None
 
 
 def test_buy_allowed_both_conditions_pass():
