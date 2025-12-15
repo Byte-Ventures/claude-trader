@@ -66,20 +66,24 @@ jobs:
           prompt: |
             Address the review comments on PR #${{ github.event.issue.number }}.
 
+            ## Context
+            This is claude-trader, a cryptocurrency trading bot. Read CLAUDE.md first for project guidelines.
+
             ## Review Comment
             ${{ github.event.comment.body }}
 
             ## Instructions
-            1. Focus on issues marked with 🔴 (critical) - these MUST be fixed
-            2. Address issues marked with 🟡 (high priority) if straightforward
-            3. For each issue:
+            1. Read CLAUDE.md to understand project conventions
+            2. Focus on issues marked with 🔴 (critical) - these MUST be fixed
+            3. Address issues marked with 🟡 (high priority) if straightforward
+            4. For each issue:
                - Locate the relevant code
                - Implement the fix
                - Verify the fix is correct
-            4. Do NOT modify src/version.py
-            5. Run tests: python3 -m pytest tests/ -v
-            6. If tests pass, commit with message: "Address review feedback on PR #${{ github.event.issue.number }}"
-            7. Push to origin/${{ steps.pr.outputs.branch }}
+            5. Do NOT modify src/version.py
+            6. Run tests: python3 -m pytest tests/ -v
+            7. If tests pass, commit with message: "Address review feedback on PR #${{ github.event.issue.number }}"
+            8. Push to origin/${{ steps.pr.outputs.branch }}
 
             If an issue cannot be fixed or is invalid, explain why in a comment.
           claude_args: >-

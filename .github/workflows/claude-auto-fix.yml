@@ -71,14 +71,18 @@ jobs:
             **Title:** ${{ github.event.issue.title }}
             **Body:** ${{ github.event.issue.body }}
 
-            Instructions:
-            1. Analyze the issue and locate relevant code
-            2. Implement the fix following CLAUDE.md guidelines
-            3. Do NOT modify src/version.py (version bumps happen at merge time)
-            4. Run tests: python3 -m pytest tests/ -v
-            5. Commit with message referencing issue #${{ github.event.issue.number }}
-            6. Push to origin/${{ steps.branch.outputs.name }}
-            7. Create PR to develop with "Closes #${{ github.event.issue.number }}" in body
+            ## Context
+            This is claude-trader, a cryptocurrency trading bot. Read CLAUDE.md first for project guidelines.
+
+            ## Instructions
+            1. Read CLAUDE.md to understand project conventions
+            2. Analyze the issue and locate relevant code
+            3. Implement the fix following CLAUDE.md guidelines
+            4. Do NOT modify src/version.py (version bumps happen at merge time)
+            5. Run tests: python3 -m pytest tests/ -v
+            6. Commit with message referencing issue #${{ github.event.issue.number }}
+            7. Push to origin/${{ steps.branch.outputs.name }}
+            8. Create PR to develop with "Closes #${{ github.event.issue.number }}" in body
 
             Do NOT auto-merge - PRs require human approval.
           claude_args: >-
