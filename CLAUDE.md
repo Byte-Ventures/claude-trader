@@ -139,19 +139,19 @@ When creating new configuration parameters:
 ### Workflow
 
 1. Create feature/fix branch from `develop`
-2. Make changes and commit with version bump
+2. Make changes and commit using conventional commit format
 3. Push and create PR to `develop`
 4. After review, merge to `develop`
 5. When ready for release, create PR from `develop` to `main`
-6. **After every PR merge to `main`**, rebase `develop` onto `main`:
+6. **After every PR merge to `main`**, reset `develop` to `main`:
    ```bash
    git checkout develop
    git fetch origin main
-   git rebase origin/main
+   git reset --hard origin/main
    git push --force-with-lease origin develop
    ```
 
-**Why rebase instead of merge?** Merging main back into develop creates merge commits that pollute the commit history. This causes PRs to show dozens of "commits" even when only a few files changed. Rebasing keeps the history linear and PRs clean.
+**Why reset instead of rebase?** PRs to main are squash-merged (cleaner main history). Rebasing would try to replay the original commits that are already in main (as squash commits), causing conflicts. Reset is safe because all work is already merged.
 
 ### Creating PRs to Main
 
