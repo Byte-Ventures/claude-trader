@@ -583,6 +583,44 @@ class TradeReviewer:
         else:
             return ("position", "position trading (days to weeks)")
 
+    def _get_trading_mechanics_context(self, trading_style: str) -> str:
+        """
+        Get trading mechanics description based on trading style.
+
+        This clarifies spot trading mechanics to prevent AI models from
+        using futures/margin trading terminology (e.g., "long entry").
+
+        Args:
+            trading_style: One of "daytrading", "swing", or "position"
+
+        Returns:
+            Trading mechanics description for system prompts
+        """
+        base_mechanics = """Trading mechanics (spot trading, no leverage):
+- BUY = spend fiat to acquire BTC (add to position)
+- SELL = convert BTC holdings to fiat (reduce position)
+- Position ranges from 0% (all fiat) to 100% (all BTC)"""
+
+        style_focus = {
+            "daytrading": """
+Trading style: DAYTRADING
+- Focus on quick entries/exits within hours
+- Momentum and short-term reversals are key
+- Tight risk management, small position adjustments""",
+            "swing": """
+Trading style: SWING TRADING
+- Hold positions for hours to days
+- Balance momentum with trend confirmation
+- Moderate position sizing, allow for volatility""",
+            "position": """
+Trading style: POSITION TRADING (long-term)
+- Hold positions for days to weeks
+- Focus on macro trends and fundamentals
+- Larger positions, wider tolerance for drawdowns""",
+        }
+
+        return base_mechanics + style_focus.get(trading_style, style_focus["swing"])
+
     def should_review(
         self, signal_result: SignalResult, threshold: int
     ) -> tuple[bool, Optional[str]]:
@@ -804,8 +842,13 @@ class TradeReviewer:
                 "opposing": SYSTEM_PROMPT_OPPOSING,
             }
 
+        # Inject trading mechanics context based on trading style
+        trading_style = context.get("trading_style", "swing")
+        trading_mechanics = self._get_trading_mechanics_context(trading_style)
+        system_prompt = f"{system_prompts[stance]}\n\n{trading_mechanics}"
+
         prompt = self._build_reviewer_prompt(context)
-        response = await self._call_api(model, system_prompts[stance], prompt)
+        response = await self._call_api(model, system_prompt, prompt)
         data = self._extract_json(response)
 
         # Parse response
@@ -838,7 +881,12 @@ class TradeReviewer:
         """Run judge to synthesize reviews and make final decision."""
         # Select judge prompt based on review type
         review_type = context.get("review_type", "trade")
-        judge_prompt = SYSTEM_PROMPT_JUDGE_HOLD if review_type == "interesting_hold" else SYSTEM_PROMPT_JUDGE
+        base_prompt = SYSTEM_PROMPT_JUDGE_HOLD if review_type == "interesting_hold" else SYSTEM_PROMPT_JUDGE
+
+        # Inject trading mechanics context based on trading style
+        trading_style = context.get("trading_style", "swing")
+        trading_mechanics = self._get_trading_mechanics_context(trading_style)
+        judge_prompt = f"{base_prompt}\n\n{trading_mechanics}"
 
         prompt = self._build_judge_prompt(reviews, context)
         response = await self._call_api(self.judge_model, judge_prompt, prompt)
