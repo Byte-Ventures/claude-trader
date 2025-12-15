@@ -67,11 +67,11 @@ jobs:
           VERSION="${{ steps.version.outputs.next }}"
           BRANCH="release/v${VERSION}"
 
-          # Create release branch
-          git checkout -b "$BRANCH"
-
-          # Run semantic-release to make version changes (but don't push to main)
+          # Run semantic-release on main first (only works on configured branches)
           semantic-release version --no-push --no-tag --no-vcs-release
+
+          # Create release branch from the committed changes
+          git checkout -b "$BRANCH"
 
           # Push the release branch
           git push origin "$BRANCH"
