@@ -1674,12 +1674,12 @@ class TestHTFBiasModifier:
         assert result.breakdown.get("_htf_4h") == "neutral"
 
     def test_htf_breakdown_defaults_when_none(self, mtf_scorer, bullish_signal_df):
-        """Test breakdown defaults to 'neutral' when HTF params are None."""
+        """Test breakdown defaults to 'disabled' when HTF params are None."""
         result = mtf_scorer.calculate_score(bullish_signal_df)
 
-        assert result.breakdown.get("_htf_trend") == "neutral"
-        assert result.breakdown.get("_htf_daily") == "neutral"
-        assert result.breakdown.get("_htf_4h") == "neutral"
+        assert result.breakdown.get("_htf_trend") == "disabled"
+        assert result.breakdown.get("_htf_daily") == "disabled"
+        assert result.breakdown.get("_htf_4h") == "disabled"
 
     def test_htf_custom_boost_values(self, bullish_signal_df):
         """Test custom aligned_boost and counter_penalty values work."""
