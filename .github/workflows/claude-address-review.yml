@@ -26,6 +26,33 @@ jobs:
       id-token: write
 
     steps:
+      - name: Check retry limit
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            const retryLabels = labels.data.filter(l => l.name.startsWith('review-retry-'));
+            const retryCount = retryLabels.length;
+
+            if (retryCount >= 3) {
+              core.setFailed('Max review retries (3) reached. Manual intervention required.');
+              return;
+            }
+
+            // Add retry label
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: [`review-retry-${retryCount + 1}`]
+            });
+            core.setOutput('retry_count', retryCount + 1);
+
       - name: Get PR details
         id: pr
         uses: actions/github-script@v7

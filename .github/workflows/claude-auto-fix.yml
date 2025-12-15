@@ -58,7 +58,7 @@ jobs:
         id: branch
         run: |
           BRANCH="fix/issue-${{ github.event.issue.number }}"
-          git checkout -b "$BRANCH"
+          git checkout -B "$BRANCH"
           echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
 
       - name: Run Claude Code
