@@ -6,11 +6,12 @@ on:
 
 jobs:
   address-review:
-    # Only run for PR comments from claude[bot] containing critical issues
+    # Only run for PR review comments from claude[bot] containing critical issues
     if: >
       github.event.issue.pull_request &&
       github.event.comment.user.login == 'claude[bot]' &&
-      contains(github.event.comment.body, '🔴')
+      contains(github.event.comment.body, '🔴') &&
+      contains(github.event.comment.body, 'CRITICAL')
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -43,6 +44,15 @@ jobs:
         with:
           ref: ${{ steps.pr.outputs.branch }}
           fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
       - name: Configure Git
         run: |
