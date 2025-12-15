@@ -76,8 +76,8 @@ jobs:
           # Push the release branch
           git push origin "$BRANCH"
 
-          # Create PR with auto-merge
-          PR_URL=$(gh pr create \
+          # Create PR
+          if ! PR_URL=$(gh pr create \
             --base main \
             --head "$BRANCH" \
             --title "chore(release): ${VERSION}" \
@@ -89,9 +89,14 @@ jobs:
           - Version bump to ${VERSION}
           - Updated CHANGELOG.md
 
-          This PR will be auto-merged once checks pass.")
+          This PR will be auto-merged once checks pass."); then
+            echo "::error::Failed to create PR for release $VERSION"
+            exit 1
+          fi
 
           echo "Created PR: $PR_URL"
 
-          # Enable auto-merge
-          gh pr merge "$BRANCH" --auto --squash
+          # Enable auto-merge (waits for required status checks before merging)
+          if ! gh pr merge "$BRANCH" --auto --squash; then
+            echo "::warning::Failed to enable auto-merge. PR created but requires manual merge."
+          fi
