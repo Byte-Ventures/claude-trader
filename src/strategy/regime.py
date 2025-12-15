@@ -64,6 +64,64 @@ class MarketRegime:
         "extreme_greed": {"threshold": 15, "position": 0.75},  # 75-100
     }
 
+    # Trend-aware sentiment modifiers
+    # Modifies how sentiment adjustments are applied based on trend context
+    #
+    # threshold_mult: Multiplier for sentiment threshold adjustment
+    #   - 0.0 = ignore sentiment adjustment entirely
+    #   - 1.0 = apply full sentiment adjustment
+    #   - >1.0 = amplify sentiment adjustment
+    #
+    # position_mult: Additional position size multiplier (compounds with base)
+    #
+    # Format: (sentiment_category, trend, signal_action) -> modifiers
+    SENTIMENT_TREND_MODIFIERS = {
+        # ====================================================================
+        # EXTREME FEAR
+        # ====================================================================
+        # BUY signals
+        ("extreme_fear", "bullish", "buy"): {"threshold_mult": 1.2, "position_mult": 1.15},   # Contrarian opportunity
+        ("extreme_fear", "bearish", "buy"): {"threshold_mult": 0.0, "position_mult": 0.7},    # Fear justified, don't catch knife
+        ("extreme_fear", "neutral", "buy"): {"threshold_mult": 0.8, "position_mult": 1.0},    # Cautious opportunity
+        # SELL signals
+        ("extreme_fear", "bullish", "sell"): {"threshold_mult": 0.3, "position_mult": 0.8},   # Wall of worry, don't panic sell
+        ("extreme_fear", "bearish", "sell"): {"threshold_mult": 0.7, "position_mult": 0.75},  # Capitulation zone, cautious
+        ("extreme_fear", "neutral", "sell"): {"threshold_mult": 0.5, "position_mult": 0.85},  # Reduce panic selling
+        # ====================================================================
+        # FEAR (non-extreme)
+        # ====================================================================
+        # BUY signals
+        ("fear", "bullish", "buy"): {"threshold_mult": 1.1, "position_mult": 1.05},   # Mild opportunity
+        ("fear", "bearish", "buy"): {"threshold_mult": 0.3, "position_mult": 0.8},    # Fear justified
+        ("fear", "neutral", "buy"): {"threshold_mult": 0.9, "position_mult": 1.0},    # Slight caution
+        # SELL signals
+        ("fear", "bullish", "sell"): {"threshold_mult": 0.5, "position_mult": 0.9},   # Mild wall of worry
+        ("fear", "bearish", "sell"): {"threshold_mult": 0.85, "position_mult": 0.9},  # Cautious selling
+        ("fear", "neutral", "sell"): {"threshold_mult": 0.7, "position_mult": 0.95},  # Reduce fear-driven selling
+        # ====================================================================
+        # GREED (non-extreme)
+        # ====================================================================
+        # BUY signals
+        ("greed", "bullish", "buy"): {"threshold_mult": 0.7, "position_mult": 0.9},   # Momentum, reduced penalty
+        ("greed", "bearish", "buy"): {"threshold_mult": 1.2, "position_mult": 0.8},   # Early denial, increase caution
+        ("greed", "neutral", "buy"): {"threshold_mult": 1.0, "position_mult": 0.9},   # Standard greed caution
+        # SELL signals
+        ("greed", "bullish", "sell"): {"threshold_mult": 1.2, "position_mult": 1.1},  # Good time for profits
+        ("greed", "bearish", "sell"): {"threshold_mult": 1.1, "position_mult": 1.0},  # Early denial, modest sell bias
+        ("greed", "neutral", "sell"): {"threshold_mult": 1.0, "position_mult": 1.0},  # Standard
+        # ====================================================================
+        # EXTREME GREED
+        # ====================================================================
+        # BUY signals
+        ("extreme_greed", "bullish", "buy"): {"threshold_mult": 0.5, "position_mult": 0.85},  # Momentum real, reduce penalty
+        ("extreme_greed", "bearish", "buy"): {"threshold_mult": 1.5, "position_mult": 0.6},   # Denial phase, don't buy
+        ("extreme_greed", "neutral", "buy"): {"threshold_mult": 1.0, "position_mult": 0.75},  # Full greed caution
+        # SELL signals
+        ("extreme_greed", "bullish", "sell"): {"threshold_mult": 1.5, "position_mult": 1.2},  # PRIME: sell into euphoria
+        ("extreme_greed", "bearish", "sell"): {"threshold_mult": 1.3, "position_mult": 1.1},  # Denial, sell before herd
+        ("extreme_greed", "neutral", "sell"): {"threshold_mult": 1.2, "position_mult": 1.0},  # Take profits
+    }
+
     # Volatility adjustments (ATR-based levels)
     VOLATILITY_ADJUSTMENTS = {
         "low": {"threshold": -5, "position": 1.1},
@@ -128,23 +186,47 @@ class MarketRegime:
         position_mult = 1.0
         scale = self.config.adjustment_scale
 
-        # Sentiment component
+        # Sentiment component (trend-aware)
         if self.config.sentiment_enabled and sentiment and sentiment.value is not None:
             sentiment_category = self._classify_sentiment(sentiment.value)
             adj = self.SENTIMENT_ADJUSTMENTS.get(
                 sentiment_category, {"threshold": 0, "position": 1.0}
             )
-            sentiment_threshold = int(adj["threshold"] * scale)
-            sentiment_position = 1.0 + (adj["position"] - 1.0) * scale
+
+            # Base sentiment adjustments
+            base_threshold = adj["threshold"]
+            base_position = adj["position"]
+
+            # Apply trend-aware modifiers
+            # Key principle: fear in downtrend is justified (not opportunity),
+            # greed in uptrend is momentum (not necessarily overbought)
+            modifier_key = (sentiment_category, trend, signal_action)
+            modifier = self.SENTIMENT_TREND_MODIFIERS.get(
+                modifier_key,
+                {"threshold_mult": 1.0, "position_mult": 1.0}  # Default: no modification
+            )
+
+            # Apply modifiers to base adjustments
+            modified_threshold = base_threshold * modifier["threshold_mult"]
+            modified_position = 1.0 + (base_position - 1.0) * modifier["position_mult"]
+
+            # Apply scale
+            sentiment_threshold = int(modified_threshold * scale)
+            sentiment_position = 1.0 + (modified_position - 1.0) * scale
 
             threshold_adj += sentiment_threshold
             position_mult *= sentiment_position
+
+            # Track whether trend modified the sentiment adjustment
+            was_modified = modifier["threshold_mult"] != 1.0 or modifier["position_mult"] != 1.0
 
             components["sentiment"] = {
                 "value": sentiment.value,
                 "category": sentiment_category,
                 "threshold_adj": sentiment_threshold,
                 "position_mult": round(sentiment_position, 2),
+                "trend_modified": was_modified,
+                "original_threshold_adj": int(base_threshold * scale) if was_modified else None,
             }
 
         # Volatility component

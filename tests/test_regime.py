@@ -802,3 +802,387 @@ async def test_get_cached_sentiment_keeps_stale_cache_on_error():
             # Should keep stale cache instead of returning None
             assert result2 is not None
             assert result2.value == 50
+
+
+# ============================================================================
+# Trend-Aware Sentiment Modifier Tests
+# ============================================================================
+
+class TestTrendAwareSentimentModifiers:
+    """Test the trend-aware sentiment modification system."""
+
+    # ------------------------------------------------------------------------
+    # EXTREME FEAR + BUY Tests
+    # ------------------------------------------------------------------------
+
+    def test_extreme_fear_bearish_buy_nullifies_discount(self, regime, extreme_fear_sentiment):
+        """Test extreme_fear + bearish + buy nullifies the threshold discount.
+
+        Fear in a downtrend is justified, not an opportunity.
+        """
+        result = regime.calculate(
+            sentiment=extreme_fear_sentiment,
+            volatility="normal",
+            trend="bearish",
+            signal_action="buy",
+        )
+
+        # threshold_mult=0.0 should eliminate the -10 discount
+        assert result.components["sentiment"]["threshold_adj"] == 0
+        assert result.components["sentiment"]["trend_modified"] is True
+        assert result.components["sentiment"]["original_threshold_adj"] == -10
+
+    def test_extreme_fear_bullish_buy_amplifies_discount(self, regime, extreme_fear_sentiment):
+        """Test extreme_fear + bullish + buy amplifies the opportunity.
+
+        Fear in an uptrend is a contrarian buying opportunity.
+        """
+        result = regime.calculate(
+            sentiment=extreme_fear_sentiment,
+            volatility="normal",
+            trend="bullish",
+            signal_action="buy",
+        )
+
+        # threshold_mult=1.2 should amplify -10 to -12
+        assert result.components["sentiment"]["threshold_adj"] == -12
+        assert result.components["sentiment"]["trend_modified"] is True
+
+    def test_extreme_fear_neutral_buy_reduces_discount(self, regime, extreme_fear_sentiment):
+        """Test extreme_fear + neutral + buy slightly reduces discount."""
+        result = regime.calculate(
+            sentiment=extreme_fear_sentiment,
+            volatility="normal",
+            trend="neutral",
+            signal_action="buy",
+        )
+
+        # threshold_mult=0.8 should reduce -10 to -8
+        assert result.components["sentiment"]["threshold_adj"] == -8
+        assert result.components["sentiment"]["trend_modified"] is True
+
+    # ------------------------------------------------------------------------
+    # EXTREME FEAR + SELL Tests
+    # ------------------------------------------------------------------------
+
+    def test_extreme_fear_bullish_sell_reduces_ease(self, regime, extreme_fear_sentiment):
+        """Test extreme_fear + bullish + sell makes selling harder.
+
+        Wall of worry - don't panic sell during uptrends.
+        """
+        result = regime.calculate(
+            sentiment=extreme_fear_sentiment,
+            volatility="normal",
+            trend="bullish",
+            signal_action="sell",
+        )
+
+        # threshold_mult=0.3 should reduce -10 to -3
+        assert result.components["sentiment"]["threshold_adj"] == -3
+        assert result.components["sentiment"]["trend_modified"] is True
+
+    def test_extreme_fear_bearish_sell_moderate_ease(self, regime, extreme_fear_sentiment):
+        """Test extreme_fear + bearish + sell allows cautious selling.
+
+        Fear is justified but extreme fear can mark bottoms.
+        """
+        result = regime.calculate(
+            sentiment=extreme_fear_sentiment,
+            volatility="normal",
+            trend="bearish",
+            signal_action="sell",
+        )
+
+        # threshold_mult=0.7 should reduce -10 to -7
+        assert result.components["sentiment"]["threshold_adj"] == -7
+        assert result.components["sentiment"]["trend_modified"] is True
+
+    # ------------------------------------------------------------------------
+    # EXTREME GREED + BUY Tests
+    # ------------------------------------------------------------------------
+
+    def test_extreme_greed_bullish_buy_reduces_penalty(self, regime, extreme_greed_sentiment):
+        """Test extreme_greed + bullish + buy reduces the penalty.
+
+        Momentum is real - don't penalize buying too harshly.
+        """
+        result = regime.calculate(
+            sentiment=extreme_greed_sentiment,
+            volatility="normal",
+            trend="bullish",
+            signal_action="buy",
+        )
+
+        # threshold_mult=0.5 should reduce +15 to +7
+        assert result.components["sentiment"]["threshold_adj"] == 7
+        assert result.components["sentiment"]["trend_modified"] is True
+        assert result.components["sentiment"]["original_threshold_adj"] == 15
+
+    def test_extreme_greed_bearish_buy_amplifies_penalty(self, regime, extreme_greed_sentiment):
+        """Test extreme_greed + bearish + buy amplifies the penalty.
+
+        Denial phase - don't buy when trend is down and people are euphoric.
+        """
+        result = regime.calculate(
+            sentiment=extreme_greed_sentiment,
+            volatility="normal",
+            trend="bearish",
+            signal_action="buy",
+        )
+
+        # threshold_mult=1.5 should amplify +15 to +22, clamped to +20
+        assert result.components["sentiment"]["threshold_adj"] >= 20
+        assert result.components["sentiment"]["trend_modified"] is True
+
+    # ------------------------------------------------------------------------
+    # EXTREME GREED + SELL Tests (PRIME OPPORTUNITY)
+    # ------------------------------------------------------------------------
+
+    def test_extreme_greed_bullish_sell_prime_opportunity(self, regime, extreme_greed_sentiment):
+        """Test extreme_greed + bullish + sell is the PRIME selling opportunity.
+
+        'Be fearful when others are greedy' - take profits at euphoria.
+        """
+        result = regime.calculate(
+            sentiment=extreme_greed_sentiment,
+            volatility="normal",
+            trend="bullish",
+            signal_action="sell",
+        )
+
+        # threshold_mult=1.5 should amplify +15 to +22 (clamped to +20)
+        # This makes it EASIER to sell (threshold penalty reduced relative to signal)
+        # Note: For sells, the sentiment threshold still adds, but the signal is negative
+        # So a higher positive sentiment_threshold means less penalty on the negative score
+        assert result.components["sentiment"]["threshold_adj"] >= 15
+        assert result.components["sentiment"]["trend_modified"] is True
+        # Position modifier of 1.2 means we take MORE of the base position change
+        # Base extreme_greed = 0.75, so deviation = -0.25
+        # modified = 1.0 + (-0.25 * 1.2) = 0.7 (smaller position overall, but larger sell)
+        # This is correct - we're selling MORE aggressively
+
+    def test_extreme_greed_bearish_sell_denial_phase(self, regime, extreme_greed_sentiment):
+        """Test extreme_greed + bearish + sell catches denial phase."""
+        result = regime.calculate(
+            sentiment=extreme_greed_sentiment,
+            volatility="normal",
+            trend="bearish",
+            signal_action="sell",
+        )
+
+        # threshold_mult=1.3 should amplify +15 to +19
+        assert result.components["sentiment"]["threshold_adj"] >= 15
+        assert result.components["sentiment"]["trend_modified"] is True
+
+    # ------------------------------------------------------------------------
+    # FEAR (non-extreme) Tests
+    # ------------------------------------------------------------------------
+
+    def test_fear_bearish_buy_reduces_discount(self, regime, fear_sentiment):
+        """Test fear + bearish + buy reduces the discount significantly."""
+        result = regime.calculate(
+            sentiment=fear_sentiment,
+            volatility="normal",
+            trend="bearish",
+            signal_action="buy",
+        )
+
+        # threshold_mult=0.3 should reduce -5 to -1 (int(-5 * 0.3) = -1)
+        assert result.components["sentiment"]["threshold_adj"] >= -2
+        assert result.components["sentiment"]["trend_modified"] is True
+
+    def test_fear_bullish_buy_slight_amplification(self, regime, fear_sentiment):
+        """Test fear + bullish + buy slightly amplifies the opportunity."""
+        result = regime.calculate(
+            sentiment=fear_sentiment,
+            volatility="normal",
+            trend="bullish",
+            signal_action="buy",
+        )
+
+        # threshold_mult=1.1 should amplify -5 to -5 (int(-5 * 1.1) = -5)
+        assert result.components["sentiment"]["threshold_adj"] == -5
+        assert result.components["sentiment"]["trend_modified"] is True
+
+    # ------------------------------------------------------------------------
+    # GREED (non-extreme) Tests
+    # ------------------------------------------------------------------------
+
+    def test_greed_bullish_buy_reduces_penalty(self, regime, greed_sentiment):
+        """Test greed + bullish + buy reduces the penalty."""
+        result = regime.calculate(
+            sentiment=greed_sentiment,
+            volatility="normal",
+            trend="bullish",
+            signal_action="buy",
+        )
+
+        # threshold_mult=0.7 should reduce +5 to +3
+        assert result.components["sentiment"]["threshold_adj"] == 3
+        assert result.components["sentiment"]["trend_modified"] is True
+
+    def test_greed_bullish_sell_good_for_profits(self, regime, greed_sentiment):
+        """Test greed + bullish + sell is a good time for profits."""
+        result = regime.calculate(
+            sentiment=greed_sentiment,
+            volatility="normal",
+            trend="bullish",
+            signal_action="sell",
+        )
+
+        # threshold_mult=1.2 should amplify +5 to +6
+        assert result.components["sentiment"]["threshold_adj"] == 6
+        assert result.components["sentiment"]["trend_modified"] is True
+
+    # ------------------------------------------------------------------------
+    # NEUTRAL Sentiment Tests (should use defaults)
+    # ------------------------------------------------------------------------
+
+    def test_neutral_sentiment_not_modified(self, regime, neutral_sentiment):
+        """Test neutral sentiment is not affected by trend modifiers."""
+        result = regime.calculate(
+            sentiment=neutral_sentiment,
+            volatility="normal",
+            trend="bearish",
+            signal_action="buy",
+        )
+
+        # Neutral sentiment has threshold=0, so no modification
+        assert result.components["sentiment"]["threshold_adj"] == 0
+        # Should not be marked as trend_modified since base is 0
+        assert result.components["sentiment"].get("trend_modified", False) is False
+
+    # ------------------------------------------------------------------------
+    # Position Multiplier Tests
+    # ------------------------------------------------------------------------
+
+    def test_extreme_fear_bearish_buy_reduces_position(self, regime, extreme_fear_sentiment):
+        """Test extreme_fear + bearish + buy reduces position size."""
+        result = regime.calculate(
+            sentiment=extreme_fear_sentiment,
+            volatility="normal",
+            trend="bearish",
+            signal_action="buy",
+        )
+
+        # position_mult=0.7 should reduce the position
+        # Base extreme_fear position is 1.25, modified by 0.7
+        assert result.components["sentiment"]["position_mult"] < 1.25
+
+    def test_extreme_greed_bullish_sell_amplifies_position_effect(self, regime, extreme_greed_sentiment):
+        """Test extreme_greed + bullish + sell amplifies the position reduction.
+
+        During prime selling opportunity, we sell MORE aggressively.
+        Base extreme_greed position = 0.75 (sell 25% less).
+        With position_mult=1.2, we amplify this: 1.0 + (-0.25 * 1.2) = 0.7.
+        This means we sell 30% more than normal (more aggressive selling).
+        """
+        result = regime.calculate(
+            sentiment=extreme_greed_sentiment,
+            volatility="normal",
+            trend="bullish",
+            signal_action="sell",
+        )
+
+        # With modifier 1.2 on base 0.75: 1.0 + (0.75 - 1.0) * 1.2 = 0.7
+        assert result.components["sentiment"]["position_mult"] == 0.7
+
+    # ------------------------------------------------------------------------
+    # Modifier Table Completeness Tests
+    # ------------------------------------------------------------------------
+
+    def test_all_extreme_fear_combinations_defined(self):
+        """Test all extreme_fear trend/signal combinations are in modifier table."""
+        from src.strategy.regime import MarketRegime
+
+        for trend in ["bullish", "bearish", "neutral"]:
+            for signal in ["buy", "sell"]:
+                key = ("extreme_fear", trend, signal)
+                assert key in MarketRegime.SENTIMENT_TREND_MODIFIERS, f"Missing: {key}"
+
+    def test_all_extreme_greed_combinations_defined(self):
+        """Test all extreme_greed trend/signal combinations are in modifier table."""
+        from src.strategy.regime import MarketRegime
+
+        for trend in ["bullish", "bearish", "neutral"]:
+            for signal in ["buy", "sell"]:
+                key = ("extreme_greed", trend, signal)
+                assert key in MarketRegime.SENTIMENT_TREND_MODIFIERS, f"Missing: {key}"
+
+    def test_all_fear_combinations_defined(self):
+        """Test all fear trend/signal combinations are in modifier table."""
+        from src.strategy.regime import MarketRegime
+
+        for trend in ["bullish", "bearish", "neutral"]:
+            for signal in ["buy", "sell"]:
+                key = ("fear", trend, signal)
+                assert key in MarketRegime.SENTIMENT_TREND_MODIFIERS, f"Missing: {key}"
+
+    def test_all_greed_combinations_defined(self):
+        """Test all greed trend/signal combinations are in modifier table."""
+        from src.strategy.regime import MarketRegime
+
+        for trend in ["bullish", "bearish", "neutral"]:
+            for signal in ["buy", "sell"]:
+                key = ("greed", trend, signal)
+                assert key in MarketRegime.SENTIMENT_TREND_MODIFIERS, f"Missing: {key}"
+
+    def test_hold_signal_uses_default_modifier(self, regime, extreme_fear_sentiment):
+        """Test hold signal uses default 1.0 modifier (not in table)."""
+        result = regime.calculate(
+            sentiment=extreme_fear_sentiment,
+            volatility="normal",
+            trend="bearish",
+            signal_action="hold",
+        )
+
+        # Hold is not in the modifier table, should use default 1.0
+        # So extreme_fear -10 should be applied in full
+        assert result.components["sentiment"]["threshold_adj"] == -10
+        assert result.components["sentiment"].get("trend_modified", False) is False
+
+    # ------------------------------------------------------------------------
+    # Integration Tests
+    # ------------------------------------------------------------------------
+
+    def test_real_scenario_fear_bearish_buy_prevented(self, regime, extreme_fear_sentiment):
+        """Test the actual scenario from postmortem: fear + bearish should not help buys.
+
+        This was the bug: extreme fear lowered threshold during bearish trend,
+        inviting counter-trend trades.
+        """
+        # Old behavior: threshold -10 (easier to buy)
+        # New behavior: threshold 0 (no discount for buying in downtrend)
+        result = regime.calculate(
+            sentiment=extreme_fear_sentiment,
+            volatility="normal",
+            trend="bearish",
+            signal_action="buy",
+        )
+
+        # The sentiment component should NOT lower the threshold
+        assert result.components["sentiment"]["threshold_adj"] >= 0, \
+            "Fear should not lower threshold for buys in bearish trend"
+
+    def test_real_scenario_greed_bullish_sell_encouraged(self, regime, extreme_greed_sentiment):
+        """Test that greed + bullish makes selling EASIER (higher threshold adjustment).
+
+        This is the prime opportunity to take profits.
+        """
+        result_neutral_trend = regime.calculate(
+            sentiment=extreme_greed_sentiment,
+            volatility="normal",
+            trend="neutral",
+            signal_action="sell",
+        )
+
+        result_bullish_trend = regime.calculate(
+            sentiment=extreme_greed_sentiment,
+            volatility="normal",
+            trend="bullish",
+            signal_action="sell",
+        )
+
+        # Bullish trend should amplify the greed effect for sells
+        assert result_bullish_trend.components["sentiment"]["threshold_adj"] >= \
+               result_neutral_trend.components["sentiment"]["threshold_adj"]
