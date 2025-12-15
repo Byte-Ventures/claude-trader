@@ -480,10 +480,9 @@ class TradeReviewer:
         db,
         reviewer_models: list[str],
         judge_model: str,
-        veto_action: str = "info",
-        veto_threshold: float = 0.8,
+        veto_reduce_threshold: float = 0.65,
+        veto_skip_threshold: float = 0.80,
         position_reduction: float = 0.5,
-        delay_minutes: int = 15,
         interesting_hold_margin: int = 15,
         review_all: bool = False,
         market_research_enabled: bool = True,
@@ -502,10 +501,9 @@ class TradeReviewer:
             db: Database instance for trade history
             reviewer_models: List of 3 models for reviewers
             judge_model: Model for the judge
-            veto_action: Action on veto - skip/reduce/delay/info
-            veto_threshold: Confidence threshold to trigger veto
+            veto_reduce_threshold: Judge confidence to reduce position (lower tier)
+            veto_skip_threshold: Judge confidence to skip trade entirely (higher tier)
             position_reduction: Position size multiplier for "reduce" action
-            delay_minutes: Minutes to delay for "delay" action
             interesting_hold_margin: Score margin from threshold for interesting holds
             review_all: Review ALL decisions (for debugging/testing)
             market_research_enabled: Fetch online research for market analysis
@@ -519,10 +517,9 @@ class TradeReviewer:
         self.db = db
         self.reviewer_models = reviewer_models
         self.judge_model = judge_model
-        self.veto_action = veto_action
-        self.veto_threshold = veto_threshold
+        self.veto_reduce_threshold = veto_reduce_threshold
+        self.veto_skip_threshold = veto_skip_threshold
         self.position_reduction = position_reduction
-        self.delay_minutes = delay_minutes
         self.interesting_hold_margin = interesting_hold_margin
         self.review_all = review_all
         self.market_research_enabled = market_research_enabled
@@ -540,6 +537,34 @@ class TradeReviewer:
         self._max_failures = 5
         self._last_failure_time: Optional[datetime] = None
         self._circuit_breaker_reset_hours = 24
+
+    def _determine_veto_action(self, approved: bool, confidence: float) -> Optional[str]:
+        """
+        Determine veto action based on judge decision and confidence tiers.
+
+        Tiered veto system (v1.31.0):
+        - approved=True: No veto action (trade proceeds)
+        - approved=False, confidence < veto_reduce_threshold: No veto (info only)
+        - approved=False, confidence >= veto_reduce_threshold: "reduce" position
+        - approved=False, confidence >= veto_skip_threshold: "skip" trade entirely
+
+        Args:
+            approved: Whether the judge approved the trade
+            confidence: Judge's confidence level (0.0 to 1.0)
+
+        Returns:
+            Veto action string ("skip", "reduce") or None if no veto
+        """
+        if approved:
+            return None
+
+        if confidence >= self.veto_skip_threshold:
+            return "skip"  # High confidence disapproval: cancel trade
+        elif confidence >= self.veto_reduce_threshold:
+            return "reduce"  # Medium confidence disapproval: reduce position
+
+        # Below reduce threshold: proceed with trade (info only)
+        return None
 
     def _get_trading_style(self) -> tuple[str, str]:
         """
@@ -673,10 +698,11 @@ class TradeReviewer:
             # Run judge with all reviews
             judge_result = await self._run_judge(valid_reviews, context)
 
-            # Determine veto action
-            veto_action = None
-            if not judge_result["approved"] and judge_result["confidence"] >= self.veto_threshold:
-                veto_action = self.veto_action
+            # Determine veto action based on confidence tiers
+            veto_action = self._determine_veto_action(
+                approved=judge_result["approved"],
+                confidence=judge_result["confidence"],
+            )
 
             self._consecutive_failures = 0
 
