@@ -704,6 +704,11 @@ class SignalScorer:
             # HTF bias is neutral (daily + 4H disagree), but daily has clear direction
             # Apply half penalty when daily trend opposes signal direction
             # Use round() to handle odd mtf_counter_penalty values correctly
+            #
+            # Design note: 4H is optional (MTF_4H_ENABLED config). When disabled,
+            # daily trend alone determines htf_bias. When enabled but htf_daily
+            # is neutral, 4H alone doesn't justify penalizing trades - daily is
+            # the more reliable HTF indicator.
             half_penalty = round(self.mtf_counter_penalty / 2)
             if total_score > 0 and htf_daily == "bearish":
                 # Buying into bearish daily trend - apply half penalty

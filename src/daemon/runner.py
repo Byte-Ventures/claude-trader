@@ -630,8 +630,9 @@ class TradingDaemon:
             self._ai_recommendation_ttl_minutes = new_settings.ai_recommendation_ttl_minutes
 
             # Invalidate HTF cache if MTF settings changed
-            mtf_settings = {"mtf_enabled", "mtf_candle_limit", "mtf_daily_cache_minutes",
-                           "mtf_4h_cache_minutes", "mtf_aligned_boost", "mtf_counter_penalty"}
+            mtf_settings = {"mtf_enabled", "mtf_4h_enabled", "mtf_candle_limit",
+                           "mtf_daily_cache_minutes", "mtf_4h_cache_minutes",
+                           "mtf_aligned_boost", "mtf_counter_penalty"}
             if mtf_settings & set(changes.keys()):
                 self._invalidate_htf_cache()
 
@@ -745,6 +746,12 @@ class TradingDaemon:
             return "neutral", "neutral", "neutral"
 
         daily = self._get_timeframe_trend("ONE_DAY", self.settings.mtf_daily_cache_minutes)
+
+        # 4H is optional - when disabled, just use daily trend directly
+        if not self.settings.mtf_4h_enabled:
+            # Daily-only mode: simpler, fewer API calls
+            return daily, daily, None
+
         # Use FOUR_HOUR instead of SIX_HOUR for broader exchange compatibility
         # (Kraken doesn't support 6-hour candles, only 4-hour)
         four_hour = self._get_timeframe_trend("FOUR_HOUR", self.settings.mtf_4h_cache_minutes)

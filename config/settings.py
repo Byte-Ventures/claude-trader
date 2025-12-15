@@ -481,7 +481,11 @@ class Settings(BaseSettings):
     # Multi-Timeframe Confirmation (MTF)
     mtf_enabled: bool = Field(
         default=True,
-        description="Enable higher timeframe trend confirmation (Daily + 6H)"
+        description="Enable higher timeframe trend confirmation"
+    )
+    mtf_4h_enabled: bool = Field(
+        default=False,
+        description="Include 4-hour timeframe in MTF (false = daily-only, simpler)"
     )
     mtf_candle_limit: int = Field(
         default=50,
