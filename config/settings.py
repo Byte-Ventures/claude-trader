@@ -27,11 +27,16 @@ class Exchange(str, Enum):
 
 
 class VetoAction(str, Enum):
-    """Claude AI veto actions."""
-    SKIP = "skip"      # Skip trade entirely
-    REDUCE = "reduce"  # Reduce position size
-    DELAY = "delay"    # Delay trade (user checks Telegram)
-    INFO = "info"      # Log but proceed with trade
+    """Claude AI veto actions.
+
+    Note: Since v1.31.0, the tiered veto system automatically selects
+    SKIP or REDUCE based on judge confidence level. DELAY and INFO
+    are deprecated and no longer used by the tiered system.
+    """
+    SKIP = "skip"      # Skip trade entirely (used when confidence >= veto_skip_threshold)
+    REDUCE = "reduce"  # Reduce position size (used when confidence >= veto_reduce_threshold)
+    DELAY = "delay"    # DEPRECATED in v1.31.0 - not used by tiered veto system
+    INFO = "info"      # DEPRECATED in v1.31.0 - confidence below reduce_threshold proceeds automatically
 
 
 class AIFailureMode(str, Enum):
@@ -628,11 +633,19 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_veto_thresholds(self) -> "Settings":
-        """Validate that veto_reduce_threshold < veto_skip_threshold."""
+        """Validate veto threshold ordering and minimum gap."""
         if self.veto_reduce_threshold >= self.veto_skip_threshold:
             raise ValueError(
                 f"veto_reduce_threshold ({self.veto_reduce_threshold}) must be less than "
                 f"veto_skip_threshold ({self.veto_skip_threshold})"
+            )
+
+        # Require at least 5% gap between thresholds to ensure meaningful "reduce" tier
+        gap = self.veto_skip_threshold - self.veto_reduce_threshold
+        if gap < 0.05:
+            raise ValueError(
+                f"veto thresholds must have at least 0.05 gap between them "
+                f"(current gap: {gap:.3f})"
             )
         return self
 
@@ -643,10 +656,9 @@ class Settings(BaseSettings):
         Backward compatibility: support old CLAUDE_* environment variable names.
 
         Maps deprecated names to new names with a deprecation warning.
+        Also migrates old VETO_ACTION/VETO_THRESHOLD to tiered thresholds (v1.31.0).
         """
         # Mapping of old CLAUDE_* vars to new names
-        # Note: VETO_ACTION, VETO_THRESHOLD, DELAY_MINUTES removed in v1.31.0
-        # (replaced by tiered VETO_REDUCE_THRESHOLD and VETO_SKIP_THRESHOLD)
         deprecated_mapping = {
             "CLAUDE_POSITION_REDUCTION": "POSITION_REDUCTION",
             "CLAUDE_INTERESTING_HOLD_MARGIN": "INTERESTING_HOLD_MARGIN",
@@ -667,6 +679,44 @@ class Settings(BaseSettings):
                 key = new_name.lower()
                 if key not in data or data.get(key) is None:
                     data[key] = old_value
+
+        # v1.31.0: Migrate old VETO_ACTION/VETO_THRESHOLD to tiered thresholds
+        old_action = os.environ.get("VETO_ACTION", "").lower()
+        old_threshold = os.environ.get("VETO_THRESHOLD")
+
+        if old_action or old_threshold:
+            # Check if new tiered thresholds are already set
+            has_new_reduce = os.environ.get("VETO_REDUCE_THRESHOLD") or data.get("veto_reduce_threshold")
+            has_new_skip = os.environ.get("VETO_SKIP_THRESHOLD") or data.get("veto_skip_threshold")
+
+            if not has_new_reduce and not has_new_skip:
+                # Migrate based on old action type
+                if old_action == "skip" and old_threshold:
+                    data["veto_skip_threshold"] = float(old_threshold)
+                    warnings.warn(
+                        f"VETO_ACTION=skip with VETO_THRESHOLD={old_threshold} is deprecated. "
+                        f"Migrated to VETO_SKIP_THRESHOLD={old_threshold}. "
+                        "Update your .env to use VETO_REDUCE_THRESHOLD and VETO_SKIP_THRESHOLD.",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
+                elif old_action == "reduce" and old_threshold:
+                    data["veto_reduce_threshold"] = float(old_threshold)
+                    warnings.warn(
+                        f"VETO_ACTION=reduce with VETO_THRESHOLD={old_threshold} is deprecated. "
+                        f"Migrated to VETO_REDUCE_THRESHOLD={old_threshold}. "
+                        "Update your .env to use VETO_REDUCE_THRESHOLD and VETO_SKIP_THRESHOLD.",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
+                elif old_action in ["delay", "info"]:
+                    warnings.warn(
+                        f"VETO_ACTION={old_action} is no longer supported in v1.31.0. "
+                        "The tiered veto system now uses VETO_REDUCE_THRESHOLD (default 0.65) "
+                        "and VETO_SKIP_THRESHOLD (default 0.80). Update your .env file.",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
 
         return data
 

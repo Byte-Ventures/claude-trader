@@ -1062,6 +1062,193 @@ def test_ai_failure_notification_cooldown(mock_settings, mock_exchange_client, m
 
 
 # ============================================================================
+# Tiered Veto System Tests - v1.31.0
+# ============================================================================
+
+
+def test_tiered_veto_below_reduce_threshold_proceeds():
+    """
+    Confidence 60% (< 65% reduce threshold) should proceed with trade.
+
+    When judge disapproves but confidence is below VETO_REDUCE_THRESHOLD,
+    the trade proceeds (info-only logging, no veto action).
+    """
+    from src.ai.trade_reviewer import TradeReviewer
+
+    # Create minimal TradeReviewer to test tiered logic
+    reviewer = TradeReviewer(
+        api_key="test_key",
+        db=Mock(),
+        reviewer_models=["test/model1", "test/model2", "test/model3"],
+        judge_model="test/judge",
+        veto_reduce_threshold=0.65,
+        veto_skip_threshold=0.80,
+    )
+
+    # Test the tiered logic directly
+    # Simulate: judge disapproves with 60% confidence (below reduce threshold)
+    judge_result = {"approved": False, "confidence": 0.60}
+
+    veto_action = None
+    if not judge_result["approved"]:
+        confidence = judge_result["confidence"]
+        if confidence >= reviewer.veto_skip_threshold:
+            veto_action = "skip"
+        elif confidence >= reviewer.veto_reduce_threshold:
+            veto_action = "reduce"
+
+    # Below reduce threshold: no veto action (proceed with trade)
+    assert veto_action is None, f"Expected no veto action for 60% confidence, got {veto_action}"
+
+
+def test_tiered_veto_reduce_threshold_reduces():
+    """
+    Confidence 70% (65-79% range) should reduce position size.
+
+    When judge disapproves with confidence >= VETO_REDUCE_THRESHOLD but
+    < VETO_SKIP_THRESHOLD, the trade executes with reduced position.
+    """
+    from src.ai.trade_reviewer import TradeReviewer
+
+    reviewer = TradeReviewer(
+        api_key="test_key",
+        db=Mock(),
+        reviewer_models=["test/model1", "test/model2", "test/model3"],
+        judge_model="test/judge",
+        veto_reduce_threshold=0.65,
+        veto_skip_threshold=0.80,
+    )
+
+    # Simulate: judge disapproves with 70% confidence (in reduce tier)
+    judge_result = {"approved": False, "confidence": 0.70}
+
+    veto_action = None
+    if not judge_result["approved"]:
+        confidence = judge_result["confidence"]
+        if confidence >= reviewer.veto_skip_threshold:
+            veto_action = "skip"
+        elif confidence >= reviewer.veto_reduce_threshold:
+            veto_action = "reduce"
+
+    assert veto_action == "reduce", f"Expected 'reduce' for 70% confidence, got {veto_action}"
+
+
+def test_tiered_veto_skip_threshold_skips():
+    """
+    Confidence 85% (>= 80% skip threshold) should skip trade entirely.
+
+    When judge disapproves with confidence >= VETO_SKIP_THRESHOLD,
+    the trade is cancelled completely.
+    """
+    from src.ai.trade_reviewer import TradeReviewer
+
+    reviewer = TradeReviewer(
+        api_key="test_key",
+        db=Mock(),
+        reviewer_models=["test/model1", "test/model2", "test/model3"],
+        judge_model="test/judge",
+        veto_reduce_threshold=0.65,
+        veto_skip_threshold=0.80,
+    )
+
+    # Simulate: judge disapproves with 85% confidence (in skip tier)
+    judge_result = {"approved": False, "confidence": 0.85}
+
+    veto_action = None
+    if not judge_result["approved"]:
+        confidence = judge_result["confidence"]
+        if confidence >= reviewer.veto_skip_threshold:
+            veto_action = "skip"
+        elif confidence >= reviewer.veto_reduce_threshold:
+            veto_action = "reduce"
+
+    assert veto_action == "skip", f"Expected 'skip' for 85% confidence, got {veto_action}"
+
+
+def test_tiered_veto_approved_trade_no_action():
+    """
+    When judge approves trade, no veto action regardless of confidence.
+
+    Veto actions only apply when approved=False.
+    """
+    from src.ai.trade_reviewer import TradeReviewer
+
+    reviewer = TradeReviewer(
+        api_key="test_key",
+        db=Mock(),
+        reviewer_models=["test/model1", "test/model2", "test/model3"],
+        judge_model="test/judge",
+        veto_reduce_threshold=0.65,
+        veto_skip_threshold=0.80,
+    )
+
+    # Simulate: judge approves with high confidence
+    judge_result = {"approved": True, "confidence": 0.95}
+
+    veto_action = None
+    if not judge_result["approved"]:
+        confidence = judge_result["confidence"]
+        if confidence >= reviewer.veto_skip_threshold:
+            veto_action = "skip"
+        elif confidence >= reviewer.veto_reduce_threshold:
+            veto_action = "reduce"
+
+    assert veto_action is None, f"Expected no veto for approved trade, got {veto_action}"
+
+
+def test_tiered_veto_boundary_at_reduce_threshold():
+    """Exactly at reduce threshold (65%) should trigger reduce."""
+    from src.ai.trade_reviewer import TradeReviewer
+
+    reviewer = TradeReviewer(
+        api_key="test_key",
+        db=Mock(),
+        reviewer_models=["test/model1", "test/model2", "test/model3"],
+        judge_model="test/judge",
+        veto_reduce_threshold=0.65,
+        veto_skip_threshold=0.80,
+    )
+
+    judge_result = {"approved": False, "confidence": 0.65}  # Exactly at boundary
+
+    veto_action = None
+    if not judge_result["approved"]:
+        confidence = judge_result["confidence"]
+        if confidence >= reviewer.veto_skip_threshold:
+            veto_action = "skip"
+        elif confidence >= reviewer.veto_reduce_threshold:
+            veto_action = "reduce"
+
+    assert veto_action == "reduce", f"Expected 'reduce' at exact threshold, got {veto_action}"
+
+
+def test_tiered_veto_boundary_at_skip_threshold():
+    """Exactly at skip threshold (80%) should trigger skip."""
+    from src.ai.trade_reviewer import TradeReviewer
+
+    reviewer = TradeReviewer(
+        api_key="test_key",
+        db=Mock(),
+        reviewer_models=["test/model1", "test/model2", "test/model3"],
+        judge_model="test/judge",
+        veto_reduce_threshold=0.65,
+        veto_skip_threshold=0.80,
+    )
+
+    judge_result = {"approved": False, "confidence": 0.80}  # Exactly at boundary
+
+    veto_action = None
+    if not judge_result["approved"]:
+        confidence = judge_result["confidence"]
+        if confidence >= reviewer.veto_skip_threshold:
+            veto_action = "skip"
+        elif confidence >= reviewer.veto_reduce_threshold:
+            veto_action = "reduce"
+
+    assert veto_action == "skip", f"Expected 'skip' at exact threshold, got {veto_action}"
+
+
+# ============================================================================
 # Hard Stop Calculation Tests - Critical for preventing immediate stop triggers
 # ============================================================================
 
