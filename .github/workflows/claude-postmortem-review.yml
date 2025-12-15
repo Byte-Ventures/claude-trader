@@ -1,0 +1,153 @@
+name: Claude Post-Mortem Review
+
+on:
+  discussion:
+    types: [created]
+
+jobs:
+  review-postmortem:
+    # Only run for discussions in 'post-mortems' category from trusted authors
+    if: >
+      github.event.discussion.category.slug == 'post-mortems' &&
+      (github.event.discussion.user.login == 'TheodorStorm' ||
+       github.event.discussion.user.login == 'claude[bot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      discussions: read
+      issues: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+
+      - name: Analyze post-mortem with Claude
+        id: analyze
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Analyze this post-mortem discussion and determine if it contains valid, implementable fixes.
+
+            ## Discussion Details
+            **Title:** ${{ github.event.discussion.title }}
+            **URL:** ${{ github.event.discussion.html_url }}
+
+            **Body:**
+            ${{ github.event.discussion.body }}
+
+            ## Your Task
+
+            1. **Extract proposed fixes** from the Claude analysis section
+            2. **Verify each fix is:**
+               - Specific and actionable (not vague)
+               - Safe (won't break trading logic or introduce bugs)
+               - Reasonable (makes sense given the analysis)
+               - Implementable (can be done with code/config changes)
+
+            3. **For valid fixes, output JSON:**
+            ```json
+            {
+              "has_valid_fixes": true,
+              "fixes": [
+                {
+                  "type": "config|code|threshold",
+                  "description": "Brief description",
+                  "details": "Specific implementation details",
+                  "risk": "low|medium|high"
+                }
+              ],
+              "issue_title": "Suggested issue title",
+              "issue_body": "Detailed issue body with implementation steps"
+            }
+            ```
+
+            4. **If no valid fixes, output:**
+            ```json
+            {
+              "has_valid_fixes": false,
+              "reason": "Why no fixes are actionable"
+            }
+            ```
+
+            **Safety Rules:**
+            - Reject fixes that modify core safety systems without justification
+            - Reject fixes that remove error handling or validation
+            - Reject vague suggestions like "improve performance"
+            - Only accept fixes with clear, specific implementation paths
+
+            Output ONLY the JSON, no other text.
+          claude_args: >-
+            --max-turns 10
+            --allowed-tools "Read,Glob,Grep"
+
+      - name: Parse analysis result
+        id: parse
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const output = `${{ steps.analyze.outputs.response }}`;
+
+            // Extract JSON from response
+            const jsonMatch = output.match(/\{[\s\S]*\}/);
+            if (!jsonMatch) {
+              core.setOutput('has_fixes', 'false');
+              core.setOutput('reason', 'Could not parse analysis output');
+              return;
+            }
+
+            try {
+              const result = JSON.parse(jsonMatch[0]);
+              core.setOutput('has_fixes', result.has_valid_fixes ? 'true' : 'false');
+
+              if (result.has_valid_fixes) {
+                core.setOutput('issue_title', result.issue_title);
+                core.setOutput('issue_body', result.issue_body);
+                core.setOutput('fixes', JSON.stringify(result.fixes));
+              } else {
+                core.setOutput('reason', result.reason || 'No valid fixes found');
+              }
+            } catch (e) {
+              core.setOutput('has_fixes', 'false');
+              core.setOutput('reason', `JSON parse error: ${e.message}`);
+            }
+
+      - name: Create issue with auto-fix label
+        if: steps.parse.outputs.has_fixes == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `${{ steps.parse.outputs.issue_title }}`,
+              body: `## Auto-generated from Post-Mortem Analysis
+
+            **Source Discussion:** ${{ github.event.discussion.html_url }}
+
+            ---
+
+            ${{ steps.parse.outputs.issue_body }}
+
+            ---
+
+            *This issue was automatically created from post-mortem analysis.*
+            *The \`auto-fix\` label will trigger automatic fix attempt.*`,
+              labels: ['auto-fix', 'post-mortem']
+            });
+
+            console.log(`Created issue #${issue.data.number}: ${issue.data.html_url}`);
+
+      - name: Log result
+        if: always()
+        run: |
+          echo "Post-mortem review completed"
+          echo "Has fixes: ${{ steps.parse.outputs.has_fixes }}"
+          if [ "${{ steps.parse.outputs.has_fixes }}" != "true" ]; then
+            echo "Reason: ${{ steps.parse.outputs.reason }}"
+          fi
