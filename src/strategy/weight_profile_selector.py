@@ -270,6 +270,8 @@ class WeightProfileSelector:
                         headers={
                             "Authorization": f"Bearer {self.api_key}",
                             "Content-Type": "application/json",
+                            "HTTP-Referer": "https://github.com/Byte-Ventures/claude-trader",
+                            "X-Title": "Claude Trader",
                         },
                         json={
                             "model": self.config.model,
