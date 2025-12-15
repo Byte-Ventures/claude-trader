@@ -1,0 +1,90 @@
+name: Claude Address Review Comments
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  address-review:
+    # Only run for PR comments from claude[bot] containing critical issues
+    if: >
+      github.event.issue.pull_request &&
+      github.event.comment.user.login == 'claude[bot]' &&
+      contains(github.event.comment.body, '🔴')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+
+    steps:
+      - name: Get PR details
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            core.setOutput('branch', pr.data.head.ref);
+            core.setOutput('sha', pr.data.head.sha);
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.branch }}
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "claude[bot]"
+          git config user.email "noreply@anthropic.com"
+
+      - name: Address review comments with Claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Address the review comments on PR #${{ github.event.issue.number }}.
+
+            ## Review Comment
+            ${{ github.event.comment.body }}
+
+            ## Instructions
+            1. Focus on issues marked with 🔴 (critical) - these MUST be fixed
+            2. Address issues marked with 🟡 (high priority) if straightforward
+            3. For each issue:
+               - Locate the relevant code
+               - Implement the fix
+               - Verify the fix is correct
+            4. Do NOT modify src/version.py
+            5. Run tests: python3 -m pytest tests/ -v
+            6. If tests pass, commit with message: "Address review feedback on PR #${{ github.event.issue.number }}"
+            7. Push to origin/${{ steps.pr.outputs.branch }}
+
+            If an issue cannot be fixed or is invalid, explain why in a comment.
+          claude_args: >-
+            --max-turns 25
+            --allowed-tools "Read,Write,Edit,Glob,Grep,Bash(git:*),Bash(python3:*),Bash(pytest:*)"
+
+      - name: Comment on PR
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const success = '${{ job.status }}' === 'success';
+            const body = success
+              ? `Review feedback addressed. Please re-review.\n\n[Workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})`
+              : `Failed to address review feedback.\n\n[Check logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ github.event.issue.number }},
+              body: body
+            });
