@@ -5,13 +5,41 @@ on:
     types: [created]
 
 jobs:
-  address-review:
-    # Only run for PR review comments from claude[bot] containing critical issues
+  # First check if this is an auto-fix PR (branch starts with fix/issue-)
+  check-branch:
     if: >
       github.event.issue.pull_request &&
-      github.event.comment.user.login == 'claude[bot]' &&
-      contains(github.event.comment.body, '🔴') &&
-      contains(github.event.comment.body, 'CRITICAL')
+      github.event.comment.user.login == 'claude[bot]'
+    runs-on: ubuntu-latest
+    outputs:
+      is_autofix_pr: ${{ steps.check.outputs.is_autofix }}
+      has_critical: ${{ steps.check.outputs.has_critical }}
+    steps:
+      - name: Check if auto-fix PR with critical issues
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            const branch = pr.data.head.ref;
+            const isAutofix = branch.startsWith('fix/issue-');
+            const body = context.payload.comment.body;
+            const hasCritical = body.includes('🔴 Critical issues:') && !body.includes('🔴 Critical issues: 0');
+
+            core.setOutput('is_autofix', isAutofix);
+            core.setOutput('has_critical', hasCritical);
+            console.log(`Branch: ${branch}, Is auto-fix: ${isAutofix}, Has critical: ${hasCritical}`);
+
+  address-review:
+    needs: check-branch
+    # Only run for auto-fix PRs with actual critical issues
+    if: >
+      needs.check-branch.outputs.is_autofix_pr == 'true' &&
+      needs.check-branch.outputs.has_critical == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
