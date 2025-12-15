@@ -1,0 +1,157 @@
+name: Claude Address Review Comments
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  address-review:
+    # Only run for PR review comments from claude[bot] containing critical issues
+    if: >
+      github.event.issue.pull_request &&
+      github.event.comment.user.login == 'claude[bot]' &&
+      contains(github.event.comment.body, '🔴') &&
+      contains(github.event.comment.body, 'CRITICAL')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    concurrency:
+      group: fix-issue-${{ github.event.issue.number }}
+      cancel-in-progress: false
+
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+
+    steps:
+      - name: Check retry limit
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            const retryLabels = labels.data.filter(l => l.name.startsWith('review-retry-'));
+            const retryCount = retryLabels.length;
+
+            if (retryCount >= 3) {
+              core.setFailed('Max review retries (3) reached. Manual intervention required.');
+              return;
+            }
+
+            // Add retry label
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: [`review-retry-${retryCount + 1}`]
+            });
+            core.setOutput('retry_count', retryCount + 1);
+
+      - name: Get PR details
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            core.setOutput('branch', pr.data.head.ref);
+            core.setOutput('sha', pr.data.head.sha);
+
+            // Check if last commit was from this workflow to prevent loops
+            const commits = await github.rest.pulls.listCommits({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            const lastCommit = commits.data[commits.data.length - 1];
+
+            // Check by author name OR email (belt and suspenders)
+            const isFromBot = lastCommit?.commit?.author?.name === 'claude[bot]' ||
+                              lastCommit?.commit?.author?.email === 'noreply@anthropic.com';
+
+            // Check if commit is recent (< 10 minutes old)
+            const commitDate = new Date(lastCommit?.commit?.author?.date);
+            const now = new Date();
+            const minutesAgo = (now - commitDate) / (1000 * 60);
+            const isRecent = minutesAgo < 10;
+
+            if (isFromBot && isRecent) {
+              core.setFailed(`Last commit was from bot ${minutesAgo.toFixed(1)} minutes ago. Skipping to prevent loop.`);
+            }
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.branch }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Configure Git
+        run: |
+          git config user.name "claude[bot]"
+          git config user.email "noreply@anthropic.com"
+
+      - name: Address review comments with Claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Address the review comments on PR #${{ github.event.issue.number }}.
+
+            ## Context
+            This is claude-trader, a cryptocurrency trading bot. Read CLAUDE.md first for project guidelines.
+
+            ## Review Comment
+            ${{ github.event.comment.body }}
+
+            ## Instructions
+            1. Read CLAUDE.md to understand project conventions
+            2. Focus on issues marked with 🔴 (critical) - these MUST be fixed
+            3. Address issues marked with 🟡 (high priority) if straightforward
+            4. For each issue:
+               - Locate the relevant code
+               - Implement the fix
+               - Verify the fix is correct
+            5. Do NOT modify src/version.py
+            6. Run tests: python3 -m pytest tests/ -v
+            7. If tests pass, commit with message: "Address review feedback on PR #${{ github.event.issue.number }}"
+            8. Push to origin/${{ steps.pr.outputs.branch }}
+
+            If an issue cannot be fixed or is invalid, explain why in a comment.
+          claude_args: >-
+            --max-turns 25
+            --allowed-tools "Read,Write,Edit,Glob,Grep,Bash(git:*),Bash(python3:*),Bash(pytest:*),Bash(pip:*)"
+
+      - name: Comment on PR
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const success = '${{ job.status }}' === 'success';
+            const body = success
+              ? `Review feedback addressed. Please re-review.\n\n[Workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})`
+              : `Failed to address review feedback.\n\n[Check logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ github.event.issue.number }},
+              body: body
+            });
