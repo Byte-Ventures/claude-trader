@@ -75,8 +75,8 @@ jobs:
           VERSION="${{ steps.version.outputs.next }}"
           BRANCH="release/v${VERSION}"
 
-          # Run semantic-release to update version files (doesn't commit with these flags)
-          semantic-release version --no-push --no-tag --no-vcs-release
+          # Run semantic-release to update version files only (--no-commit prevents internal commit attempt)
+          semantic-release version --no-commit --no-tag --no-vcs-release
 
           # Commit the version changes manually
           git add -A
