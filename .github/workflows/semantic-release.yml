@@ -10,6 +10,8 @@ permissions:
 
 jobs:
   release:
+    # Skip if this is a release commit (prevents infinite loop)
+    if: "!startsWith(github.event.head_commit.message, 'chore(release):')"
     runs-on: ubuntu-latest
     concurrency:
       group: semantic-release
@@ -17,6 +19,7 @@ jobs:
 
     permissions:
       contents: write
+      pull-requests: write
 
     steps:
       - name: Checkout Repository
@@ -24,17 +27,78 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Semantic Version Release
-        id: release
-        uses: python-semantic-release/python-semantic-release@v10.5.3
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          github_token: ${{ secrets.PAT_TOKEN }}
-          git_committer_name: "claude[bot]"
-          git_committer_email: "noreply@anthropic.com"
+          python-version: '3.10'
 
-      - name: Publish to GitHub Releases
-        uses: python-semantic-release/publish-action@v10.5.3
-        if: steps.release.outputs.released == 'true'
-        with:
-          github_token: ${{ secrets.PAT_TOKEN }}
-          tag: ${{ steps.release.outputs.tag }}
+      - name: Install semantic-release
+        run: pip install python-semantic-release
+
+      - name: Configure Git
+        run: |
+          git config user.name "claude[bot]"
+          git config user.email "noreply@anthropic.com"
+
+      - name: Calculate next version
+        id: version
+        run: |
+          # Get next version without making changes
+          OUTPUT=$(semantic-release version --print 2>&1) || true
+          VERSION=$(echo "$OUTPUT" | grep -oP '^\d+\.\d+\.\d+$' | tail -1)
+          if [ -n "$VERSION" ]; then
+            echo "next=$VERSION" >> $GITHUB_OUTPUT
+            echo "has_release=true" >> $GITHUB_OUTPUT
+            echo "Next version: $VERSION"
+          else
+            echo "has_release=false" >> $GITHUB_OUTPUT
+            echo "No release needed"
+          fi
+
+      - name: Create release branch and PR
+        if: steps.version.outputs.has_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.next }}"
+          BRANCH="release/v${VERSION}"
+
+          # Create release branch
+          git checkout -b "$BRANCH"
+
+          # Run semantic-release to make version changes (but don't push to main)
+          semantic-release version --no-push --no-tag --no-vcs-release
+
+          # Push the release branch
+          git push origin "$BRANCH"
+
+          # Create PR with auto-merge
+          PR_URL=$(gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "chore(release): ${VERSION}" \
+            --body "## Automated Release v${VERSION}
+
+          This PR was automatically created by semantic-release.
+
+          **Changes:**
+          - Version bump to ${VERSION}
+          - Updated CHANGELOG.md
+
+          This PR will be auto-merged once checks pass.")
+
+          echo "Created PR: $PR_URL"
+
+          # Enable auto-merge
+          gh pr merge "$BRANCH" --auto --squash
+
+      - name: Create GitHub Release
+        if: steps.version.outputs.has_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.next }}"
+          # Wait for PR to be merged, then create release
+          echo "Release will be created when PR is merged"
+          # Note: GitHub Release should be created after PR merge
+          # Consider adding a separate workflow triggered on PR merge to release/* branches
