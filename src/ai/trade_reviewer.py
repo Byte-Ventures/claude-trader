@@ -492,6 +492,7 @@ class TradeReviewer:
         candle_interval: str = "ONE_HOUR",
         signal_threshold: int = 60,
         max_tokens: int = 4000,
+        api_timeout: int = 120,
     ):
         """
         Initialize multi-agent trade reviewer.
@@ -512,6 +513,7 @@ class TradeReviewer:
             market_research_cache_minutes: Cache duration for research data
             candle_interval: Candle timeframe for determining trading style
             max_tokens: Maximum tokens for AI API responses
+            api_timeout: Timeout in seconds for API calls
         """
         self.api_key = api_key
         self.db = db
@@ -528,6 +530,7 @@ class TradeReviewer:
         self.candle_interval = candle_interval
         self.signal_threshold = signal_threshold
         self.max_tokens = max_tokens
+        self.api_timeout = api_timeout
 
         # Set cache TTL for market research
         set_cache_ttl(market_research_cache_minutes)
@@ -1449,7 +1452,7 @@ Based on these three perspectives, provide the final market outlook."""
 
         logger.debug("api_request", model=model, tools_enabled=tools is not None)
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=float(self.api_timeout)) as client:
             # Initial request
             response = await client.post(
                 OPENROUTER_API_URL,

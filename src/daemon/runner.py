@@ -184,6 +184,7 @@ class TradingDaemon:
                 candle_interval=settings.candle_interval,
                 signal_threshold=settings.signal_threshold,
                 max_tokens=settings.ai_max_tokens,
+                api_timeout=settings.ai_api_timeout,
             )
             logger.info(
                 "multi_agent_trade_reviewer_initialized",

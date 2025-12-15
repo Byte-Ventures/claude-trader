@@ -427,6 +427,12 @@ class Settings(BaseSettings):
         le=16000,
         description="Maximum tokens for AI API responses (increase if seeing truncated JSON errors)"
     )
+    ai_api_timeout: int = Field(
+        default=120,
+        ge=30,
+        le=300,
+        description="Timeout in seconds for AI API calls (increase if seeing timeouts)"
+    )
     market_research_cache_minutes: int = Field(
         default=15,
         ge=5,
