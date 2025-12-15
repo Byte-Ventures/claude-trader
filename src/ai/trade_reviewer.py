@@ -1480,13 +1480,16 @@ Based on these three perspectives, provide the final market outlook."""
 
         async with httpx.AsyncClient(timeout=float(self.api_timeout)) as client:
             # Initial request
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/Byte-Ventures/claude-trader",
+                "X-Title": "Claude Trader",
+            }
+
             response = await client.post(
                 OPENROUTER_API_URL,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://github.com/claude-trader",
-                },
+                headers=headers,
                 json=request_body,
             )
             response.raise_for_status()
@@ -1522,11 +1525,7 @@ Based on these three perspectives, provide the final market outlook."""
 
                 response = await client.post(
                     OPENROUTER_API_URL,
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
-                        "HTTP-Referer": "https://github.com/claude-trader",
-                    },
+                    headers=headers,
                     json=request_body,
                 )
                 response.raise_for_status()
