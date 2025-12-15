@@ -1,0 +1,17 @@
+[tool.semantic_release]
+version_variables = ["src/version.py:__version__"]
+branch = "main"
+commit_message = "chore(release): {version}"
+commit_parser = "angular"
+build_command = ""
+
+[tool.semantic_release.changelog]
+changelog_file = "CHANGELOG.md"
+
+[tool.semantic_release.remote]
+type = "github"
+
+[tool.semantic_release.commit_parser_options]
+allowed_tags = ["feat", "fix", "perf", "refactor", "build", "chore", "ci", "docs", "style", "test"]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf", "refactor"]

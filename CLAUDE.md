@@ -69,15 +69,57 @@ This project uses `Base.metadata.create_all()` instead of Alembic for simplicity
 
 Do NOT suggest Alembic migrations for new tables - they are unnecessary in this codebase.
 
-## Versioning
+## Versioning & Commits
 
-Always update `src/version.py` when making commits:
+This project uses **Conventional Commits** for automatic semantic versioning.
 
-- **MAJOR**: Breaking changes, major refactors
-- **MINOR**: New features, significant enhancements
-- **PATCH**: Bug fixes, small improvements
+### Commit Message Format
 
-Update the version BEFORE committing.
+```
+<type>(<scope>): <description>
+
+[optional body]
+
+[optional footer]
+```
+
+### Commit Types
+
+| Type | Version Bump | Description |
+|------|--------------|-------------|
+| `feat` | MINOR | New feature |
+| `fix` | PATCH | Bug fix |
+| `perf` | PATCH | Performance improvement |
+| `refactor` | PATCH | Code refactoring |
+| `docs` | none | Documentation only |
+| `style` | none | Formatting, no code change |
+| `test` | none | Adding/updating tests |
+| `chore` | none | Maintenance tasks |
+| `ci` | none | CI/CD changes |
+| `build` | none | Build system changes |
+
+### Breaking Changes
+
+Add `!` after type or include `BREAKING CHANGE:` in footer for MAJOR version bump:
+```
+feat!: remove deprecated API endpoint
+```
+
+### Examples
+
+```bash
+feat(strategy): add momentum indicator
+fix(api): handle rate limit errors
+perf(db): optimize trade query
+docs: update README setup instructions
+chore(deps): update pandas to 2.0
+```
+
+### Automatic Version Bumps
+
+**Do NOT manually edit `src/version.py`.**
+
+Versions are automatically bumped when PRs merge to `main` based on commit types.
 
 ## Configuration Parameters
 
@@ -205,3 +247,72 @@ From PR #XX review (bot review, YYYY-MM-DD)
 ## Priority
 Low/Medium/High"
 ```
+
+## Code Change Guidelines
+
+When making changes to this codebase:
+
+1. **Read first, code second** - Understand the codebase before making changes
+2. **Verify, don't invent** - Check that APIs/methods exist before using them
+3. **Minimal changes** - Fix only what's needed, don't refactor or "improve"
+4. **Follow patterns** - Check similar files for existing conventions
+5. **No new dependencies** - Unless the issue explicitly requires them
+6. **Stay focused** - Don't modify unrelated code
+7. **Test both modes** - Run tests that cover paper and live trading
+8. **Note uncertainties** - If the issue is ambiguous, document assumptions in PR
+
+### Protected Paths (extra caution required)
+
+These paths affect money and safety - changes require extra verification:
+
+- `src/safety/` - Circuit breaker, kill switch, loss limiter
+- `src/api/*_client.py` - Exchange integration (order execution)
+- `config/settings.py` - Core configuration
+
+## Automation Workflows
+
+### Required GitHub Labels
+
+These labels must exist for automation to work:
+
+| Label | Purpose |
+|-------|---------|
+| `auto-fix` | Triggers automatic issue fixing via Claude |
+| `fix-in-progress` | Applied when auto-fix is working on an issue |
+| `post-mortem` | Marks issues derived from post-mortem analysis |
+| `review-retry-N` | Created automatically (N=1,2,3) to track fix attempts |
+
+### Required Discussion Category
+
+Create a `post-mortems` discussion category with:
+- **Format:** Announcement (restricts creation to maintainers)
+- **Purpose:** Post-mortem analysis from `tools/postmortem.py`
+
+### Workflow Chain
+
+```
+Post-mortem discussion created
+        ↓
+claude-postmortem-review.yml analyzes fixes
+        ↓
+Issue created with 'auto-fix' label
+        ↓
+claude-auto-fix.yml implements fix
+        ↓
+PR created to develop
+        ↓
+claude[bot] reviews PR
+        ↓
+If critical issues (🔴): claude-address-review.yml fixes them (max 3 retries)
+        ↓
+Human reviews and merges PR
+        ↓
+semantic-release.yml bumps version on main
+```
+
+### Manual Triggering
+
+To manually trigger auto-fix on any issue:
+1. Ensure you have write access to the repo
+2. Add the `auto-fix` label to the issue
+3. Monitor the Actions tab for progress
