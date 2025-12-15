@@ -66,6 +66,18 @@ jobs:
             core.setOutput('branch', pr.data.head.ref);
             core.setOutput('sha', pr.data.head.sha);
 
+            // Check if last commit was from this workflow to prevent loops
+            const commits = await github.rest.pulls.listCommits({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            const lastCommit = commits.data[commits.data.length - 1];
+            if (lastCommit?.commit?.author?.name === 'claude[bot]' &&
+                lastCommit?.commit?.message?.includes('Address review feedback')) {
+              core.setFailed('Last commit was from address-review workflow. Skipping to prevent loop.');
+            }
+
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
@@ -115,7 +127,7 @@ jobs:
             If an issue cannot be fixed or is invalid, explain why in a comment.
           claude_args: >-
             --max-turns 25
-            --allowed-tools "Read,Write,Edit,Glob,Grep,Bash(git:*),Bash(python3:*),Bash(pytest:*)"
+            --allowed-tools "Read,Write,Edit,Glob,Grep,Bash(git:*),Bash(python3:*),Bash(pytest:*),Bash(pip:*)"
 
       - name: Comment on PR
         if: always()
