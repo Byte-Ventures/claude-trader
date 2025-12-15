@@ -965,12 +965,15 @@ def main() -> int:
                 print(f"[SUCCESS] GitHub Discussion created: {discussion_url}")
 
                 # Trigger the post-mortem review workflow
-                trigger_postmortem_review(
+                success = trigger_postmortem_review(
                     discussion_url=discussion_url,
                     title=title,
                     body=body,
                     verbose=args.verbose,
                 )
+                if not success:
+                    print("[WARNING] Failed to trigger post-mortem review workflow")
+                    print("[INFO] You can manually trigger it or add the 'auto-fix' label to an issue")
             except Exception as e:
                 print(f"[WARNING] Failed to create GitHub Discussion: {e}")
                 print("[INFO] Analysis completed but discussion not created")
