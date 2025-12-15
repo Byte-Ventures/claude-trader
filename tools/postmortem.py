@@ -371,18 +371,18 @@ def format_trade_context(ctx: TradeContext) -> str:
             [
                 "",
                 "### Signal Analysis",
-                f"- **Final Score:** {ctx.final_score:.1f} (threshold: {ctx.threshold_used})",
-                f"- **Raw Score:** {ctx.raw_score:.1f}",
+                f"- **Final Score:** {fmt(ctx.final_score)} (threshold: {ctx.threshold_used})",
+                f"- **Raw Score:** {fmt(ctx.raw_score)}",
                 f"- **Action:** {ctx.action}",
                 "",
                 "#### Indicator Scores",
                 "| Indicator | Score | Raw Value |",
                 "|-----------|-------|-----------|",
-                f"| RSI | {ctx.rsi_score:.1f} | {ctx.rsi_value:.1f if ctx.rsi_value else 'N/A'} |",
-                f"| MACD | {ctx.macd_score:.1f} | {ctx.macd_histogram:.4f if ctx.macd_histogram else 'N/A'} |",
-                f"| Bollinger | {ctx.bollinger_score:.1f} | {ctx.bb_position:.2f if ctx.bb_position else 'N/A'} |",
-                f"| EMA | {ctx.ema_score:.1f} | {f'{ctx.ema_gap_percent:.2f}%' if ctx.ema_gap_percent else 'N/A'} |",
-                f"| Volume | {ctx.volume_score:.1f} | {f'{ctx.volume_ratio:.2f}x' if ctx.volume_ratio else 'N/A'} |",
+                f"| RSI | {fmt(ctx.rsi_score)} | {fmt(ctx.rsi_value)} |",
+                f"| MACD | {fmt(ctx.macd_score)} | {fmt(ctx.macd_histogram, '.4f')} |",
+                f"| Bollinger | {fmt(ctx.bollinger_score)} | {fmt(ctx.bb_position, '.2f')} |",
+                f"| EMA | {fmt(ctx.ema_score)} | {fmt(ctx.ema_gap_percent, '.2f', '%')} |",
+                f"| Volume | {fmt(ctx.volume_score)} | {fmt(ctx.volume_ratio, '.2f', 'x')} |",
                 "",
                 "#### Score Adjustments",
                 f"- Trend Filter: {ctx.trend_filter_adj:+.1f}" if ctx.trend_filter_adj else "- Trend Filter: 0",
@@ -464,6 +464,13 @@ def read_source_file(path: Path) -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+def fmt(value: Optional[float], spec: str = ".1f", suffix: str = "") -> str:
+    """Format an optional float value, returning 'N/A' if None."""
+    if value is None:
+        return "N/A"
+    return f"{value:{spec}}{suffix}"
 
 
 def format_analysis_prompt(
