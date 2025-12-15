@@ -616,10 +616,9 @@ class TradingDaemon:
             # Update TradeReviewer (if enabled)
             if self.trade_reviewer:
                 self.trade_reviewer.review_all = new_settings.ai_review_all
-                self.trade_reviewer.veto_action = new_settings.veto_action
-                self.trade_reviewer.veto_threshold = new_settings.veto_threshold
+                self.trade_reviewer.veto_reduce_threshold = new_settings.veto_reduce_threshold
+                self.trade_reviewer.veto_skip_threshold = new_settings.veto_skip_threshold
                 self.trade_reviewer.position_reduction = new_settings.position_reduction
-                self.trade_reviewer.delay_minutes = new_settings.delay_minutes
                 self.trade_reviewer.interesting_hold_margin = new_settings.interesting_hold_margin
                 self.trade_reviewer.candle_interval = new_settings.candle_interval
 

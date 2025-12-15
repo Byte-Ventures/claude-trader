@@ -701,7 +701,12 @@ class Settings(BaseSettings):
                         stacklevel=2,
                     )
                 elif old_action == "reduce" and old_threshold:
-                    data["veto_reduce_threshold"] = float(old_threshold)
+                    threshold_val = float(old_threshold)
+                    data["veto_reduce_threshold"] = threshold_val
+                    # Ensure skip threshold maintains 5% gap (required by validation)
+                    default_skip = 0.80
+                    if threshold_val > default_skip - 0.05:
+                        data["veto_skip_threshold"] = min(1.0, threshold_val + 0.10)
                     warnings.warn(
                         f"VETO_ACTION=reduce with VETO_THRESHOLD={old_threshold} is deprecated. "
                         f"Migrated to VETO_REDUCE_THRESHOLD={old_threshold}. "
