@@ -237,7 +237,7 @@ class MarketRegime:
             vol_adj = self.VOLATILITY_ADJUSTMENTS.get(
                 volatility, {"threshold": 0, "position": 1.0}
             )
-            vol_threshold = int(vol_adj["threshold"] * scale)
+            vol_threshold = round(vol_adj["threshold"] * scale)
             vol_position = 1.0 + (vol_adj["position"] - 1.0) * scale
 
             threshold_adj += vol_threshold
@@ -255,9 +255,9 @@ class MarketRegime:
                 trend, {"buy_threshold": 0, "sell_threshold": 0}
             )
             if signal_action == "buy":
-                trend_threshold = int(trend_adj["buy_threshold"] * scale)
+                trend_threshold = round(trend_adj["buy_threshold"] * scale)
             elif signal_action == "sell":
-                trend_threshold = int(trend_adj["sell_threshold"] * scale)
+                trend_threshold = round(trend_adj["sell_threshold"] * scale)
             else:
                 trend_threshold = 0
 
@@ -270,8 +270,18 @@ class MarketRegime:
             }
 
         # Clamp values
+        unclamped_position = position_mult
         threshold_adj = max(-20, min(20, threshold_adj))
         position_mult = max(0.5, min(1.5, position_mult))
+
+        # Log final position multiplier for observability (helps debug compounding effects)
+        if position_mult != 1.0:
+            logger.debug(
+                "regime_position_multiplier",
+                final=round(position_mult, 3),
+                unclamped=round(unclamped_position, 3),
+                clamped=unclamped_position != position_mult,
+            )
 
         # Determine regime name
         if threshold_adj <= -10:
