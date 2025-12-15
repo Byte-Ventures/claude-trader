@@ -53,6 +53,10 @@ jobs:
           else
             echo "has_release=false" >> $GITHUB_OUTPUT
             echo "No release needed"
+            # Log warning if output suggests there should have been a version
+            if echo "$OUTPUT" | grep -q "bump"; then
+              echo "::warning::Version parsing may have failed. Output: $OUTPUT"
+            fi
           fi
 
       - name: Create release branch and PR
@@ -91,14 +95,3 @@ jobs:
 
           # Enable auto-merge
           gh pr merge "$BRANCH" --auto --squash
-
-      - name: Create GitHub Release
-        if: steps.version.outputs.has_release == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION="${{ steps.version.outputs.next }}"
-          # Wait for PR to be merged, then create release
-          echo "Release will be created when PR is merged"
-          # Note: GitHub Release should be created after PR merge
-          # Consider adding a separate workflow triggered on PR merge to release/* branches
