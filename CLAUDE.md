@@ -69,17 +69,57 @@ This project uses `Base.metadata.create_all()` instead of Alembic for simplicity
 
 Do NOT suggest Alembic migrations for new tables - they are unnecessary in this codebase.
 
-## Versioning
+## Versioning & Commits
 
-Always update `src/version.py` when making commits:
+This project uses **Conventional Commits** for automatic semantic versioning.
 
-- **MAJOR**: Breaking changes, major refactors
-- **MINOR**: New features, significant enhancements
-- **PATCH**: Bug fixes, small improvements
+### Commit Message Format
 
-Update the version BEFORE committing.
+```
+<type>(<scope>): <description>
 
-**IMPORTANT:** Do NOT modify `src/version.py` in feature branches. Version bumps happen only when merging to develop/main.
+[optional body]
+
+[optional footer]
+```
+
+### Commit Types
+
+| Type | Version Bump | Description |
+|------|--------------|-------------|
+| `feat` | MINOR | New feature |
+| `fix` | PATCH | Bug fix |
+| `perf` | PATCH | Performance improvement |
+| `refactor` | PATCH | Code refactoring |
+| `docs` | none | Documentation only |
+| `style` | none | Formatting, no code change |
+| `test` | none | Adding/updating tests |
+| `chore` | none | Maintenance tasks |
+| `ci` | none | CI/CD changes |
+| `build` | none | Build system changes |
+
+### Breaking Changes
+
+Add `!` after type or include `BREAKING CHANGE:` in footer for MAJOR version bump:
+```
+feat!: remove deprecated API endpoint
+```
+
+### Examples
+
+```bash
+feat(strategy): add momentum indicator
+fix(api): handle rate limit errors
+perf(db): optimize trade query
+docs: update README setup instructions
+chore(deps): update pandas to 2.0
+```
+
+### Automatic Version Bumps
+
+**Do NOT manually edit `src/version.py`.**
+
+Versions are automatically bumped when PRs merge to `main` based on commit types.
 
 ## Configuration Parameters
 
