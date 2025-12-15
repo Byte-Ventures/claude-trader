@@ -207,3 +207,24 @@ From PR #XX review (bot review, YYYY-MM-DD)
 ## Priority
 Low/Medium/High"
 ```
+
+## Code Change Guidelines
+
+When making changes to this codebase:
+
+1. **Read first, code second** - Understand the codebase before making changes
+2. **Verify, don't invent** - Check that APIs/methods exist before using them
+3. **Minimal changes** - Fix only what's needed, don't refactor or "improve"
+4. **Follow patterns** - Check similar files for existing conventions
+5. **No new dependencies** - Unless the issue explicitly requires them
+6. **Stay focused** - Don't modify unrelated code
+7. **Test both modes** - Run tests that cover paper and live trading
+8. **Note uncertainties** - If the issue is ambiguous, document assumptions in PR
+
+### Protected Paths (extra caution required)
+
+These paths affect money and safety - changes require extra verification:
+
+- `src/safety/` - Circuit breaker, kill switch, loss limiter
+- `src/api/*_client.py` - Exchange integration (order execution)
+- `config/settings.py` - Core configuration
