@@ -1,0 +1,96 @@
+name: Claude Auto-Fix Issues
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  auto-fix:
+    if: github.event.label.name == 'auto-fix'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "claude[bot]"
+          git config user.email "noreply@anthropic.com"
+
+      - name: Create fix branch
+        id: branch
+        run: |
+          BRANCH="fix/issue-${{ github.event.issue.number }}"
+          git checkout -b "$BRANCH"
+          echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Run Claude Code
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Fix GitHub Issue #${{ github.event.issue.number }}
+
+            **Title:** ${{ github.event.issue.title }}
+            **Body:** ${{ github.event.issue.body }}
+
+            Instructions:
+            1. Analyze the issue and locate relevant code
+            2. Implement the fix following CLAUDE.md guidelines
+            3. Do NOT modify src/version.py (version bumps happen at merge time)
+            4. Run tests: python3 -m pytest tests/ -v
+            5. Commit with message referencing issue #${{ github.event.issue.number }}
+            6. Push to origin/${{ steps.branch.outputs.name }}
+            7. Create PR to develop with "Closes #${{ github.event.issue.number }}" in body
+
+            Do NOT auto-merge - PRs require human approval.
+          claude_args: >-
+            --max-turns 25
+            --allowed-tools "Read,Write,Edit,Glob,Grep,Bash(git:*),Bash(gh:*),Bash(python3:*),Bash(pytest:*)"
+
+      - name: Comment on issue
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const success = '${{ job.status }}' === 'success';
+            const body = success
+              ? `Auto-fix completed. Check the created PR.\n\n[Workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})`
+              : `Auto-fix failed. [Check logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ github.event.issue.number }},
+              body: body
+            });
+
+      - name: Update labels
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = ${{ github.event.issue.number }};
+            await github.rest.issues.removeLabel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue,
+              name: 'auto-fix'
+            }).catch(() => {});
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue,
+              labels: ['fix-in-progress']
+            });

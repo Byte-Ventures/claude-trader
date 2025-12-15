@@ -79,6 +79,8 @@ Always update `src/version.py` when making commits:
 
 Update the version BEFORE committing.
 
+**IMPORTANT:** Do NOT modify `src/version.py` in feature branches. Version bumps happen only when merging to develop/main.
+
 ## Configuration Parameters
 
 When creating new configuration parameters:
