@@ -73,9 +73,19 @@ jobs:
               pull_number: context.issue.number
             });
             const lastCommit = commits.data[commits.data.length - 1];
-            if (lastCommit?.commit?.author?.name === 'claude[bot]' &&
-                lastCommit?.commit?.message?.includes('Address review feedback')) {
-              core.setFailed('Last commit was from address-review workflow. Skipping to prevent loop.');
+
+            // Check by author name OR email (belt and suspenders)
+            const isFromBot = lastCommit?.commit?.author?.name === 'claude[bot]' ||
+                              lastCommit?.commit?.author?.email === 'noreply@anthropic.com';
+
+            // Check if commit is recent (< 10 minutes old)
+            const commitDate = new Date(lastCommit?.commit?.author?.date);
+            const now = new Date();
+            const minutesAgo = (now - commitDate) / (1000 * 60);
+            const isRecent = minutesAgo < 10;
+
+            if (isFromBot && isRecent) {
+              core.setFailed(`Last commit was from bot ${minutesAgo.toFixed(1)} minutes ago. Skipping to prevent loop.`);
             }
 
       - name: Checkout PR branch
