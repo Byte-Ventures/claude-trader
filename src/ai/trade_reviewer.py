@@ -538,6 +538,34 @@ class TradeReviewer:
         self._last_failure_time: Optional[datetime] = None
         self._circuit_breaker_reset_hours = 24
 
+    def _determine_veto_action(self, approved: bool, confidence: float) -> Optional[str]:
+        """
+        Determine veto action based on judge decision and confidence tiers.
+
+        Tiered veto system (v1.31.0):
+        - approved=True: No veto action (trade proceeds)
+        - approved=False, confidence < veto_reduce_threshold: No veto (info only)
+        - approved=False, confidence >= veto_reduce_threshold: "reduce" position
+        - approved=False, confidence >= veto_skip_threshold: "skip" trade entirely
+
+        Args:
+            approved: Whether the judge approved the trade
+            confidence: Judge's confidence level (0.0 to 1.0)
+
+        Returns:
+            Veto action string ("skip", "reduce") or None if no veto
+        """
+        if approved:
+            return None
+
+        if confidence >= self.veto_skip_threshold:
+            return "skip"  # High confidence disapproval: cancel trade
+        elif confidence >= self.veto_reduce_threshold:
+            return "reduce"  # Medium confidence disapproval: reduce position
+
+        # Below reduce threshold: proceed with trade (info only)
+        return None
+
     def _get_trading_style(self) -> tuple[str, str]:
         """
         Determine trading style based on candle interval.
@@ -671,14 +699,10 @@ class TradeReviewer:
             judge_result = await self._run_judge(valid_reviews, context)
 
             # Determine veto action based on confidence tiers
-            veto_action = None
-            if not judge_result["approved"]:
-                confidence = judge_result["confidence"]
-                if confidence >= self.veto_skip_threshold:
-                    veto_action = "skip"  # High confidence: cancel trade
-                elif confidence >= self.veto_reduce_threshold:
-                    veto_action = "reduce"  # Medium confidence: reduce position
-                # Below reduce threshold: proceed (info only)
+            veto_action = self._determine_veto_action(
+                approved=judge_result["approved"],
+                confidence=judge_result["confidence"],
+            )
 
             self._consecutive_failures = 0
 
