@@ -170,7 +170,7 @@ This ensures the PR only shows commits that are actually new.
 
 - All merges to `main` must be done via pull requests
 - Direct commits to `main` are not allowed
-- Tag releases on `main` with version (e.g., `v1.9.3`)
+- **ALWAYS check that a PR is still OPEN before pushing commits to it** - use `gh pr view {NUMBER} --json state`
 
 ## Pull Request Reviews (CRITICAL)
 
