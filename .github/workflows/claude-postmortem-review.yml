@@ -6,11 +6,9 @@ on:
 
 jobs:
   review-postmortem:
-    # Only run for discussions in 'post-mortems' category from trusted authors
-    if: >
-      github.event.discussion.category.slug == 'post-mortems' &&
-      (github.event.discussion.user.login == 'TheodorStorm' ||
-       github.event.discussion.user.login == 'claude[bot]')
+    # Only run for discussions in 'post-mortems' category
+    # (Announcement format restricts creation to maintainers/admins)
+    if: github.event.discussion.category.slug == 'post-mortems'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
