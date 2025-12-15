@@ -91,6 +91,8 @@ jobs:
 
           This PR will be auto-merged once checks pass."); then
             echo "::error::Failed to create PR for release $VERSION"
+            # Cleanup orphaned branch
+            git push origin --delete "$BRANCH" 2>/dev/null || true
             exit 1
           fi
 
