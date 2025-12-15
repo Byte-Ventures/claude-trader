@@ -687,6 +687,7 @@ class SignalScorer:
         #                            +penalty if HTF bullish (less negative = weaker sell)
         htf_adjustment = 0
         if htf_bias and htf_bias != "neutral":
+            # Strong HTF bias (daily + 4H agree): apply full adjustment
             if total_score > 0:  # Bullish signal (potential buy)
                 if htf_bias == "bullish":
                     htf_adjustment = self.mtf_aligned_boost  # +20: stronger buy signal
@@ -699,17 +700,32 @@ class SignalScorer:
                 elif htf_bias == "bullish":
                     # Counter-trend: make less negative to weaken sell signal
                     htf_adjustment = self.mtf_counter_penalty  # e.g., -60 → -40
-            total_score += htf_adjustment
+        elif htf_daily and htf_daily != "neutral":
+            # This branch only runs when MTF_4H_ENABLED=true AND daily/4H disagree.
+            # When 4H is disabled, htf_bias == htf_daily, so the first branch handles it.
+            #
+            # Here: htf_bias is "neutral" (daily + 4H disagree), but daily has direction.
+            # Apply half penalty when daily trend opposes signal - daily is more reliable.
+            # Use round() to handle odd mtf_counter_penalty values correctly.
+            half_penalty = round(self.mtf_counter_penalty / 2)
+            if total_score > 0 and htf_daily == "bearish":
+                # Buying into bearish daily trend - apply half penalty
+                htf_adjustment = -half_penalty
+            elif total_score < 0 and htf_daily == "bullish":
+                # Selling into bullish daily trend - weaken sell signal
+                htf_adjustment = half_penalty
 
-            if htf_adjustment != 0:
-                logger.info(
-                    "htf_bias_applied",
-                    htf_bias=htf_bias,
-                    htf_daily=htf_daily,
-                    htf_4h=htf_4h,
-                    signal_direction="bullish" if total_score > 0 else "bearish",
-                    adjustment=htf_adjustment,
-                )
+        if htf_adjustment != 0:
+            total_score += htf_adjustment
+            logger.info(
+                "htf_bias_applied",
+                htf_bias=htf_bias or "neutral",
+                htf_daily=htf_daily,
+                htf_4h=htf_4h,
+                signal_direction="bullish" if total_score > 0 else "bearish",
+                adjustment=htf_adjustment,
+                partial_penalty=htf_bias == "neutral" or htf_bias is None,
+            )
 
         breakdown["htf_bias"] = htf_adjustment
         breakdown["_htf_trend"] = htf_bias or "neutral"
