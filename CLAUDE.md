@@ -268,3 +268,51 @@ These paths affect money and safety - changes require extra verification:
 - `src/safety/` - Circuit breaker, kill switch, loss limiter
 - `src/api/*_client.py` - Exchange integration (order execution)
 - `config/settings.py` - Core configuration
+
+## Automation Workflows
+
+### Required GitHub Labels
+
+These labels must exist for automation to work:
+
+| Label | Purpose |
+|-------|---------|
+| `auto-fix` | Triggers automatic issue fixing via Claude |
+| `fix-in-progress` | Applied when auto-fix is working on an issue |
+| `post-mortem` | Marks issues derived from post-mortem analysis |
+| `review-retry-N` | Created automatically (N=1,2,3) to track fix attempts |
+
+### Required Discussion Category
+
+Create a `post-mortems` discussion category with:
+- **Format:** Announcement (restricts creation to maintainers)
+- **Purpose:** Post-mortem analysis from `tools/postmortem.py`
+
+### Workflow Chain
+
+```
+Post-mortem discussion created
+        ↓
+claude-postmortem-review.yml analyzes fixes
+        ↓
+Issue created with 'auto-fix' label
+        ↓
+claude-auto-fix.yml implements fix
+        ↓
+PR created to develop
+        ↓
+claude[bot] reviews PR
+        ↓
+If critical issues (🔴): claude-address-review.yml fixes them (max 3 retries)
+        ↓
+Human reviews and merges PR
+        ↓
+semantic-release.yml bumps version on main
+```
+
+### Manual Triggering
+
+To manually trigger auto-fix on any issue:
+1. Ensure you have write access to the repo
+2. Add the `auto-fix` label to the issue
+3. Monitor the Actions tab for progress
