@@ -45,6 +45,14 @@ jobs:
         run: |
           # Get next version without making changes
           OUTPUT=$(semantic-release version --print 2>&1) || true
+
+          # Check if semantic-release says no release needed
+          if echo "$OUTPUT" | grep -q "No release will be made"; then
+            echo "has_release=false" >> $GITHUB_OUTPUT
+            echo "No release needed - version already released"
+            exit 0
+          fi
+
           VERSION=$(echo "$OUTPUT" | grep -oP '^\d+\.\d+\.\d+$' | tail -1)
           if [ -n "$VERSION" ]; then
             echo "next=$VERSION" >> $GITHUB_OUTPUT
