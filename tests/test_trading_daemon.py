@@ -63,6 +63,11 @@ def mock_settings():
     settings.openrouter_api_key = None
     settings.hourly_analysis_enabled = False
     settings.ai_recommendation_ttl_minutes = 20
+    settings.veto_reduce_threshold = 0.65
+    settings.veto_skip_threshold = 0.80
+    settings.position_reduction = 0.5
+    settings.ai_api_timeout = 120
+    settings.postmortem_enabled = False
 
     # Strategy config
     settings.signal_threshold = 50
@@ -87,6 +92,7 @@ def mock_settings():
     settings.position_size_percent = Decimal("25")
     settings.stop_loss_atr_multiplier = 2.0
     settings.min_stop_loss_percent = 0.5
+    settings.min_take_profit_percent = 2.0
     settings.take_profit_atr_multiplier = 3.0
     settings.stop_loss_pct = None
     settings.trailing_stop_enabled = False
@@ -802,10 +808,9 @@ def test_ai_failure_mode_open_does_not_skip_trade(mock_settings, mock_exchange_c
     mock_settings.reviewer_model_2 = "test/model2"
     mock_settings.reviewer_model_3 = "test/model3"
     mock_settings.judge_model = "test/judge"
-    mock_settings.veto_action = VetoAction.INFO
-    mock_settings.veto_threshold = 0.8
+    mock_settings.veto_reduce_threshold = 0.65
+    mock_settings.veto_skip_threshold = 0.80
     mock_settings.position_reduction = 0.5
-    mock_settings.delay_minutes = 15
     mock_settings.interesting_hold_margin = 15
     mock_settings.ai_review_all = False
     mock_settings.market_research_enabled = False
@@ -886,10 +891,9 @@ def test_ai_failure_mode_safe_skips_trade(mock_settings, mock_exchange_client, m
     mock_settings.reviewer_model_2 = "test/model2"
     mock_settings.reviewer_model_3 = "test/model3"
     mock_settings.judge_model = "test/judge"
-    mock_settings.veto_action = VetoAction.INFO
-    mock_settings.veto_threshold = 0.8
+    mock_settings.veto_reduce_threshold = 0.65
+    mock_settings.veto_skip_threshold = 0.80
     mock_settings.position_reduction = 0.5
-    mock_settings.delay_minutes = 15
     mock_settings.interesting_hold_margin = 15
     mock_settings.ai_review_all = False
     mock_settings.market_research_enabled = False
@@ -984,10 +988,9 @@ def test_ai_failure_notification_cooldown(mock_settings, mock_exchange_client, m
     mock_settings.reviewer_model_2 = "test/model2"
     mock_settings.reviewer_model_3 = "test/model3"
     mock_settings.judge_model = "test/judge"
-    mock_settings.veto_action = VetoAction.INFO
-    mock_settings.veto_threshold = 0.8
+    mock_settings.veto_reduce_threshold = 0.65
+    mock_settings.veto_skip_threshold = 0.80
     mock_settings.position_reduction = 0.5
-    mock_settings.delay_minutes = 15
     mock_settings.interesting_hold_margin = 15
     mock_settings.ai_review_all = False
     mock_settings.market_research_enabled = False
@@ -1407,6 +1410,7 @@ def test_hard_stop_uses_atr_when_larger_than_min_percent(mock_settings):
 def htf_mock_settings(mock_settings):
     """Extend mock settings with MTF configuration."""
     mock_settings.mtf_enabled = True
+    mock_settings.mtf_4h_enabled = True
     mock_settings.mtf_candle_limit = 50
     mock_settings.mtf_daily_cache_minutes = 60
     mock_settings.mtf_4h_cache_minutes = 30

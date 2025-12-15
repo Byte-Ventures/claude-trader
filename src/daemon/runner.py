@@ -172,10 +172,9 @@ class TradingDaemon:
                     settings.reviewer_model_3,
                 ],
                 judge_model=settings.judge_model,
-                veto_action=settings.veto_action,
-                veto_threshold=settings.veto_threshold,
+                veto_reduce_threshold=settings.veto_reduce_threshold,
+                veto_skip_threshold=settings.veto_skip_threshold,
                 position_reduction=settings.position_reduction,
-                delay_minutes=settings.delay_minutes,
                 interesting_hold_margin=settings.interesting_hold_margin,
                 review_all=settings.ai_review_all,
                 market_research_enabled=settings.market_research_enabled,
@@ -1580,13 +1579,7 @@ class TradingDaemon:
                                     "trade_reduced_by_review",
                                     multiplier=f"{claude_veto_multiplier:.2f}",
                                 )
-                            elif review.final_veto_action == VetoAction.DELAY.value:
-                                logger.info(
-                                    "trade_delayed_by_review",
-                                    delay_minutes=self.settings.delay_minutes,
-                                )
-                                return  # Skip this iteration (user can check Telegram)
-                            # VetoAction.INFO: log but proceed with trade
+                            # Tiered system: skip or reduce only (no delay)
 
                         # For interesting holds, store recommendation for threshold adjustment
                         if review_type == "interesting_hold":

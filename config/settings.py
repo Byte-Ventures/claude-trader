@@ -363,27 +363,25 @@ class Settings(BaseSettings):
         default="deepseek/deepseek-chat-v3.1",
         description="Judge model for final decision synthesis"
     )
-    veto_action: VetoAction = Field(
-        default=VetoAction.INFO,
-        description="Action on veto: skip, reduce, delay, info"
-    )
-    veto_threshold: float = Field(
-        default=0.8,
+    # Tiered veto system: action depends on judge's confidence level
+    # When judge disapproves: <65% proceed, 65-79% reduce, >=80% skip
+    veto_reduce_threshold: float = Field(
+        default=0.65,
         ge=0.5,
         le=1.0,
-        description="Confidence threshold to trigger veto"
+        description="Judge confidence threshold to reduce position (lower tier)"
+    )
+    veto_skip_threshold: float = Field(
+        default=0.80,
+        ge=0.5,
+        le=1.0,
+        description="Judge confidence threshold to skip trade entirely (higher tier)"
     )
     position_reduction: float = Field(
         default=0.5,
         ge=0.1,
         le=0.9,
-        description="Position size multiplier for 'reduce' veto action"
-    )
-    delay_minutes: int = Field(
-        default=15,
-        ge=5,
-        le=60,
-        description="Minutes to delay for 'delay' veto action"
+        description="Position size multiplier when veto_reduce_threshold is met"
     )
     interesting_hold_margin: int = Field(
         default=15,
@@ -628,6 +626,16 @@ class Settings(BaseSettings):
 
         return self
 
+    @model_validator(mode="after")
+    def validate_veto_thresholds(self) -> "Settings":
+        """Validate that veto_reduce_threshold < veto_skip_threshold."""
+        if self.veto_reduce_threshold >= self.veto_skip_threshold:
+            raise ValueError(
+                f"veto_reduce_threshold ({self.veto_reduce_threshold}) must be less than "
+                f"veto_skip_threshold ({self.veto_skip_threshold})"
+            )
+        return self
+
     @model_validator(mode="before")
     @classmethod
     def migrate_deprecated_claude_vars(cls, data: dict) -> dict:
@@ -637,11 +645,10 @@ class Settings(BaseSettings):
         Maps deprecated names to new names with a deprecation warning.
         """
         # Mapping of old CLAUDE_* vars to new names
+        # Note: VETO_ACTION, VETO_THRESHOLD, DELAY_MINUTES removed in v1.31.0
+        # (replaced by tiered VETO_REDUCE_THRESHOLD and VETO_SKIP_THRESHOLD)
         deprecated_mapping = {
-            "CLAUDE_VETO_ACTION": "VETO_ACTION",
-            "CLAUDE_VETO_THRESHOLD": "VETO_THRESHOLD",
             "CLAUDE_POSITION_REDUCTION": "POSITION_REDUCTION",
-            "CLAUDE_DELAY_MINUTES": "DELAY_MINUTES",
             "CLAUDE_INTERESTING_HOLD_MARGIN": "INTERESTING_HOLD_MARGIN",
         }
 
