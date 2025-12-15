@@ -139,7 +139,7 @@ jobs:
               core.setOutput('reason', `JSON parse error: ${e.message}`);
             }
 
-      - name: Create issue for review
+      - name: Create issue with auto-fix label
         if: steps.parse.outputs.has_fixes == 'true'
         uses: actions/github-script@v7
         with:
@@ -159,8 +159,8 @@ jobs:
             ---
 
             *This issue was automatically created from post-mortem analysis.*
-            *Add the \`auto-fix\` label to trigger automatic fix attempt after review.*`,
-              labels: ['post-mortem']
+            *The \`auto-fix\` label will trigger automatic fix attempt.*`,
+              labels: ['auto-fix', 'post-mortem']
             });
 
             console.log(`Created issue #${issue.data.number}: ${issue.data.html_url}`);
