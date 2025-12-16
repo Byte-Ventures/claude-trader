@@ -13,9 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       is_autofix_pr: ${{ steps.check.outputs.is_autofix }}
-      has_actionable_issues: ${{ steps.check.outputs.has_actionable }}
     steps:
-      - name: Check if auto-fix PR with actionable issues
+      - name: Check if auto-fix PR
         id: check
         uses: actions/github-script@v7
         with:
@@ -27,51 +26,23 @@ jobs:
             });
             const branch = pr.data.head.ref;
             const isAutofix = branch.startsWith('fix/issue-');
-            const body = context.payload.comment.body;
 
             // Race condition guard: ensure comment is at least 10 seconds old
             // This prevents triggering on incomplete comments while bot is still writing
-            // Using 10s (not 5s) to be conservative for a financial system
             const commentAge = (Date.now() - new Date(context.payload.comment.created_at)) / 1000;
             if (commentAge < 10) {
               console.log(`Comment is only ${commentAge.toFixed(1)}s old, skipping (may be incomplete)`);
               core.setOutput('is_autofix', false);
-              core.setOutput('has_actionable', false);
               return;
             }
 
-            // Check for actionable issues (Critical OR High Priority)
-            // This is a financial system - both levels should be addressed
-
-            // Critical patterns (🔴)
-            // Match section headers followed by any non-empty content (allows plain text, lists, etc.)
-            const hasCriticalSection = /## Critical Issues?\s*\n+\s*\S/i.test(body);
-            const hasCriticalEmoji = body.includes('🔴') && body.toLowerCase().includes('critical');
-
-            // High Priority patterns (🟡)
-            const hasHighPrioritySection = /## High Priority Issues?\s*\n+\s*\S/i.test(body);
-            const hasHighPriorityEmoji = body.includes('🟡') && body.toLowerCase().includes('high');
-            const hasIssuesSection = /## Issues to Address\s*\n+\s*\S/i.test(body);
-            // Check for explicit "Required Before Merge" or "Action Required" sections with content
-            const hasRequiredSection = /(?:required|action required|must fix).*?:\s*\n+\s*\S/i.test(body);
-
-            const hasCritical = hasCriticalSection || hasCriticalEmoji;
-            const hasHighPriority = hasHighPrioritySection || hasHighPriorityEmoji || hasIssuesSection || hasRequiredSection;
-            const hasActionable = hasCritical || hasHighPriority;
-
             core.setOutput('is_autofix', isAutofix);
-            core.setOutput('has_actionable', hasActionable);
             console.log(`Branch: ${branch}, Is auto-fix: ${isAutofix}`);
-            console.log(`Critical: ${hasCritical} (section=${hasCriticalSection}, emoji=${hasCriticalEmoji})`);
-            console.log(`High Priority: ${hasHighPriority} (section=${hasHighPrioritySection}, emoji=${hasHighPriorityEmoji}, issues=${hasIssuesSection}, required=${hasRequiredSection})`);
-            console.log(`Has actionable issues: ${hasActionable}`);
 
   address-review:
     needs: check-branch
-    # Run for auto-fix PRs with critical OR high priority issues (financial system)
-    if: >
-      needs.check-branch.outputs.is_autofix_pr == 'true' &&
-      needs.check-branch.outputs.has_actionable_issues == 'true'
+    # Run for all auto-fix PRs - let the agent decide what to fix
+    if: needs.check-branch.outputs.is_autofix_pr == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -133,7 +104,7 @@ jobs:
             });
             core.setOutput('branch', pr.data.head.ref);
             core.setOutput('sha', pr.data.head.sha);
-            // Loop prevention is handled by retry limit (max 3) in previous step
+            // Loop prevention is handled by retry limit (max 5) in previous step
 
       - name: Checkout PR branch
         uses: actions/checkout@v4
