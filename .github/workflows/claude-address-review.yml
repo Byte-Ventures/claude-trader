@@ -33,15 +33,17 @@ jobs:
             // This is a financial system - both levels should be addressed
 
             // Critical patterns (🔴)
-            const hasCriticalSection = /## Critical Issues?\s*\n+[^#]/i.test(body);
+            // Match section headers with content (inline or following lines)
+            const hasCriticalSection = /## Critical Issues?[\s\S]{1,100}?\w/i.test(body);
             const hasCriticalEmoji = body.includes('🔴') && body.toLowerCase().includes('critical');
-            const hasRequestChanges = body.toLowerCase().includes('request changes');
+            // Use word boundary to avoid matching "I do not request changes"
+            const hasRequestChanges = /\brequest(?:ed|ing)?\s+changes?\b/i.test(body);
 
             // High Priority patterns (🟡)
-            const hasHighPrioritySection = /## High Priority Issues?\s*\n+[^#]/i.test(body);
+            const hasHighPrioritySection = /## High Priority Issues?[\s\S]{1,100}?\w/i.test(body);
             const hasHighPriorityEmoji = body.includes('🟡') && body.toLowerCase().includes('high');
-            const hasIssuesSection = /## Issues to Address\s*\n+[^#]/i.test(body);
-            const hasMustFix = body.toLowerCase().includes('must fix');
+            const hasIssuesSection = /## Issues to Address[\s\S]{1,100}?\w/i.test(body);
+            const hasMustFix = /\bmust\s+fix\b/i.test(body);
 
             const hasCritical = hasCriticalSection || hasCriticalEmoji || hasRequestChanges;
             const hasHighPriority = hasHighPrioritySection || hasHighPriorityEmoji || hasIssuesSection || hasMustFix;

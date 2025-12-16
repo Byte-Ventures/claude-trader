@@ -26,7 +26,17 @@ jobs:
             const prTitle = context.payload.pull_request.title;
 
             // Match "Closes #123", "Fixes #123", "Resolves #123" (case insensitive)
-            const issuePattern = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi;
+            // Handles: multiple spaces, parentheses, commas, colons
+            // Excludes: cross-repo references like "Fixes owner/repo#123"
+            const issuePattern = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[:\s(]*#(\d+)/gi;
+            const crossRepoPattern = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[:\s(]*[\w-]+\/[\w-]+#\d+/gi;
+
+            // Filter out cross-repo references
+            const crossRepoMatches = body.match(crossRepoPattern) || [];
+            if (crossRepoMatches.length > 0) {
+              console.log(`Skipping cross-repo references: ${crossRepoMatches.join(', ')}`);
+            }
+
             const matches = [...body.matchAll(issuePattern)];
 
             if (matches.length === 0) {
