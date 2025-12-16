@@ -130,7 +130,7 @@ jobs:
 
             Do NOT auto-merge - PRs require human approval.
           claude_args: >-
-            --max-turns 25
+            --max-turns 100
             --allowed-tools "Read,Write,Edit,Glob,Grep,Bash(git:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(python3:*),Bash(pytest:*),Bash(pip:*)"
 
       - name: Comment on issue
