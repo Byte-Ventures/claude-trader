@@ -29,20 +29,30 @@ jobs:
             const isAutofix = branch.startsWith('fix/issue-');
             const body = context.payload.comment.body;
 
+            // Race condition guard: ensure comment is at least 5 seconds old
+            // This prevents triggering on incomplete comments while bot is still writing
+            const commentAge = (Date.now() - new Date(context.payload.comment.created_at)) / 1000;
+            if (commentAge < 5) {
+              console.log(`Comment is only ${commentAge.toFixed(1)}s old, skipping (may be incomplete)`);
+              core.setOutput('is_autofix', false);
+              core.setOutput('has_actionable', false);
+              return;
+            }
+
             // Check for actionable issues (Critical OR High Priority)
             // This is a financial system - both levels should be addressed
 
             // Critical patterns (🔴)
-            // Match section headers followed by markdown content (list items, numbered items, or paragraphs)
-            const hasCriticalSection = /## Critical Issues?\s*\n+\s*[-*\d#>]/i.test(body);
+            // Match section headers followed by any non-empty content (allows plain text, lists, etc.)
+            const hasCriticalSection = /## Critical Issues?\s*\n+\s*\S/i.test(body);
             const hasCriticalEmoji = body.includes('🔴') && body.toLowerCase().includes('critical');
 
             // High Priority patterns (🟡)
-            const hasHighPrioritySection = /## High Priority Issues?\s*\n+\s*[-*\d#>]/i.test(body);
+            const hasHighPrioritySection = /## High Priority Issues?\s*\n+\s*\S/i.test(body);
             const hasHighPriorityEmoji = body.includes('🟡') && body.toLowerCase().includes('high');
-            const hasIssuesSection = /## Issues to Address\s*\n+\s*[-*\d#>]/i.test(body);
+            const hasIssuesSection = /## Issues to Address\s*\n+\s*\S/i.test(body);
             // Check for explicit "Required Before Merge" or "Action Required" sections with content
-            const hasRequiredSection = /(?:required|action required|must fix).*?:\s*\n+\s*[-*\d]/i.test(body);
+            const hasRequiredSection = /(?:required|action required|must fix).*?:\s*\n+\s*\S/i.test(body);
 
             const hasCritical = hasCriticalSection || hasCriticalEmoji;
             const hasHighPriority = hasHighPrioritySection || hasHighPriorityEmoji || hasIssuesSection || hasRequiredSection;
@@ -88,6 +98,8 @@ jobs:
             const retryLabels = labels.data.filter(l => l.name.startsWith('review-retry-'));
             const retryCount = retryLabels.length;
 
+            // Max 3 retries: prevents infinite loops while giving adequate attempts
+            // After 3 failures, human review is needed to resolve underlying issues
             if (retryCount >= 3) {
               core.setFailed('Max review retries (3) reached. Manual intervention required.');
               return;
