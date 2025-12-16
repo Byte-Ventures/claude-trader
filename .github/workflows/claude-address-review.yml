@@ -29,10 +29,11 @@ jobs:
             const isAutofix = branch.startsWith('fix/issue-');
             const body = context.payload.comment.body;
 
-            // Race condition guard: ensure comment is at least 5 seconds old
+            // Race condition guard: ensure comment is at least 10 seconds old
             // This prevents triggering on incomplete comments while bot is still writing
+            // Using 10s (not 5s) to be conservative for a financial system
             const commentAge = (Date.now() - new Date(context.payload.comment.created_at)) / 1000;
-            if (commentAge < 5) {
+            if (commentAge < 10) {
               console.log(`Comment is only ${commentAge.toFixed(1)}s old, skipping (may be incomplete)`);
               core.setOutput('is_autofix', false);
               core.setOutput('has_actionable', false);
@@ -98,10 +99,16 @@ jobs:
             const retryLabels = labels.data.filter(l => l.name.startsWith('review-retry-'));
             const retryCount = retryLabels.length;
 
-            // Max 3 retries: prevents infinite loops while giving adequate attempts
-            // After 3 failures, human review is needed to resolve underlying issues
-            if (retryCount >= 3) {
-              core.setFailed('Max review retries (3) reached. Manual intervention required.');
+            // Max 5 retries: prevents infinite loops while giving adequate attempts
+            // After 5 failures, human review is needed to resolve underlying issues
+            if (retryCount >= 5) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: '⚠️ **Max review retries (5) reached.** Manual intervention required to address review feedback.'
+              });
+              core.setFailed('Max review retries (5) reached. Manual intervention required.');
               return;
             }
 
@@ -126,28 +133,7 @@ jobs:
             });
             core.setOutput('branch', pr.data.head.ref);
             core.setOutput('sha', pr.data.head.sha);
-
-            // Check if last commit was from this workflow to prevent loops
-            const commits = await github.rest.pulls.listCommits({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.issue.number
-            });
-            const lastCommit = commits.data[commits.data.length - 1];
-
-            // Check by author name OR email (belt and suspenders)
-            const isFromBot = lastCommit?.commit?.author?.name === 'claude[bot]' ||
-                              lastCommit?.commit?.author?.email === 'noreply@anthropic.com';
-
-            // Check if commit is recent (< 10 minutes old)
-            const commitDate = new Date(lastCommit?.commit?.author?.date);
-            const now = new Date();
-            const minutesAgo = (now - commitDate) / (1000 * 60);
-            const isRecent = minutesAgo < 10;
-
-            if (isFromBot && isRecent) {
-              core.setFailed(`Last commit was from bot ${minutesAgo.toFixed(1)} minutes ago. Skipping to prevent loop.`);
-            }
+            // Loop prevention is handled by retry limit (max 3) in previous step
 
       - name: Checkout PR branch
         uses: actions/checkout@v4
@@ -218,3 +204,23 @@ jobs:
               issue_number: ${{ github.event.issue.number }},
               body: body
             });
+
+      - name: Cleanup retry labels on success
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            const retryLabels = labels.data.filter(l => l.name.startsWith('review-retry-'));
+            for (const label of retryLabels) {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                name: label.name
+              }).catch(() => {}); // Ignore if label already removed
+            }
