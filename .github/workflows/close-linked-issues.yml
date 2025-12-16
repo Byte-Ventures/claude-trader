@@ -1,0 +1,86 @@
+name: Close Linked Issues on PR Merge
+
+# GitHub's auto-close only works for default branch (main).
+# This workflow closes issues linked in PR body when merging to develop.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [develop]
+
+jobs:
+  close-issues:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    permissions:
+      issues: write
+
+    steps:
+      - name: Close linked issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+            const prNumber = context.payload.pull_request.number;
+            const prTitle = context.payload.pull_request.title;
+
+            // Match "Closes #123", "Fixes #123", "Resolves #123" (case insensitive)
+            const issuePattern = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi;
+            const matches = [...body.matchAll(issuePattern)];
+
+            if (matches.length === 0) {
+              console.log('No linked issues found in PR body');
+              return;
+            }
+
+            const issueNumbers = [...new Set(matches.map(m => parseInt(m[1])))];
+            console.log(`Found linked issues: ${issueNumbers.join(', ')}`);
+
+            for (const issueNumber of issueNumbers) {
+              try {
+                // Check if issue exists and is open
+                const { data: issue } = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber
+                });
+
+                if (issue.state === 'open') {
+                  // Close the issue
+                  await github.rest.issues.update({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issueNumber,
+                    state: 'closed',
+                    state_reason: 'completed'
+                  });
+
+                  // Add comment linking to the PR
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issueNumber,
+                    body: `Closed by #${prNumber} (${prTitle})`
+                  });
+
+                  console.log(`Closed issue #${issueNumber}`);
+
+                  // Remove fix-in-progress label if present
+                  try {
+                    await github.rest.issues.removeLabel({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: issueNumber,
+                      name: 'fix-in-progress'
+                    });
+                  } catch (e) {
+                    // Label might not exist, ignore
+                  }
+                } else {
+                  console.log(`Issue #${issueNumber} is already closed`);
+                }
+              } catch (error) {
+                console.log(`Failed to process issue #${issueNumber}: ${error.message}`);
+              }
+            }
