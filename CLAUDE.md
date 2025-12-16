@@ -176,7 +176,17 @@ This ensures the PR only shows commits that are actually new.
 
 ## Pull Request Reviews (CRITICAL)
 
-**This is a financial trading tool. All PR review comments MUST be fetched and thoroughly analyzed before merging.**
+**This is a FINANCIAL TRADING SYSTEM. All PR review comments MUST be fetched and thoroughly analyzed before merging.**
+
+### Issue Priority for Financial Systems
+
+| Priority | Symbol | Action Required |
+|----------|--------|-----------------|
+| Critical | 🔴 | MUST fix before merge - blocks deployment |
+| High | 🟡 | MUST fix before merge - financial system requirement |
+| Low | 🟢 | Fix if straightforward, otherwise document and create issue |
+
+Both 🔴 Critical AND 🟡 High priority issues trigger automatic fix workflows.
 
 ### Fetching PR Review Comments
 
@@ -203,10 +213,11 @@ gh pr view {PR_NUMBER} --comments
    done
    ```
 2. **Before merging any PR**, fetch and read ALL review comments
-3. **Critical issues** (marked 🔴) must be fixed before merge
-4. **High priority issues** (marked 🟡) should be addressed or documented why not
-5. **Security concerns** require immediate attention
-6. After fixes, push new commit and re-request review if needed
+3. **Critical issues** (🔴) - MUST fix before merge
+4. **High priority issues** (🟡) - MUST fix before merge (financial system)
+5. **Low priority issues** (🟢) - Fix if straightforward, or create GitHub issue
+6. **Security concerns** require immediate attention
+7. After fixes, push new commit and re-request review if needed
 
 ### Bot Reviews
 
@@ -305,9 +316,12 @@ PR created to develop
         ↓
 claude[bot] reviews PR
         ↓
-If critical issues (🔴): claude-address-review.yml fixes them (max 3 retries)
+If 🔴 critical OR 🟡 high priority issues:
+  claude-address-review.yml fixes them (max 3 retries)
         ↓
 Human reviews and merges PR
+        ↓
+close-linked-issues.yml closes referenced issues
         ↓
 semantic-release.yml bumps version on main
 ```

@@ -13,9 +13,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       is_autofix_pr: ${{ steps.check.outputs.is_autofix }}
-      has_critical: ${{ steps.check.outputs.has_critical }}
+      has_actionable_issues: ${{ steps.check.outputs.has_actionable }}
     steps:
-      - name: Check if auto-fix PR with critical issues
+      - name: Check if auto-fix PR with actionable issues
         id: check
         uses: actions/github-script@v7
         with:
@@ -28,18 +28,49 @@ jobs:
             const branch = pr.data.head.ref;
             const isAutofix = branch.startsWith('fix/issue-');
             const body = context.payload.comment.body;
-            const hasCritical = body.includes('🔴 Critical issues:') && !body.includes('🔴 Critical issues: 0');
+
+            // Race condition guard: ensure comment is at least 5 seconds old
+            // This prevents triggering on incomplete comments while bot is still writing
+            const commentAge = (Date.now() - new Date(context.payload.comment.created_at)) / 1000;
+            if (commentAge < 5) {
+              console.log(`Comment is only ${commentAge.toFixed(1)}s old, skipping (may be incomplete)`);
+              core.setOutput('is_autofix', false);
+              core.setOutput('has_actionable', false);
+              return;
+            }
+
+            // Check for actionable issues (Critical OR High Priority)
+            // This is a financial system - both levels should be addressed
+
+            // Critical patterns (🔴)
+            // Match section headers followed by any non-empty content (allows plain text, lists, etc.)
+            const hasCriticalSection = /## Critical Issues?\s*\n+\s*\S/i.test(body);
+            const hasCriticalEmoji = body.includes('🔴') && body.toLowerCase().includes('critical');
+
+            // High Priority patterns (🟡)
+            const hasHighPrioritySection = /## High Priority Issues?\s*\n+\s*\S/i.test(body);
+            const hasHighPriorityEmoji = body.includes('🟡') && body.toLowerCase().includes('high');
+            const hasIssuesSection = /## Issues to Address\s*\n+\s*\S/i.test(body);
+            // Check for explicit "Required Before Merge" or "Action Required" sections with content
+            const hasRequiredSection = /(?:required|action required|must fix).*?:\s*\n+\s*\S/i.test(body);
+
+            const hasCritical = hasCriticalSection || hasCriticalEmoji;
+            const hasHighPriority = hasHighPrioritySection || hasHighPriorityEmoji || hasIssuesSection || hasRequiredSection;
+            const hasActionable = hasCritical || hasHighPriority;
 
             core.setOutput('is_autofix', isAutofix);
-            core.setOutput('has_critical', hasCritical);
-            console.log(`Branch: ${branch}, Is auto-fix: ${isAutofix}, Has critical: ${hasCritical}`);
+            core.setOutput('has_actionable', hasActionable);
+            console.log(`Branch: ${branch}, Is auto-fix: ${isAutofix}`);
+            console.log(`Critical: ${hasCritical} (section=${hasCriticalSection}, emoji=${hasCriticalEmoji})`);
+            console.log(`High Priority: ${hasHighPriority} (section=${hasHighPrioritySection}, emoji=${hasHighPriorityEmoji}, issues=${hasIssuesSection}, required=${hasRequiredSection})`);
+            console.log(`Has actionable issues: ${hasActionable}`);
 
   address-review:
     needs: check-branch
-    # Only run for auto-fix PRs with actual critical issues
+    # Run for auto-fix PRs with critical OR high priority issues (financial system)
     if: >
       needs.check-branch.outputs.is_autofix_pr == 'true' &&
-      needs.check-branch.outputs.has_critical == 'true'
+      needs.check-branch.outputs.has_actionable_issues == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -67,6 +98,8 @@ jobs:
             const retryLabels = labels.data.filter(l => l.name.startsWith('review-retry-'));
             const retryCount = retryLabels.length;
 
+            // Max 3 retries: prevents infinite loops while giving adequate attempts
+            // After 3 failures, human review is needed to resolve underlying issues
             if (retryCount >= 3) {
               core.setFailed('Max review retries (3) reached. Manual intervention required.');
               return;
@@ -151,20 +184,22 @@ jobs:
 
             ## Instructions
             1. Read CLAUDE.md to understand project conventions
-            2. Focus on issues marked with 🔴 (critical) - these MUST be fixed
-            3. Address issues marked with 🟡 (high priority) if straightforward
-            4. For each issue:
+            2. This is a FINANCIAL SYSTEM - prioritize fixes in this order:
+               - 🔴 Critical issues - MUST fix
+               - 🟡 High priority issues - MUST fix
+               - 🟢 Low priority issues - fix if straightforward
+            3. For each issue you address:
                - Locate the relevant code
                - Implement the fix
                - Verify the fix is correct
-            5. Do NOT modify src/version.py
-            6. Run tests: python3 -m pytest tests/ -v
-            7. If tests pass, commit with message: "Address review feedback on PR #${{ github.event.issue.number }}"
-            8. Push to origin/${{ steps.pr.outputs.branch }}
+            4. Do NOT modify src/version.py
+            5. Run tests: python3 -m pytest tests/ -v
+            6. If tests pass, commit with message: "Address review feedback on PR #${{ github.event.issue.number }}"
+            7. Push to origin/${{ steps.pr.outputs.branch }}
 
-            If an issue cannot be fixed or is invalid, explain why in a comment.
+            If any issues could not be fixed, add a PR comment listing them with brief explanations.
           claude_args: >-
-            --max-turns 25
+            --max-turns 100
             --allowed-tools "Read,Write,Edit,Glob,Grep,Bash(git:*),Bash(python3:*),Bash(pytest:*),Bash(pip:*)"
 
       - name: Comment on PR
