@@ -224,6 +224,9 @@ jobs:
               console.log("Created issue #" + issue.data.number + ": " + issue.data.html_url);
               created++;
 
+              // Small delay to ensure issue is fully propagated before dispatch
+              await new Promise(r => setTimeout(r, 1000));
+
               // Trigger auto-fix workflow via repository_dispatch
               // (GITHUB_TOKEN events don't trigger workflows, so we use dispatch)
               try {

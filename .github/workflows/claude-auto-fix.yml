@@ -9,8 +9,8 @@ on:
 jobs:
   auto-fix:
     if: |
-      (github.event.action == 'labeled' && github.event.label.name == 'auto-fix') ||
-      github.event.action == 'auto-fix-issue'
+      (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'auto-fix') ||
+      (github.event_name == 'repository_dispatch' && github.event.action == 'auto-fix-issue')
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -64,6 +64,15 @@ jobs:
               repo: context.repo.repo,
               issue_number: issueNumber
             });
+
+            // For repository_dispatch, verify issue has 'post-mortem' label (security check)
+            if (context.eventName === 'repository_dispatch') {
+              const hasPostMortemLabel = issue.labels.some(l => l.name === 'post-mortem');
+              if (!hasPostMortemLabel) {
+                core.setFailed('Security: repository_dispatch can only auto-fix issues with post-mortem label');
+                return;
+              }
+            }
 
             core.setOutput('number', issue.number);
             core.setOutput('title', issue.title);
