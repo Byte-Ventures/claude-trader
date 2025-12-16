@@ -87,7 +87,6 @@ jobs:
           claude_args: >-
             --max-turns 10
             --allowed-tools "Read,Glob,Grep"
-            --json-schema '{"type":"object","properties":{"has_valid_fixes":{"type":"boolean"},"fixes":{"type":"array","items":{"type":"object","properties":{"type":{"type":"string"},"priority":{"type":"string"},"risk":{"type":"string"},"issue_title":{"type":"string"},"issue_body":{"type":"string"}}}},"reason":{"type":"string"}},"required":["has_valid_fixes"]}'
 
       - name: Parse analysis result
         id: parse
