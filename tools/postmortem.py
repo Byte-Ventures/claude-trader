@@ -600,11 +600,12 @@ Focus on patterns that lead to losing trades and missed opportunities.
     return prompt
 
 
-def invoke_claude(prompt: str, verbose: bool = False) -> str:
+def invoke_claude(prompt: str, source_root: Path, verbose: bool = False) -> str:
     """
     Invoke Claude CLI for trade analysis.
 
-    Uses --allowedTools to permit database queries and file reads without prompts.
+    Uses --allowed-tools to permit database queries and file reads without prompts.
+    Uses --add-dir to grant access to the source/data directory.
     """
     if verbose:
         print(f"[INFO] Sending {len(prompt)} chars to Claude...")
@@ -613,7 +614,8 @@ def invoke_claude(prompt: str, verbose: bool = False) -> str:
     result = subprocess.run(
         [
             "claude", "-p", prompt,
-            "--allowedTools", "Bash(sqlite3:*)", "Read", "Grep", "Glob",
+            "--allowed-tools", "Bash(sqlite3:*),Read,Grep,Glob",
+            "--add-dir", str(source_root),
         ],
         capture_output=True,
         text=True,
@@ -940,7 +942,7 @@ def main() -> int:
 
         # Invoke Claude CLI
         print("[INFO] Analyzing trades with Claude...")
-        analysis = invoke_claude(prompt, verbose=args.verbose)
+        analysis = invoke_claude(prompt, source_root, verbose=args.verbose)
 
         print("\n" + "=" * 60)
         print("ANALYSIS RESULTS:")

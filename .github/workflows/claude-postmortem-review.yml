@@ -139,28 +139,25 @@ jobs:
       - name: Create issue with auto-fix label
         if: steps.parse.outputs.has_fixes == 'true'
         uses: actions/github-script@v7
+        env:
+          ISSUE_TITLE: ${{ steps.parse.outputs.issue_title }}
+          ISSUE_BODY: ${{ steps.parse.outputs.issue_body }}
+          DISCUSSION_URL: ${{ github.event.client_payload.discussion_url }}
         with:
           script: |
+            const header = "## Auto-generated from Post-Mortem Analysis\n\n**Source Discussion:** " + process.env.DISCUSSION_URL + "\n\n---\n\n";
+            const footer = "\n\n---\n\n*This issue was automatically created from post-mortem analysis.*\n*The `auto-fix` label will trigger automatic fix attempt.*";
+            const body = header + process.env.ISSUE_BODY + footer;
+
             const issue = await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `${{ steps.parse.outputs.issue_title }}`,
-              body: `## Auto-generated from Post-Mortem Analysis
-
-            **Source Discussion:** ${{ github.event.client_payload.discussion_url }}
-
-            ---
-
-            ${{ steps.parse.outputs.issue_body }}
-
-            ---
-
-            *This issue was automatically created from post-mortem analysis.*
-            *The \`auto-fix\` label will trigger automatic fix attempt.*`,
+              title: process.env.ISSUE_TITLE,
+              body: body,
               labels: ['auto-fix', 'post-mortem']
             });
 
-            console.log(`Created issue #${issue.data.number}: ${issue.data.html_url}`);
+            console.log("Created issue #" + issue.data.number + ": " + issue.data.html_url);
 
       - name: Log result
         if: always()
