@@ -189,6 +189,7 @@ jobs:
             const existingTitles = existingIssues.map(i => i.title.toLowerCase());
 
             let created = 0;
+            let dispatched = 0;
             let skipped = 0;
 
             for (const fix of fixes) {
@@ -221,24 +222,28 @@ jobs:
               });
 
               console.log("Created issue #" + issue.data.number + ": " + issue.data.html_url);
+              created++;
 
               // Trigger auto-fix workflow via repository_dispatch
               // (GITHUB_TOKEN events don't trigger workflows, so we use dispatch)
-              await github.rest.repos.createDispatchEvent({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                event_type: 'auto-fix-issue',
-                client_payload: { issue_number: issue.data.number }
-              });
-              console.log("Dispatched auto-fix for issue #" + issue.data.number);
-
-              created++;
+              try {
+                await github.rest.repos.createDispatchEvent({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  event_type: 'auto-fix-issue',
+                  client_payload: { issue_number: issue.data.number }
+                });
+                console.log("Dispatched auto-fix for issue #" + issue.data.number);
+                dispatched++;
+              } catch (e) {
+                console.error("Failed to dispatch auto-fix for issue #" + issue.data.number + ": " + e.message);
+              }
 
               // Small delay to avoid rate limiting
               await new Promise(r => setTimeout(r, 2000));
             }
 
-            console.log("Summary: Created " + created + " issues, dispatched " + created + " auto-fix workflows, skipped " + skipped + " duplicates");
+            console.log("Summary: Created " + created + " issues, dispatched " + dispatched + " auto-fix workflows, skipped " + skipped + " duplicates");
 
       - name: Log result
         if: always()
