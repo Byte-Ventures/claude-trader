@@ -462,6 +462,10 @@ class Settings(BaseSettings):
         default="openai/gpt-5.2",
         description="OpenRouter model for weight profile selection (fast/cheap preferred)"
     )
+    weight_profile_flap_protection: bool = Field(
+        default=True,
+        description="Require 2 consecutive profile detections before changing (prevents flapping)"
+    )
 
     # Market Regime Adaptation
     regime_adaptation_enabled: bool = Field(
@@ -485,6 +489,10 @@ class Settings(BaseSettings):
         ge=0.0,
         le=2.0,
         description="Regime adjustment intensity (0=off, 1=normal, 2=aggressive)"
+    )
+    regime_flap_protection: bool = Field(
+        default=True,
+        description="Require 2 consecutive regime detections before changing (prevents flapping)"
     )
 
     # Multi-Timeframe Confirmation (MTF)

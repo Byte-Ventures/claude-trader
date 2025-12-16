@@ -103,11 +103,13 @@ def mock_settings():
     settings.regime_volatility_enabled = False
     settings.regime_trend_enabled = False
     settings.regime_adjustment_scale = 0.5
+    settings.regime_flap_protection = True
 
     # AI Weight Profile config
     settings.ai_weight_profile_enabled = False
     settings.ai_weight_fallback_profile = "default"
     settings.ai_weight_profile_model = "openai/gpt-5.2"
+    settings.weight_profile_flap_protection = True
 
     # Safety systems
     settings.circuit_breaker_enabled = True
