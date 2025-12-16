@@ -1365,7 +1365,10 @@ class TradingDaemon:
                                     pending=selection.profile_name,
                                 )
                                 self._pending_weight_profile = selection.profile_name
-                                # Don't apply change yet - keep using current profile weights
+                                # Don't apply weights yet - keep using current profile
+                                # But still update confidence/reasoning for dashboard visibility
+                                self._last_weight_profile_confidence = selection.confidence
+                                self._last_weight_profile_reasoning = selection.reasoning
                         else:
                             # No flap protection - immediate change
                             should_apply_profile_change = True
