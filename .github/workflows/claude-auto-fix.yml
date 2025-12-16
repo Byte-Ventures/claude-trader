@@ -8,14 +8,15 @@ on:
 
 jobs:
   auto-fix:
+    # Note: repository_dispatch is filtered by types: [auto-fix-issue] above
     if: |
       (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'auto-fix') ||
-      (github.event_name == 'repository_dispatch' && github.event.action == 'auto-fix-issue')
+      github.event_name == 'repository_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     concurrency:
-      group: fix-issue-${{ github.event.issue.number || github.event.client_payload.issue_number }}
+      group: fix-issue-${{ github.event.issue.number || github.event.client_payload.issue_number || github.run_id }}
       cancel-in-progress: false
 
     permissions:
