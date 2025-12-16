@@ -438,6 +438,16 @@ class SignalScorer:
                 confidence=0.0,
             )
 
+        # Validate sentiment_category parameter
+        VALID_SENTIMENTS = {"extreme_fear", "fear", "neutral", "greed", "extreme_greed", None}
+        if sentiment_category is not None and sentiment_category not in VALID_SENTIMENTS:
+            logger.warning(
+                "invalid_sentiment_category",
+                sentiment_category=sentiment_category,
+                reason="unknown_value_defaulting_to_none",
+            )
+            sentiment_category = None
+
         # Get price series
         close = df["close"].astype(float)
         high = df["high"].astype(float)

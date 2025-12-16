@@ -308,6 +308,15 @@ class TradingDaemon:
                 logger.info("regime_restored_from_db", regime=last_regime)
             logger.info("market_regime_initialized", scale=settings.regime_adjustment_scale)
 
+        # Warn if MTF is enabled but sentiment is disabled
+        # Sentiment is required for extreme fear MTF penalty adjustment
+        if settings.mtf_enabled and not settings.regime_sentiment_enabled:
+            logger.warning(
+                "sentiment_disabled_with_mtf",
+                impact="extreme_fear_daily_penalty_will_not_apply",
+                recommendation="enable_regime_sentiment_for_full_mtf_functionality",
+            )
+
         # Initialize AI weight profile selector (optional, requires OpenRouter key)
         self.weight_profile_selector: Optional[WeightProfileSelector] = None
         self._last_weight_profile: str = "default"
@@ -1177,7 +1186,12 @@ class TradingDaemon:
                 if sentiment and sentiment.value is not None:
                     sentiment_category = classify_sentiment_category(sentiment.value)
             except Exception as e:
-                logger.debug("sentiment_fetch_skipped", error=str(e))
+                logger.warning(
+                    "sentiment_fetch_failed",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    impact="extreme_fear_penalty_disabled",
+                )
 
         # Calculate signal with HTF context and sentiment
         signal_result = self.signal_scorer.calculate_score(
