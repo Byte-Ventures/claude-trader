@@ -33,30 +33,26 @@ jobs:
             // This is a financial system - both levels should be addressed
 
             // Critical patterns (🔴)
-            // Match section headers with content (until next ## or end)
-            const hasCriticalSection = /## Critical Issues?[\s\S]*?(?=\n##|$)/i.test(body) &&
-                                       /## Critical Issues?[\s\S]{10,}?[a-zA-Z]/i.test(body);
+            // Match section headers followed by markdown content (list items, numbered items, or paragraphs)
+            const hasCriticalSection = /## Critical Issues?\s*\n+\s*[-*\d#>]/i.test(body);
             const hasCriticalEmoji = body.includes('🔴') && body.toLowerCase().includes('critical');
-            // Use word boundary to avoid matching "I do not request changes"
-            const hasRequestChanges = /\brequest(?:ed|ing)?\s+changes?\b/i.test(body);
 
             // High Priority patterns (🟡)
-            const hasHighPrioritySection = /## High Priority Issues?[\s\S]*?(?=\n##|$)/i.test(body) &&
-                                           /## High Priority Issues?[\s\S]{10,}?[a-zA-Z]/i.test(body);
+            const hasHighPrioritySection = /## High Priority Issues?\s*\n+\s*[-*\d#>]/i.test(body);
             const hasHighPriorityEmoji = body.includes('🟡') && body.toLowerCase().includes('high');
-            const hasIssuesSection = /## Issues to Address[\s\S]*?(?=\n##|$)/i.test(body) &&
-                                     /## Issues to Address[\s\S]{10,}?[a-zA-Z]/i.test(body);
-            const hasMustFix = /\bmust\s+fix\b/i.test(body);
+            const hasIssuesSection = /## Issues to Address\s*\n+\s*[-*\d#>]/i.test(body);
+            // Check for explicit "Required Before Merge" or "Action Required" sections with content
+            const hasRequiredSection = /(?:required|action required|must fix).*?:\s*\n+\s*[-*\d]/i.test(body);
 
-            const hasCritical = hasCriticalSection || hasCriticalEmoji || hasRequestChanges;
-            const hasHighPriority = hasHighPrioritySection || hasHighPriorityEmoji || hasIssuesSection || hasMustFix;
+            const hasCritical = hasCriticalSection || hasCriticalEmoji;
+            const hasHighPriority = hasHighPrioritySection || hasHighPriorityEmoji || hasIssuesSection || hasRequiredSection;
             const hasActionable = hasCritical || hasHighPriority;
 
             core.setOutput('is_autofix', isAutofix);
             core.setOutput('has_actionable', hasActionable);
             console.log(`Branch: ${branch}, Is auto-fix: ${isAutofix}`);
-            console.log(`Critical: ${hasCritical} (section=${hasCriticalSection}, emoji=${hasCriticalEmoji}, requestChanges=${hasRequestChanges})`);
-            console.log(`High Priority: ${hasHighPriority} (section=${hasHighPrioritySection}, emoji=${hasHighPriorityEmoji}, issues=${hasIssuesSection}, mustFix=${hasMustFix})`);
+            console.log(`Critical: ${hasCritical} (section=${hasCriticalSection}, emoji=${hasCriticalEmoji})`);
+            console.log(`High Priority: ${hasHighPriority} (section=${hasHighPrioritySection}, emoji=${hasHighPriorityEmoji}, issues=${hasIssuesSection}, required=${hasRequiredSection})`);
             console.log(`Has actionable issues: ${hasActionable}`);
 
   address-review:

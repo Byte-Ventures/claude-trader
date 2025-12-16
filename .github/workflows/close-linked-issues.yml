@@ -27,15 +27,8 @@ jobs:
 
             // Match "Closes #123", "Fixes #123", "Resolves #123" (case insensitive)
             // Handles: multiple spaces, parentheses, commas, colons
-            // Excludes: cross-repo references like "Fixes owner/repo#123"
-            const issuePattern = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[:\s(]*#(\d+)/gi;
-            const crossRepoPattern = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[:\s(]*[\w-]+\/[\w-]+#\d+/gi;
-
-            // Filter out cross-repo references
-            const crossRepoMatches = body.match(crossRepoPattern) || [];
-            if (crossRepoMatches.length > 0) {
-              console.log(`Skipping cross-repo references: ${crossRepoMatches.join(', ')}`);
-            }
+            // Uses negative lookahead to EXCLUDE cross-repo references like "Fixes owner/repo#123"
+            const issuePattern = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[:\s(]*(?![\w-]+\/[\w-]+#)#(\d+)/gi;
 
             const matches = [...body.matchAll(issuePattern)];
 
