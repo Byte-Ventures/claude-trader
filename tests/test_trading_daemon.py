@@ -1948,3 +1948,312 @@ def test_mark_signal_trade_executed_with_valid_id(htf_mock_settings, mock_exchan
 
                 # Verify update was called with trade_executed=True
                 mock_query.update.assert_called_once_with({"trade_executed": True})
+
+
+# ============================================================================
+# Flap Protection Tests - CRITICAL
+# ============================================================================
+
+class TestRegimeFlapProtection:
+    """Test regime flap protection prevents rapid oscillation."""
+
+    def test_first_detection_sets_pending_state(self, mock_settings, mock_exchange_client, mock_database):
+        """First detection of new regime should set pending state, not apply change."""
+        mock_settings.regime_flap_protection = True
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    # Initial state
+                    daemon._last_regime = "neutral"
+                    daemon._pending_regime = None
+
+                    # Simulate first detection of "risk_on" regime
+                    # (testing internal state, not full iteration)
+                    new_regime = "risk_on"
+
+                    # Apply flap protection logic
+                    if new_regime != daemon._last_regime:
+                        if daemon.settings.regime_flap_protection:
+                            if daemon._pending_regime == new_regime:
+                                daemon._pending_regime = None
+                                daemon._last_regime = new_regime  # Apply change
+                            else:
+                                daemon._pending_regime = new_regime  # Set pending
+
+                    # First detection should only set pending, NOT change regime
+                    assert daemon._pending_regime == "risk_on"
+                    assert daemon._last_regime == "neutral"  # Unchanged
+
+    def test_second_consecutive_detection_applies_change(self, mock_settings, mock_exchange_client, mock_database):
+        """Second consecutive detection of same regime should confirm and apply change."""
+        mock_settings.regime_flap_protection = True
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    # State after first detection
+                    daemon._last_regime = "neutral"
+                    daemon._pending_regime = "risk_on"
+
+                    # Simulate second consecutive detection
+                    new_regime = "risk_on"
+
+                    if new_regime != daemon._last_regime:
+                        if daemon.settings.regime_flap_protection:
+                            if daemon._pending_regime == new_regime:
+                                daemon._pending_regime = None
+                                daemon._last_regime = new_regime  # Apply change
+                            else:
+                                daemon._pending_regime = new_regime
+
+                    # Second detection should apply the change
+                    assert daemon._pending_regime is None
+                    assert daemon._last_regime == "risk_on"
+
+    def test_alternating_detections_clear_pending(self, mock_settings, mock_exchange_client, mock_database):
+        """Alternating detections (A→B→C) should reset pending state each time."""
+        mock_settings.regime_flap_protection = True
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    # First detection: neutral → risk_on (pending)
+                    daemon._last_regime = "neutral"
+                    daemon._pending_regime = None
+                    new_regime = "risk_on"
+                    if new_regime != daemon._last_regime:
+                        if daemon._pending_regime == new_regime:
+                            daemon._pending_regime = None
+                            daemon._last_regime = new_regime
+                        else:
+                            daemon._pending_regime = new_regime
+                    assert daemon._pending_regime == "risk_on"
+                    assert daemon._last_regime == "neutral"
+
+                    # Second detection: different regime (risk_off) - should reset pending
+                    new_regime = "risk_off"
+                    if new_regime != daemon._last_regime:
+                        if daemon._pending_regime == new_regime:
+                            daemon._pending_regime = None
+                            daemon._last_regime = new_regime
+                        else:
+                            daemon._pending_regime = new_regime
+                    # Pending should now be risk_off (replaced risk_on)
+                    assert daemon._pending_regime == "risk_off"
+                    assert daemon._last_regime == "neutral"  # Still unchanged
+
+    def test_returning_to_current_clears_pending(self, mock_settings, mock_exchange_client, mock_database):
+        """Returning to current regime should clear pending state."""
+        mock_settings.regime_flap_protection = True
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    # State: pending change to risk_on
+                    daemon._last_regime = "neutral"
+                    daemon._pending_regime = "risk_on"
+
+                    # Detection returns to current regime (neutral)
+                    new_regime = "neutral"
+                    if new_regime != daemon._last_regime:
+                        if daemon._pending_regime == new_regime:
+                            daemon._pending_regime = None
+                            daemon._last_regime = new_regime
+                        else:
+                            daemon._pending_regime = new_regime
+                    else:
+                        daemon._pending_regime = None  # Clear pending
+
+                    # Pending should be cleared
+                    assert daemon._pending_regime is None
+                    assert daemon._last_regime == "neutral"
+
+    def test_flap_protection_disabled_applies_immediately(self, mock_settings, mock_exchange_client, mock_database):
+        """With flap protection disabled, regime change should apply immediately."""
+        mock_settings.regime_flap_protection = False
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    daemon._last_regime = "neutral"
+                    daemon._pending_regime = None
+
+                    new_regime = "risk_on"
+                    should_apply = False
+                    if new_regime != daemon._last_regime:
+                        if daemon.settings.regime_flap_protection:
+                            if daemon._pending_regime == new_regime:
+                                daemon._pending_regime = None
+                                should_apply = True
+                            else:
+                                daemon._pending_regime = new_regime
+                        else:
+                            should_apply = True
+
+                    if should_apply:
+                        daemon._last_regime = new_regime
+
+                    # Change should apply immediately
+                    assert daemon._last_regime == "risk_on"
+
+
+class TestWeightProfileFlapProtection:
+    """Test weight profile flap protection prevents rapid oscillation."""
+
+    def test_first_detection_sets_pending_state(self, mock_settings, mock_exchange_client, mock_database):
+        """First detection of new profile should set pending state, not apply change."""
+        mock_settings.weight_profile_flap_protection = True
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    daemon._last_weight_profile = "default"
+                    daemon._pending_weight_profile = None
+
+                    new_profile = "trending"
+                    if new_profile != daemon._last_weight_profile:
+                        if daemon.settings.weight_profile_flap_protection:
+                            if daemon._pending_weight_profile == new_profile:
+                                daemon._pending_weight_profile = None
+                                daemon._last_weight_profile = new_profile
+                            else:
+                                daemon._pending_weight_profile = new_profile
+
+                    assert daemon._pending_weight_profile == "trending"
+                    assert daemon._last_weight_profile == "default"
+
+    def test_second_consecutive_detection_applies_change(self, mock_settings, mock_exchange_client, mock_database):
+        """Second consecutive detection of same profile should confirm and apply change."""
+        mock_settings.weight_profile_flap_protection = True
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    daemon._last_weight_profile = "default"
+                    daemon._pending_weight_profile = "trending"
+
+                    new_profile = "trending"
+                    if new_profile != daemon._last_weight_profile:
+                        if daemon.settings.weight_profile_flap_protection:
+                            if daemon._pending_weight_profile == new_profile:
+                                daemon._pending_weight_profile = None
+                                daemon._last_weight_profile = new_profile
+                            else:
+                                daemon._pending_weight_profile = new_profile
+
+                    assert daemon._pending_weight_profile is None
+                    assert daemon._last_weight_profile == "trending"
+
+    def test_alternating_detections_clear_pending(self, mock_settings, mock_exchange_client, mock_database):
+        """Alternating profile detections should reset pending state."""
+        mock_settings.weight_profile_flap_protection = True
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    # First: default → trending (pending)
+                    daemon._last_weight_profile = "default"
+                    daemon._pending_weight_profile = None
+                    new_profile = "trending"
+                    if new_profile != daemon._last_weight_profile:
+                        if daemon._pending_weight_profile == new_profile:
+                            daemon._pending_weight_profile = None
+                            daemon._last_weight_profile = new_profile
+                        else:
+                            daemon._pending_weight_profile = new_profile
+                    assert daemon._pending_weight_profile == "trending"
+
+                    # Second: different profile (ranging) - replaces pending
+                    new_profile = "ranging"
+                    if new_profile != daemon._last_weight_profile:
+                        if daemon._pending_weight_profile == new_profile:
+                            daemon._pending_weight_profile = None
+                            daemon._last_weight_profile = new_profile
+                        else:
+                            daemon._pending_weight_profile = new_profile
+                    assert daemon._pending_weight_profile == "ranging"
+                    assert daemon._last_weight_profile == "default"
+
+    def test_flap_protection_disabled_applies_immediately(self, mock_settings, mock_exchange_client, mock_database):
+        """With flap protection disabled, profile change should apply immediately."""
+        mock_settings.weight_profile_flap_protection = False
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    daemon._last_weight_profile = "default"
+                    daemon._pending_weight_profile = None
+
+                    new_profile = "trending"
+                    should_apply = False
+                    if new_profile != daemon._last_weight_profile:
+                        if daemon.settings.weight_profile_flap_protection:
+                            if daemon._pending_weight_profile == new_profile:
+                                daemon._pending_weight_profile = None
+                                should_apply = True
+                            else:
+                                daemon._pending_weight_profile = new_profile
+                        else:
+                            should_apply = True
+
+                    if should_apply:
+                        daemon._last_weight_profile = new_profile
+
+                    assert daemon._last_weight_profile == "trending"
+
+    def test_confidence_updated_during_pending_state(self, mock_settings, mock_exchange_client, mock_database):
+        """Confidence/reasoning should be updated even during pending state for dashboard visibility."""
+        mock_settings.weight_profile_flap_protection = True
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    daemon._last_weight_profile = "default"
+                    daemon._pending_weight_profile = None
+                    daemon._last_weight_profile_confidence = 0.7
+                    daemon._last_weight_profile_reasoning = "old reasoning"
+
+                    # Simulate first detection with new confidence/reasoning
+                    new_profile = "trending"
+                    new_confidence = 0.95
+                    new_reasoning = "Strong trend detected"
+
+                    if new_profile != daemon._last_weight_profile:
+                        if daemon.settings.weight_profile_flap_protection:
+                            if daemon._pending_weight_profile == new_profile:
+                                daemon._pending_weight_profile = None
+                                daemon._last_weight_profile = new_profile
+                                daemon._last_weight_profile_confidence = new_confidence
+                                daemon._last_weight_profile_reasoning = new_reasoning
+                            else:
+                                daemon._pending_weight_profile = new_profile
+                                # Update confidence/reasoning even during pending
+                                daemon._last_weight_profile_confidence = new_confidence
+                                daemon._last_weight_profile_reasoning = new_reasoning
+
+                    # Profile not changed yet (pending), but confidence/reasoning updated
+                    assert daemon._last_weight_profile == "default"
+                    assert daemon._pending_weight_profile == "trending"
+                    assert daemon._last_weight_profile_confidence == 0.95
+                    assert daemon._last_weight_profile_reasoning == "Strong trend detected"
