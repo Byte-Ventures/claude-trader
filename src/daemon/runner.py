@@ -80,6 +80,7 @@ class TradingDaemon:
         self._last_monthly_report: Optional[date] = None
         self._last_volatility: str = "normal"  # For adaptive interval
         self._last_regime: str = "neutral"  # For regime change notifications
+        self._pending_regime: Optional[str] = None  # Flap protection: pending regime change
         self._last_hourly_analysis: Optional[datetime] = None  # For hourly market analysis
         self._pending_post_volatility_analysis: bool = False  # Trigger analysis when volatility calms
         self._last_stop_check: Optional[datetime] = None  # For periodic stop protection checks
@@ -312,6 +313,7 @@ class TradingDaemon:
         self._last_weight_profile: str = "default"
         self._last_weight_profile_confidence: float = 0.0
         self._last_weight_profile_reasoning: str = ""
+        self._pending_weight_profile: Optional[str] = None  # Flap protection: pending profile change
         if settings.ai_weight_profile_enabled and settings.openrouter_api_key:
             self.weight_profile_selector = WeightProfileSelector(
                 api_key=settings.openrouter_api_key.get_secret_value(),
@@ -1234,8 +1236,39 @@ class TradingDaemon:
             signal_action=signal_result.action,
         )
 
-        # Notify on regime change
+        # Handle regime change with optional flap protection
+        should_apply_regime_change = False
+
         if regime.regime_name != self._last_regime:
+            # Flap protection: require 2 consecutive detections before changing
+            if self.settings.regime_flap_protection:
+                if self._pending_regime == regime.regime_name:
+                    # Second consecutive detection - confirm change
+                    logger.debug(
+                        "regime_change_confirmed",
+                        pending=self._pending_regime,
+                        new=regime.regime_name,
+                    )
+                    self._pending_regime = None
+                    should_apply_regime_change = True
+                else:
+                    # First detection - mark as pending, don't change yet
+                    logger.debug(
+                        "regime_change_pending",
+                        current=self._last_regime,
+                        pending=regime.regime_name,
+                    )
+                    self._pending_regime = regime.regime_name
+                    # Don't apply change yet
+            else:
+                # No flap protection - immediate change
+                should_apply_regime_change = True
+        else:
+            # Same regime as before - clear any pending change
+            self._pending_regime = None
+
+        # Apply regime change if confirmed
+        if should_apply_regime_change:
             logger.info(
                 "regime_changed",
                 old_regime=self._last_regime,
@@ -1309,19 +1342,49 @@ class TradingDaemon:
                 )
 
                 if selection:
-                    # Update weights in signal scorer for NEXT iteration
-                    # NOTE: Weight updates happen AFTER signal calculation in the current iteration.
-                    # This means new weights take effect on the next candle, not the current one.
-                    # This 1-candle lag is acceptable for a trading system since weight profiles
-                    # are meant to adapt gradually to market conditions, not react instantly.
-                    self.signal_scorer.update_weights(selection.weights)
+                    # Handle weight profile change with optional flap protection
+                    should_apply_profile_change = False
 
-                    # Always update confidence/reasoning for dashboard display
-                    self._last_weight_profile_confidence = selection.confidence
-                    self._last_weight_profile_reasoning = selection.reasoning
-
-                    # Log and record profile change (only on actual change)
                     if selection.profile_name != self._last_weight_profile:
+                        # Flap protection: require 2 consecutive detections before changing
+                        if self.settings.weight_profile_flap_protection:
+                            if self._pending_weight_profile == selection.profile_name:
+                                # Second consecutive detection - confirm change
+                                logger.debug(
+                                    "weight_profile_change_confirmed",
+                                    pending=self._pending_weight_profile,
+                                    new=selection.profile_name,
+                                )
+                                self._pending_weight_profile = None
+                                should_apply_profile_change = True
+                            else:
+                                # First detection - mark as pending, don't change yet
+                                logger.debug(
+                                    "weight_profile_change_pending",
+                                    current=self._last_weight_profile,
+                                    pending=selection.profile_name,
+                                )
+                                self._pending_weight_profile = selection.profile_name
+                                # Don't apply weights yet - keep using current profile
+                                # But still update confidence/reasoning for dashboard visibility
+                                self._last_weight_profile_confidence = selection.confidence
+                                self._last_weight_profile_reasoning = selection.reasoning
+                        else:
+                            # No flap protection - immediate change
+                            should_apply_profile_change = True
+                    else:
+                        # Same profile as before - clear any pending change
+                        self._pending_weight_profile = None
+
+                    # Apply profile change if confirmed (or no flap protection)
+                    if should_apply_profile_change:
+                        # Update weights in signal scorer for NEXT iteration
+                        self.signal_scorer.update_weights(selection.weights)
+
+                        # Update confidence/reasoning for dashboard display
+                        self._last_weight_profile_confidence = selection.confidence
+                        self._last_weight_profile_reasoning = selection.reasoning
+
                         logger.info(
                             "weight_profile_changed",
                             old=self._last_weight_profile,
@@ -1346,8 +1409,12 @@ class TradingDaemon:
                             reasoning=selection.reasoning,
                         )
 
-                        # Update stored profile name (confidence/reasoning updated above)
+                        # Update stored profile name
                         self._last_weight_profile = selection.profile_name
+                    elif selection.profile_name == self._last_weight_profile:
+                        # Same profile - still update confidence/reasoning for dashboard
+                        self._last_weight_profile_confidence = selection.confidence
+                        self._last_weight_profile_reasoning = selection.reasoning
 
             except Exception as e:
                 logger.warning("weight_profile_update_failed", error=str(e))

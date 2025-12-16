@@ -233,10 +233,10 @@ class Settings(BaseSettings):
         description="Stop loss distance as ATR multiple"
     )
     min_stop_loss_percent: float = Field(
-        default=1.5,
+        default=2.5,
         ge=0.1,
         le=10.0,
-        description="Minimum stop loss distance as percentage below entry (safety floor for short timeframes)"
+        description="Minimum stop loss distance as percentage below entry (prevents whipsaw exits during normal market volatility)"
     )
     take_profit_atr_multiplier: float = Field(
         default=2.0,
@@ -462,6 +462,10 @@ class Settings(BaseSettings):
         default="openai/gpt-5.2",
         description="OpenRouter model for weight profile selection (fast/cheap preferred)"
     )
+    weight_profile_flap_protection: bool = Field(
+        default=True,
+        description="Require 2 consecutive profile detections before changing (prevents flapping)"
+    )
 
     # Market Regime Adaptation
     regime_adaptation_enabled: bool = Field(
@@ -485,6 +489,10 @@ class Settings(BaseSettings):
         ge=0.0,
         le=2.0,
         description="Regime adjustment intensity (0=off, 1=normal, 2=aggressive)"
+    )
+    regime_flap_protection: bool = Field(
+        default=True,
+        description="Require 2 consecutive regime detections before changing (prevents flapping)"
     )
 
     # Multi-Timeframe Confirmation (MTF)
