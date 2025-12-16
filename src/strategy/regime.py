@@ -20,6 +20,28 @@ from src.ai.sentiment import FearGreedResult, fetch_fear_greed_index
 logger = structlog.get_logger(__name__)
 
 
+def classify_sentiment_category(sentiment_value: int) -> str:
+    """
+    Classify Fear & Greed value into category.
+
+    Args:
+        sentiment_value: Fear & Greed Index value (0-100)
+
+    Returns:
+        Sentiment category: "extreme_fear", "fear", "neutral", "greed", "extreme_greed"
+    """
+    if sentiment_value < 25:
+        return "extreme_fear"
+    elif sentiment_value < 45:
+        return "fear"
+    elif sentiment_value <= 55:
+        return "neutral"
+    elif sentiment_value <= 75:
+        return "greed"
+    else:
+        return "extreme_greed"
+
+
 @dataclass
 class RegimeAdjustments:
     """Adjustments to apply based on current market regime."""
@@ -143,16 +165,7 @@ class MarketRegime:
 
     def _classify_sentiment(self, value: int) -> str:
         """Classify Fear & Greed value into category."""
-        if value < 25:
-            return "extreme_fear"
-        elif value < 45:
-            return "fear"
-        elif value <= 55:
-            return "neutral"
-        elif value <= 75:
-            return "greed"
-        else:
-            return "extreme_greed"
+        return classify_sentiment_category(value)
 
     def calculate(
         self,

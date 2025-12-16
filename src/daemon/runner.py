@@ -42,7 +42,7 @@ from src.strategy.weight_profile_selector import (
     WEIGHT_PROFILES,
 )
 from src.strategy.position_sizer import PositionSizer, PositionSizeConfig
-from src.strategy.regime import MarketRegime, RegimeConfig, RegimeAdjustments, get_cached_sentiment
+from src.strategy.regime import MarketRegime, RegimeConfig, RegimeAdjustments, get_cached_sentiment, classify_sentiment_category
 from src.indicators.ema import get_ema_trend_from_values
 
 logger = structlog.get_logger(__name__)
@@ -1175,17 +1175,7 @@ class TradingDaemon:
             try:
                 sentiment = self._run_async_with_timeout(get_cached_sentiment(), timeout=30)
                 if sentiment and sentiment.value is not None:
-                    # Classify sentiment (same logic as MarketRegime._classify_sentiment)
-                    if sentiment.value < 25:
-                        sentiment_category = "extreme_fear"
-                    elif sentiment.value < 45:
-                        sentiment_category = "fear"
-                    elif sentiment.value <= 55:
-                        sentiment_category = "neutral"
-                    elif sentiment.value <= 75:
-                        sentiment_category = "greed"
-                    else:
-                        sentiment_category = "extreme_greed"
+                    sentiment_category = classify_sentiment_category(sentiment.value)
             except Exception as e:
                 logger.debug("sentiment_fetch_skipped", error=str(e))
 

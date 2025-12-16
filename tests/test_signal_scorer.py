@@ -1761,6 +1761,105 @@ class TestHTFBiasModifier:
 
         assert result.score >= -100
 
+    def test_extreme_fear_full_penalty_bearish_daily_buy_signal(self, mtf_scorer, bullish_signal_df):
+        """Test full MTF penalty during extreme fear with bearish daily and neutral HTF."""
+        # Get baseline score (no HTF bias)
+        result_baseline = mtf_scorer.calculate_score(bullish_signal_df)
+
+        # Get score with disagreeing daily/4H (htf_bias=None/"neutral")
+        # Daily is bearish, 4H is bullish → combined HTF bias is neutral
+        # During extreme_fear, should apply FULL penalty, not half
+        result_with_extreme_fear = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias=None,  # Daily and 4H disagree
+            htf_daily="bearish",
+            htf_4h="bullish",
+            sentiment_category="extreme_fear",
+        )
+
+        # Only applies if signal is positive (bullish)
+        if result_baseline.score > 0:
+            # During extreme fear, full counter-penalty should be applied
+            assert result_with_extreme_fear.breakdown.get("htf_bias") == -mtf_scorer.mtf_counter_penalty
+            # Verify it's -20, not -10 (half penalty)
+            assert result_with_extreme_fear.breakdown.get("htf_bias") == -20
+
+    def test_normal_conditions_half_penalty_bearish_daily(self, mtf_scorer, bullish_signal_df):
+        """Test half penalty in non-extreme fear conditions when daily/4H disagree."""
+        result_baseline = mtf_scorer.calculate_score(bullish_signal_df)
+
+        # Same setup as above but with "fear" (not extreme_fear)
+        result_with_fear = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias=None,  # Daily and 4H disagree
+            htf_daily="bearish",
+            htf_4h="bullish",
+            sentiment_category="fear",  # Not extreme_fear
+        )
+
+        # Only applies if signal is positive (bullish)
+        if result_baseline.score > 0:
+            # Should apply half penalty (10), not full (20)
+            expected_half = round(mtf_scorer.mtf_counter_penalty / 2)
+            assert result_with_fear.breakdown.get("htf_bias") == -expected_half
+            assert result_with_fear.breakdown.get("htf_bias") == -10
+
+    def test_extreme_fear_no_penalty_when_htf_agrees(self, mtf_scorer, bullish_signal_df):
+        """Test that extreme fear logic only applies when daily/4H disagree."""
+        result_baseline = mtf_scorer.calculate_score(bullish_signal_df)
+
+        # Both daily and 4H bearish → htf_bias="bearish" (not neutral)
+        # Should use normal full penalty logic, not extreme fear branch
+        result_with_htf_bearish = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="bearish",  # Daily and 4H agree
+            htf_daily="bearish",
+            htf_4h="bearish",
+            sentiment_category="extreme_fear",
+        )
+
+        # Only applies if signal is positive (bullish)
+        if result_baseline.score > 0:
+            # Should get normal full counter-penalty (-20)
+            assert result_with_htf_bearish.breakdown.get("htf_bias") == -20
+
+    def test_extreme_fear_none_sentiment_uses_half_penalty(self, mtf_scorer, bullish_signal_df):
+        """Test that None sentiment_category uses half penalty (existing behavior)."""
+        result_baseline = mtf_scorer.calculate_score(bullish_signal_df)
+
+        result_with_none_sentiment = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias=None,
+            htf_daily="bearish",
+            htf_4h="bullish",
+            sentiment_category=None,  # No sentiment data
+        )
+
+        # Only applies if signal is positive (bullish)
+        if result_baseline.score > 0:
+            # Should apply half penalty when sentiment is None
+            expected_half = round(mtf_scorer.mtf_counter_penalty / 2)
+            assert result_with_none_sentiment.breakdown.get("htf_bias") == -expected_half
+
+    def test_extreme_fear_only_affects_buy_not_sell(self, mtf_scorer, bearish_signal_df):
+        """Test extreme fear logic only affects buy signals, not sell signals."""
+        result_baseline = mtf_scorer.calculate_score(bearish_signal_df)
+
+        # Sell signal with bullish daily (counter-trend)
+        result_with_extreme_fear = mtf_scorer.calculate_score(
+            bearish_signal_df,
+            htf_bias=None,  # Daily and 4H disagree
+            htf_daily="bullish",
+            htf_4h="bearish",
+            sentiment_category="extreme_fear",
+        )
+
+        # Only applies if signal is negative (bearish/sell)
+        if result_baseline.score < 0:
+            # Sell signals should still get half penalty (no extreme fear logic for sells)
+            expected_half = round(mtf_scorer.mtf_counter_penalty / 2)
+            assert result_with_extreme_fear.breakdown.get("htf_bias") == expected_half
+
 
 class TestHTFEdgeCases:
     """Edge case tests for HTF bias at boundary score values.
