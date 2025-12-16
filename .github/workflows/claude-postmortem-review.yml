@@ -221,13 +221,24 @@ jobs:
               });
 
               console.log("Created issue #" + issue.data.number + ": " + issue.data.html_url);
+
+              // Trigger auto-fix workflow via repository_dispatch
+              // (GITHUB_TOKEN events don't trigger workflows, so we use dispatch)
+              await github.rest.repos.createDispatchEvent({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                event_type: 'auto-fix-issue',
+                client_payload: { issue_number: issue.data.number }
+              });
+              console.log("Dispatched auto-fix for issue #" + issue.data.number);
+
               created++;
 
               // Small delay to avoid rate limiting
-              await new Promise(r => setTimeout(r, 1000));
+              await new Promise(r => setTimeout(r, 2000));
             }
 
-            console.log("Summary: Created " + created + " issues, skipped " + skipped + " duplicates");
+            console.log("Summary: Created " + created + " issues, dispatched " + created + " auto-fix workflows, skipped " + skipped + " duplicates");
 
       - name: Log result
         if: always()

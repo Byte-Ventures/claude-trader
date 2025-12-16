@@ -2,18 +2,20 @@ name: Claude Auto-Fix Issues
 
 on:
   issues:
-    types: [labeled, opened]
+    types: [labeled]
+  repository_dispatch:
+    types: [auto-fix-issue]
 
 jobs:
   auto-fix:
     if: |
       (github.event.action == 'labeled' && github.event.label.name == 'auto-fix') ||
-      (github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'auto-fix'))
+      github.event.action == 'auto-fix-issue'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     concurrency:
-      group: fix-issue-${{ github.event.issue.number }}
+      group: fix-issue-${{ github.event.issue.number || github.event.client_payload.issue_number }}
       cancel-in-progress: false
 
     permissions:
@@ -42,6 +44,30 @@ jobs:
           ref: develop
           fetch-depth: 0
 
+      - name: Get issue details
+        id: issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Get issue number from event or dispatch payload
+            const issueNumber = context.payload.issue?.number || context.payload.client_payload?.issue_number;
+            if (!issueNumber) {
+              core.setFailed('No issue number found in event');
+              return;
+            }
+
+            // Fetch issue details
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber
+            });
+
+            core.setOutput('number', issue.number);
+            core.setOutput('title', issue.title);
+            core.setOutput('body', issue.body || '');
+            console.log('Processing issue #' + issue.number + ': ' + issue.title);
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -59,19 +85,23 @@ jobs:
       - name: Create fix branch
         id: branch
         run: |
-          BRANCH="fix/issue-${{ github.event.issue.number }}"
+          BRANCH="fix/issue-${{ steps.issue.outputs.number }}"
           git checkout -B "$BRANCH"
           echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
 
       - name: Run Claude Code
         uses: anthropics/claude-code-action@v1
+        env:
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+          ISSUE_TITLE: ${{ steps.issue.outputs.title }}
+          ISSUE_BODY: ${{ steps.issue.outputs.body }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
-            Fix GitHub Issue #${{ github.event.issue.number }}
+            Fix GitHub Issue #${{ steps.issue.outputs.number }}
 
-            **Title:** ${{ github.event.issue.title }}
-            **Body:** ${{ github.event.issue.body }}
+            **Title:** ${{ steps.issue.outputs.title }}
+            **Body:** ${{ steps.issue.outputs.body }}
 
             ## Context
             This is claude-trader, a cryptocurrency trading bot. Read CLAUDE.md first for project guidelines.
@@ -82,9 +112,9 @@ jobs:
             3. Implement the fix following CLAUDE.md guidelines
             4. Do NOT modify src/version.py (version bumps happen at merge time)
             5. Run tests: python3 -m pytest tests/ -v
-            6. Commit with message referencing issue #${{ github.event.issue.number }}
+            6. Commit with message referencing issue #${{ steps.issue.outputs.number }}
             7. Push to origin/${{ steps.branch.outputs.name }}
-            8. Create PR to develop with "Closes #${{ github.event.issue.number }}" in body
+            8. Create PR to develop with "Closes #${{ steps.issue.outputs.number }}" in body
 
             Do NOT auto-merge - PRs require human approval.
           claude_args: >-
@@ -94,6 +124,8 @@ jobs:
       - name: Comment on issue
         if: always()
         uses: actions/github-script@v7
+        env:
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
         with:
           script: |
             const success = '${{ job.status }}' === 'success';
@@ -104,16 +136,18 @@ jobs:
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: ${{ github.event.issue.number }},
+              issue_number: parseInt(process.env.ISSUE_NUMBER),
               body: body
             });
 
       - name: Update labels
         if: success()
         uses: actions/github-script@v7
+        env:
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
         with:
           script: |
-            const issue = ${{ github.event.issue.number }};
+            const issue = parseInt(process.env.ISSUE_NUMBER);
             await github.rest.issues.removeLabel({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -130,4 +164,4 @@ jobs:
       - name: Cleanup branch on failure
         if: failure()
         run: |
-          git push origin --delete "fix/issue-${{ github.event.issue.number }}" 2>/dev/null || true
+          git push origin --delete "fix/issue-${{ steps.issue.outputs.number }}" 2>/dev/null || true
