@@ -49,22 +49,25 @@ jobs:
                - Reasonable (makes sense given the analysis)
                - Implementable (can be done with code/config changes)
 
-            3. **For valid fixes, output JSON:**
+            3. **For valid fixes, output JSON with SEPARATE issue for each fix:**
             ```json
             {
               "has_valid_fixes": true,
               "fixes": [
                 {
                   "type": "config|code|threshold",
-                  "description": "Brief description",
-                  "details": "Specific implementation details",
-                  "risk": "low|medium|high"
+                  "priority": "high|medium|low",
+                  "risk": "low|medium|high",
+                  "issue_title": "Short, specific title for THIS fix only",
+                  "issue_body": "Detailed implementation steps for THIS fix only"
                 }
-              ],
-              "issue_title": "Suggested issue title",
-              "issue_body": "Detailed issue body with implementation steps"
+              ]
             }
             ```
+
+            **IMPORTANT**: Each fix gets its own issue. Keep each issue_body focused on ONE change only.
+            - issue_title: Brief, actionable (e.g., "Increase MIN_STOP_LOSS_PERCENT to 2.5%")
+            - issue_body: Implementation details for that single fix
 
             4. **If no valid fixes, output:**
             ```json
@@ -84,7 +87,7 @@ jobs:
           claude_args: >-
             --max-turns 10
             --allowed-tools "Read,Glob,Grep"
-            --json-schema '{"type":"object","properties":{"has_valid_fixes":{"type":"boolean"},"fixes":{"type":"array"},"issue_title":{"type":"string"},"issue_body":{"type":"string"},"reason":{"type":"string"}},"required":["has_valid_fixes"]}'
+            --json-schema '{"type":"object","properties":{"has_valid_fixes":{"type":"boolean"},"fixes":{"type":"array","items":{"type":"object","properties":{"type":{"type":"string"},"priority":{"type":"string"},"risk":{"type":"string"},"issue_title":{"type":"string"},"issue_body":{"type":"string"}}}},"reason":{"type":"string"}},"required":["has_valid_fixes"]}'
 
       - name: Parse analysis result
         id: parse
@@ -133,28 +136,28 @@ jobs:
 
               // Validate required fields for valid fixes
               if (result.has_valid_fixes) {
-                if (!result.issue_title || typeof result.issue_title !== 'string') {
-                  core.setOutput('has_fixes', 'false');
-                  core.setOutput('reason', 'Invalid output: missing issue_title');
-                  return;
-                }
-                if (!result.issue_body || typeof result.issue_body !== 'string') {
-                  core.setOutput('has_fixes', 'false');
-                  core.setOutput('reason', 'Invalid output: missing issue_body');
-                  return;
-                }
                 if (!Array.isArray(result.fixes) || result.fixes.length === 0) {
                   core.setOutput('has_fixes', 'false');
                   core.setOutput('reason', 'Invalid output: fixes must be non-empty array');
                   return;
                 }
-                // Truncate to prevent abuse
-                const title = result.issue_title.substring(0, 200);
-                const body = result.issue_body.substring(0, 10000);
+                // Validate each fix has required fields
+                for (const fix of result.fixes) {
+                  if (!fix.issue_title || !fix.issue_body) {
+                    core.setOutput('has_fixes', 'false');
+                    core.setOutput('reason', 'Invalid output: each fix must have issue_title and issue_body');
+                    return;
+                  }
+                }
+                // Truncate each fix to prevent abuse
+                const fixes = result.fixes.map(fix => ({
+                  ...fix,
+                  issue_title: fix.issue_title.substring(0, 200),
+                  issue_body: fix.issue_body.substring(0, 8000)
+                }));
                 core.setOutput('has_fixes', 'true');
-                core.setOutput('issue_title', title);
-                core.setOutput('issue_body', body);
-                core.setOutput('fixes', JSON.stringify(result.fixes));
+                core.setOutput('fixes', JSON.stringify(fixes));
+                core.setOutput('fix_count', fixes.length.toString());
               } else {
                 core.setOutput('has_fixes', 'false');
                 core.setOutput('reason', result.reason || 'No valid fixes found');
@@ -164,28 +167,68 @@ jobs:
               core.setOutput('reason', `JSON parse error: ${e.message}`);
             }
 
-      - name: Create issue with auto-fix label
+      - name: Create issues for each fix
         if: steps.parse.outputs.has_fixes == 'true'
         uses: actions/github-script@v7
         env:
-          ISSUE_TITLE: ${{ steps.parse.outputs.issue_title }}
-          ISSUE_BODY: ${{ steps.parse.outputs.issue_body }}
+          FIXES_JSON: ${{ steps.parse.outputs.fixes }}
           DISCUSSION_URL: ${{ github.event.client_payload.discussion_url }}
         with:
           script: |
-            const header = "## Auto-generated from Post-Mortem Analysis\n\n**Source Discussion:** " + process.env.DISCUSSION_URL + "\n\n---\n\n";
-            const footer = "\n\n---\n\n*This issue was automatically created from post-mortem analysis.*\n*The `auto-fix` label will trigger automatic fix attempt.*";
-            const body = header + process.env.ISSUE_BODY + footer;
+            const fixes = JSON.parse(process.env.FIXES_JSON);
+            const discussionUrl = process.env.DISCUSSION_URL;
 
-            const issue = await github.rest.issues.create({
+            // Get existing open issues to check for duplicates
+            const { data: existingIssues } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: process.env.ISSUE_TITLE,
-              body: body,
-              labels: ['auto-fix', 'post-mortem']
+              state: 'open',
+              labels: 'post-mortem',
+              per_page: 100
             });
 
-            console.log("Created issue #" + issue.data.number + ": " + issue.data.html_url);
+            const existingTitles = existingIssues.map(i => i.title.toLowerCase());
+
+            let created = 0;
+            let skipped = 0;
+
+            for (const fix of fixes) {
+              // Check for duplicate (case-insensitive title match)
+              const isDuplicate = existingTitles.some(t =>
+                t.includes(fix.issue_title.toLowerCase()) ||
+                fix.issue_title.toLowerCase().includes(t)
+              );
+
+              if (isDuplicate) {
+                console.log("Skipping duplicate: " + fix.issue_title);
+                skipped++;
+                continue;
+              }
+
+              const header = "## Auto-generated from Post-Mortem Analysis\n\n" +
+                "**Source Discussion:** " + discussionUrl + "\n" +
+                "**Priority:** " + (fix.priority || "medium") + "\n" +
+                "**Risk:** " + (fix.risk || "low") + "\n\n---\n\n";
+              const footer = "\n\n---\n\n*This issue was automatically created from post-mortem analysis.*\n" +
+                "*The `auto-fix` label will trigger automatic fix attempt.*";
+              const body = header + fix.issue_body + footer;
+
+              const issue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: fix.issue_title,
+                body: body,
+                labels: ['auto-fix', 'post-mortem']
+              });
+
+              console.log("Created issue #" + issue.data.number + ": " + issue.data.html_url);
+              created++;
+
+              // Small delay to avoid rate limiting
+              await new Promise(r => setTimeout(r, 1000));
+            }
+
+            console.log("Summary: Created " + created + " issues, skipped " + skipped + " duplicates");
 
       - name: Log result
         if: always()
