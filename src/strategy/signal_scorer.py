@@ -413,6 +413,7 @@ class SignalScorer:
         htf_bias: Optional[str] = None,
         htf_daily: Optional[str] = None,
         htf_4h: Optional[str] = None,
+        sentiment_category: Optional[str] = None,
     ) -> SignalResult:
         """
         Calculate composite signal score from OHLCV data.
@@ -423,6 +424,7 @@ class SignalScorer:
             htf_bias: Combined HTF bias ("bullish", "bearish", "neutral", or None)
             htf_daily: Daily timeframe trend (for AI context)
             htf_4h: 4-hour timeframe trend (for AI context)
+            sentiment_category: Market sentiment category ("extreme_fear", "fear", "neutral", "greed", "extreme_greed")
 
         Returns:
             SignalResult with score, action, and breakdown
@@ -706,11 +708,28 @@ class SignalScorer:
             #
             # Here: htf_bias is "neutral" (daily + 4H disagree), but daily has direction.
             # Apply half penalty when daily trend opposes signal - daily is more reliable.
+            #
+            # EXCEPTION: During extreme_fear conditions, weight daily trend more heavily.
+            # Apply FULL penalty if daily is bearish and signal is buy during extreme fear.
+            # This prevents 4H neutral signals from neutralizing bearish daily trends.
             # Use round() to handle odd mtf_counter_penalty values correctly.
             half_penalty = round(self.mtf_counter_penalty / 2)
             if total_score > 0 and htf_daily == "bearish":
-                # Buying into bearish daily trend - apply half penalty
-                htf_adjustment = -half_penalty
+                # Buying into bearish daily trend
+                if sentiment_category == "extreme_fear":
+                    # Extreme fear: apply FULL penalty (don't let 4H neutralize daily bearish trend)
+                    htf_adjustment = -self.mtf_counter_penalty
+                    logger.info(
+                        "extreme_fear_daily_penalty",
+                        htf_daily=htf_daily,
+                        htf_4h=htf_4h,
+                        sentiment=sentiment_category,
+                        penalty=htf_adjustment,
+                        reason="full_penalty_on_bearish_daily_during_extreme_fear",
+                    )
+                else:
+                    # Normal conditions: apply half penalty
+                    htf_adjustment = -half_penalty
             elif total_score < 0 and htf_daily == "bullish":
                 # Selling into bullish daily trend - weaken sell signal
                 htf_adjustment = half_penalty
