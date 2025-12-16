@@ -2,11 +2,13 @@ name: Claude Auto-Fix Issues
 
 on:
   issues:
-    types: [labeled]
+    types: [labeled, opened]
 
 jobs:
   auto-fix:
-    if: github.event.label.name == 'auto-fix'
+    if: |
+      (github.event.action == 'labeled' && github.event.label.name == 'auto-fix') ||
+      (github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'auto-fix'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
