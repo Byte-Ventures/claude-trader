@@ -1779,10 +1779,9 @@ class TestHTFBiasModifier:
 
         # Only applies if signal is positive (bullish)
         if result_baseline.score > 0:
-            # During extreme fear, full counter-penalty should be applied
+            # During extreme fear, full counter-penalty should be applied (-20, not -10 half penalty)
             assert result_with_extreme_fear.breakdown.get("htf_bias") == -mtf_scorer.mtf_counter_penalty
-            # Verify it's -20, not -10 (half penalty)
-            assert result_with_extreme_fear.breakdown.get("htf_bias") == -20
+            assert mtf_scorer.mtf_counter_penalty == 20  # Verify penalty is configured as expected
 
     def test_normal_conditions_half_penalty_bearish_daily(self, mtf_scorer, bullish_signal_df):
         """Test half penalty in non-extreme fear conditions when daily/4H disagree."""
