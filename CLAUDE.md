@@ -203,21 +203,11 @@ gh pr view {PR_NUMBER} --comments
 
 ### Review Process
 
-1. **After creating a PR**, poll for review comments for at least 10 minutes:
-   ```bash
-   # Poll every 30 seconds for 10 minutes
-   for i in {1..20}; do
-     echo "Checking for reviews (attempt $i/20)..."
-     gh api repos/Byte-Ventures/claude-trader/issues/{PR_NUMBER}/comments
-     sleep 30
-   done
-   ```
-2. **Before merging any PR**, fetch and read ALL review comments
-3. **Critical issues** (🔴) - MUST fix before merge
-4. **High priority issues** (🟡) - MUST fix before merge (financial system)
-5. **Low priority issues** (🟢) - Fix if straightforward, or create GitHub issue
-6. **Security concerns** require immediate attention
-7. After fixes, push new commit and re-request review if needed
+1. **Critical issues** (🔴) - MUST fix before merge
+2. **High priority issues** (🟡) - MUST fix before merge (financial system)
+3. **Low priority issues** (🟢) - Fix if straightforward, or create GitHub issue
+4. **Security concerns** require immediate attention
+5. After fixes, push new commit and re-request review if needed
 
 ### Bot Reviews
 
