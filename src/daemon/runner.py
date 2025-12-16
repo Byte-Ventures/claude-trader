@@ -2197,6 +2197,11 @@ class TradingDaemon:
                 is_paper=is_paper,
             )
 
+            # Get entry price before calculating realized PnL
+            # (realized PnL calculation updates the position, reducing quantity)
+            current_position = self.db.get_current_position(self.settings.trading_pair, is_paper=is_paper)
+            entry_price = current_position.get_average_cost() if current_position else None
+
             # Calculate realized P&L based on average cost basis
             realized_pnl = self._calculate_realized_pnl(result.size, filled_price, result.fee, is_paper)
 
@@ -2240,6 +2245,7 @@ class TradingDaemon:
                 is_paper=is_paper,
                 signal_score=signal_score,
                 realized_pnl=realized_pnl,
+                entry_price=entry_price,
             )
 
             logger.info(
