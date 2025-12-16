@@ -89,16 +89,19 @@ jobs:
       - name: Parse analysis result
         id: parse
         uses: actions/github-script@v7
+        env:
+          STRUCTURED_OUTPUT: ${{ steps.analyze.outputs.structured_output }}
+          EXECUTION_FILE: ${{ steps.analyze.outputs.execution_file }}
         with:
           script: |
             const fs = require('fs');
 
             // Try structured_output first, fall back to execution_file
-            let output = `${{ steps.analyze.outputs.structured_output }}`;
+            let output = process.env.STRUCTURED_OUTPUT || '';
 
-            if (!output || output.trim() === '') {
+            if (!output.trim()) {
               // Read from execution file
-              const execFile = `${{ steps.analyze.outputs.execution_file }}`;
+              const execFile = process.env.EXECUTION_FILE || '';
               if (execFile && fs.existsSync(execFile)) {
                 const execData = JSON.parse(fs.readFileSync(execFile, 'utf8'));
                 // Find the last assistant message with text content
