@@ -1713,6 +1713,27 @@ class TradingDaemon:
 
         if effective_action == "buy":
             if can_buy:
+                # Check for dual-extreme conditions (extreme fear + extreme volatility)
+                if (
+                    self.settings.block_trades_extreme_conditions
+                    and regime.components.get("sentiment", {}).get("category") == "extreme_fear"
+                    and regime.components.get("volatility", {}).get("level") == "extreme"
+                ):
+                    logger.warning(
+                        "trade_blocked_extreme_conditions",
+                        reason="extreme_fear_and_extreme_volatility",
+                        sentiment=regime.components.get("sentiment", {}).get("value"),
+                        volatility=regime.components.get("volatility", {}).get("level"),
+                    )
+                    self.notifier.notify_trade_rejected(
+                        side="buy",
+                        reason="extreme_fear + extreme_volatility",
+                        price=current_price,
+                        signal_score=signal_result.score,
+                        is_paper=self.settings.is_paper_trading,
+                    )
+                    return
+
                 # Check trade cooldown
                 if self.trade_cooldown:
                     cooldown_ok, cooldown_reason = self.trade_cooldown.can_execute("buy", current_price)

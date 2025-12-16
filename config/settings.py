@@ -573,6 +573,12 @@ class Settings(BaseSettings):
         description="Create GitHub Discussion with analysis (requires gh CLI and Post-Mortems category)"
     )
 
+    # Dual-Extreme Conditions Protection
+    block_trades_extreme_conditions: bool = Field(
+        default=True,
+        description="Block new positions when both sentiment and volatility are extreme"
+    )
+
     @field_validator("ema_slow")
     @classmethod
     def validate_ema_slow(cls, v: int, info) -> int:

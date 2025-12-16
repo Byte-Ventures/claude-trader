@@ -116,6 +116,7 @@ def mock_settings():
     settings.kill_switch_enabled = True
     settings.loss_limiter_enabled = True
     settings.trade_cooldown_enabled = False
+    settings.block_trades_extreme_conditions = True
 
     # Adaptive interval
     settings.adaptive_interval_enabled = True
