@@ -84,8 +84,10 @@ jobs:
                       issue_number: issueNumber,
                       name: 'fix-in-progress'
                     });
+                    console.log(`Removed 'fix-in-progress' label from #${issueNumber}`);
                   } catch (e) {
-                    // Label might not exist, ignore
+                    // Label might not exist on this issue
+                    console.log(`Note: 'fix-in-progress' label not found on #${issueNumber}`);
                   }
                 } else {
                   console.log(`Issue #${issueNumber} is already closed`);
