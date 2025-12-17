@@ -1662,6 +1662,94 @@ def test_hard_stop_uses_atr_when_larger_than_min_percent(mock_settings):
                         f"Hard stop should use ATR ({expected_hard_stop}), got {actual_hard_stop}"
 
 
+def test_extreme_volatility_uses_wider_stop_multiplier(mock_settings):
+    """
+    Verify that during extreme volatility conditions, the wider stop multiplier
+    (stop_loss_atr_multiplier_extreme) is used instead of the standard multiplier.
+
+    This prevents being stopped out by normal price fluctuations during high volatility.
+
+    Example:
+    - Entry: $76,861
+    - ATR: $500
+    - Normal multiplier: 1.5 → stop distance = $750 → hard_stop = $76,111
+    - Extreme multiplier: 2.0 → stop distance = $1,000 → hard_stop = $75,861
+    """
+    mock_settings.trailing_stop_enabled = True
+    mock_settings.stop_loss_atr_multiplier = 1.5  # Normal volatility
+    mock_settings.stop_loss_atr_multiplier_extreme = 2.0  # Extreme volatility
+    mock_settings.min_stop_loss_percent = 0.1  # Low value so ATR-based calculation wins
+    mock_settings.trailing_stop_atr_multiplier = 1.0
+    mock_settings.breakeven_atr_multiplier = 0.5
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None
+    mock_database.get_last_regime.return_value = None
+    mock_database.get_active_trailing_stop.return_value = None
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                entry_price = Decimal("76861.00")
+                avg_cost = Decimal("77325.00")
+
+                candles = pd.DataFrame({
+                    'high': [78000.0] * 20,
+                    'low': [75000.0] * 20,
+                    'close': [76500.0] * 20,
+                })
+
+                with patch('src.indicators.atr.calculate_atr') as mock_atr:
+                    mock_atr_result = Mock()
+                    mock_atr_result.atr = pd.Series([500.0] * 20)
+                    mock_atr.return_value = mock_atr_result
+
+                    # Test with extreme volatility
+                    daemon._create_trailing_stop(
+                        entry_price=entry_price,
+                        candles=candles,
+                        is_paper=True,
+                        avg_cost=avg_cost,
+                        volatility="extreme",
+                    )
+
+                    call_kwargs = mock_database.create_trailing_stop.call_args[1]
+                    actual_hard_stop_extreme = call_kwargs['hard_stop']
+
+                    # Expected with extreme multiplier: 76861 - (500 * 2.0) = 75861
+                    expected_extreme = entry_price - (Decimal("500") * Decimal("2.0"))
+
+                    assert actual_hard_stop_extreme == expected_extreme, \
+                        f"Extreme volatility should use 2.0x multiplier: expected {expected_extreme}, got {actual_hard_stop_extreme}"
+
+                    # Reset mock for comparison
+                    mock_database.reset_mock()
+
+                    # Test with normal volatility for comparison
+                    daemon._create_trailing_stop(
+                        entry_price=entry_price,
+                        candles=candles,
+                        is_paper=True,
+                        avg_cost=avg_cost,
+                        volatility="normal",
+                    )
+
+                    call_kwargs_normal = mock_database.create_trailing_stop.call_args[1]
+                    actual_hard_stop_normal = call_kwargs_normal['hard_stop']
+
+                    # Expected with normal multiplier: 76861 - (500 * 1.5) = 76111
+                    expected_normal = entry_price - (Decimal("500") * Decimal("1.5"))
+
+                    assert actual_hard_stop_normal == expected_normal, \
+                        f"Normal volatility should use 1.5x multiplier: expected {expected_normal}, got {actual_hard_stop_normal}"
+
+                    # Verify extreme stop is lower (wider) than normal stop
+                    assert actual_hard_stop_extreme < actual_hard_stop_normal, \
+                        f"Extreme stop ({actual_hard_stop_extreme}) should be lower than normal stop ({actual_hard_stop_normal})"
+
+
 # ============================================================================
 # Multi-Timeframe (HTF) Method Tests
 # ============================================================================
