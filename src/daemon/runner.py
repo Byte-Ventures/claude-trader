@@ -1767,6 +1767,7 @@ class TradingDaemon:
                     candles, current_price, quote_balance, base_balance,
                     signal_result.score, safety_multiplier,
                     rsi_value=signal_result.indicators.rsi,
+                    volatility=signal_result.indicators.volatility or "normal",
                 )
             else:
                 logger.info(
@@ -1826,6 +1827,7 @@ class TradingDaemon:
         signal_score: int,
         safety_multiplier: float,
         rsi_value: Optional[float] = None,
+        volatility: str = "normal",
     ) -> None:
         """Execute a buy order."""
         # Calculate position size
@@ -1963,7 +1965,7 @@ class TradingDaemon:
             # CRITICAL: If stop creation fails, immediately close position (fail-safe)
             try:
                 new_avg_cost = self._update_position_after_buy(result.size, filled_price, result.fee, is_paper)
-                self._create_trailing_stop(filled_price, candles, is_paper, avg_cost=new_avg_cost)
+                self._create_trailing_stop(filled_price, candles, is_paper, avg_cost=new_avg_cost, volatility=volatility)
             except Exception as stop_error:
                 # FAIL-SAFE: Cannot protect position, must close immediately
                 logger.critical(
@@ -2725,6 +2727,7 @@ class TradingDaemon:
         is_paper: bool = False,
         *,  # Force keyword-only for avg_cost
         avg_cost: Decimal,
+        volatility: str = "normal",
     ) -> None:
         """Create or update trailing stop for a position.
 
@@ -2735,6 +2738,7 @@ class TradingDaemon:
             avg_cost: REQUIRED - Weighted average cost for hard stop calculation.
                      Must be passed from caller to avoid race conditions.
                      Do NOT query DB here - caller has the authoritative value.
+            volatility: Current volatility level (low/normal/high/extreme)
         """
         from src.indicators.atr import calculate_atr
 
@@ -2764,7 +2768,18 @@ class TradingDaemon:
             #
             # Use the LARGER of ATR-based distance or minimum percentage distance
             # This ensures stop is never too tight on low-volatility timeframes
-            atr_stop_distance = atr * Decimal(str(self.settings.stop_loss_atr_multiplier))
+            #
+            # During extreme volatility, use wider stop multiplier to avoid
+            # being stopped out by normal price fluctuations
+            stop_multiplier = self.settings.stop_loss_atr_multiplier
+            if volatility == "extreme":
+                stop_multiplier = self.settings.stop_loss_atr_multiplier_extreme
+                logger.info(
+                    "using_extreme_volatility_stop",
+                    volatility=volatility,
+                    stop_multiplier=stop_multiplier,
+                )
+            atr_stop_distance = atr * Decimal(str(stop_multiplier))
             min_pct_distance = entry_price * Decimal(str(self.settings.min_stop_loss_percent)) / Decimal("100")
             stop_distance = max(atr_stop_distance, min_pct_distance)
             hard_stop = entry_price - stop_distance
@@ -3065,6 +3080,7 @@ class TradingDaemon:
                 candles=candles,
                 is_paper=is_paper,
                 avg_cost=avg_cost,
+                volatility="normal",  # Emergency recovery - no indicator context available
             )
             logger.info("emergency_stop_created", avg_cost=str(avg_cost))
             self.notifier.send_alert("✅ Emergency stop protection created successfully.")
