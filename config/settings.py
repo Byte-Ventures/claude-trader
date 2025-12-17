@@ -729,6 +729,60 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def validate_ai_review_config(self) -> "Settings":
+        """Validate AI review configuration if enabled."""
+        if self.ai_review_enabled:
+            if not self.openrouter_api_key:
+                raise ValueError(
+                    "AI_REVIEW_ENABLED is true but OPENROUTER_API_KEY is not set. "
+                    "Either set OPENROUTER_API_KEY or disable AI_REVIEW_ENABLED."
+                )
+
+            # Test API key with minimal request
+            import httpx
+            try:
+                api_key = self.openrouter_api_key.get_secret_value()
+                response = httpx.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": "openai/gpt-3.5-turbo",
+                        "messages": [{"role": "user", "content": "test"}],
+                        "max_tokens": 1,
+                    },
+                    timeout=10.0,
+                )
+
+                if response.status_code == 401:
+                    raise ValueError(
+                        "OPENROUTER_API_KEY is invalid. Check your API key at https://openrouter.ai/keys"
+                    )
+                elif response.status_code == 403:
+                    raise ValueError(
+                        "OPENROUTER_API_KEY is valid but lacks required permissions. "
+                        "Check your API key settings at https://openrouter.ai/keys"
+                    )
+                elif response.status_code >= 400:
+                    raise ValueError(
+                        f"OpenRouter API test failed with status {response.status_code}. "
+                        f"Response: {response.text[:200]}"
+                    )
+
+            except httpx.TimeoutException:
+                raise ValueError(
+                    "OpenRouter API test timed out. Check your internet connection."
+                )
+            except httpx.RequestError as e:
+                raise ValueError(
+                    f"OpenRouter API test failed: {str(e)}. Check your internet connection."
+                )
+
+        return self
+
+    @model_validator(mode="after")
     def validate_stop_loss_config(self) -> "Settings":
         """
         Validate stop-loss and trailing stop configuration.
