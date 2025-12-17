@@ -93,6 +93,7 @@ def mock_settings():
     settings.stop_loss_atr_multiplier = 2.0
     settings.min_stop_loss_percent = 0.5
     settings.take_profit_atr_multiplier = 3.0
+    settings.enable_take_profit = True
     settings.stop_loss_pct = None
     settings.trailing_stop_enabled = False
     settings.use_limit_orders = True
@@ -977,6 +978,16 @@ def test_ai_failure_mode_safe_skips_trade(mock_settings, mock_exchange_client, m
                 # Reset mock to clear init calls
                 mock_exchange_client.market_buy.reset_mock()
 
+                # CRITICAL: Set base balance to 0 so position_percent is 0% (not 83%)
+                # This ensures can_buy=True and direction_is_tradeable=True
+                def get_balance_zero_btc(currency):
+                    return Balance(
+                        currency=currency,
+                        available=Decimal("10000") if currency == "USD" else Decimal("0"),
+                        hold=Decimal("0")
+                    )
+                mock_exchange_client.get_balance.side_effect = get_balance_zero_btc
+
                 # Run trading iteration
                 daemon._trading_iteration()
 
@@ -1249,6 +1260,16 @@ def test_ai_failure_notification_cooldown(mock_settings, mock_exchange_client, m
                 daemon.trade_reviewer.review_trade = Mock(side_effect=Exception("AI API Timeout"))
 
                 notifier_instance = mock_notifier.return_value
+
+                # CRITICAL: Set base balance to 0 so position_percent is 0% (not 83%)
+                # This ensures can_buy=True and direction_is_tradeable=True
+                def get_balance_zero_btc(currency):
+                    return Balance(
+                        currency=currency,
+                        available=Decimal("10000") if currency == "USD" else Decimal("0"),
+                        hold=Decimal("0")
+                    )
+                mock_exchange_client.get_balance.side_effect = get_balance_zero_btc
 
                 # First failure: should send notification
                 daemon._trading_iteration()
@@ -2943,3 +2964,367 @@ class TestDualExtremeBlocking:
 
                     # Verify buy was allowed (config disabled the check)
                     mock_exchange_client.market_buy.assert_called_once()
+
+
+# ============================================================================
+# Take Profit Exit Strategy Tests
+# ============================================================================
+
+
+def test_take_profit_triggers_at_target_price(mock_settings):
+    """
+    CRITICAL: Take profit should trigger sell when current price >= take profit target.
+
+    Exit priority: Hard stop (1) -> Take profit (2) -> Trailing stop (6)
+    """
+    mock_settings.enable_take_profit = True
+    mock_settings.take_profit_atr_multiplier = 2.0
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None
+    mock_database.get_last_regime.return_value = None
+
+    # Create mock trailing stop with take profit target
+    mock_stop = Mock()
+    mock_stop.side = "buy"
+    mock_stop.get_entry_price.return_value = Decimal("50000")
+    mock_stop.get_trailing_activation.return_value = Decimal("51000")
+    mock_stop.get_trailing_distance.return_value = Decimal("500")
+    mock_stop.get_trailing_stop.return_value = None  # Trailing not yet active
+    mock_stop.get_hard_stop.return_value = Decimal("49000")
+    mock_stop.get_take_profit_price.return_value = Decimal("52000")  # TP target
+    mock_stop.trailing_active = False
+    mock_stop.breakeven_reached = False
+
+    mock_database.get_active_trailing_stop.return_value = mock_stop
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier') as mock_notifier_class:
+                mock_notifier = Mock()
+                mock_notifier_class.return_value = mock_notifier
+                daemon = TradingDaemon(mock_settings)
+
+                # Price at TP target - should trigger
+                current_price = Decimal("52000")
+                result = daemon._check_trailing_stop(current_price)
+
+                assert result == "sell", "Take profit should return 'sell' when price reaches target"
+                mock_database.deactivate_trailing_stop.assert_called_once()
+                mock_notifier.send_message.assert_called()  # TP notification sent
+
+
+def test_take_profit_triggers_above_target_price(mock_settings):
+    """Take profit should trigger when price exceeds target (gap scenario)."""
+    mock_settings.enable_take_profit = True
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None
+    mock_database.get_last_regime.return_value = None
+
+    mock_stop = Mock()
+    mock_stop.side = "buy"
+    mock_stop.get_entry_price.return_value = Decimal("50000")
+    mock_stop.get_trailing_activation.return_value = Decimal("51000")
+    mock_stop.get_trailing_distance.return_value = Decimal("500")
+    mock_stop.get_trailing_stop.return_value = None
+    mock_stop.get_hard_stop.return_value = Decimal("49000")
+    mock_stop.get_take_profit_price.return_value = Decimal("52000")
+    mock_stop.trailing_active = False
+    mock_stop.breakeven_reached = False
+
+    mock_database.get_active_trailing_stop.return_value = mock_stop
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                # Price ABOVE TP target (gap up scenario)
+                current_price = Decimal("53500")
+                result = daemon._check_trailing_stop(current_price)
+
+                assert result == "sell", "Take profit should trigger when price gaps above target"
+
+
+def test_take_profit_disabled_does_not_trigger(mock_settings):
+    """Take profit should NOT trigger when enable_take_profit=False."""
+    mock_settings.enable_take_profit = False  # Disabled
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None
+    mock_database.get_last_regime.return_value = None
+
+    mock_stop = Mock()
+    mock_stop.side = "buy"
+    mock_stop.get_entry_price.return_value = Decimal("50000")
+    mock_stop.get_trailing_activation.return_value = Decimal("51000")
+    mock_stop.get_trailing_distance.return_value = Decimal("500")
+    mock_stop.get_trailing_stop.return_value = None
+    mock_stop.get_hard_stop.return_value = Decimal("49000")
+    mock_stop.get_take_profit_price.return_value = Decimal("52000")  # TP exists but disabled
+    mock_stop.trailing_active = False
+    mock_stop.breakeven_reached = False
+
+    mock_database.get_active_trailing_stop.return_value = mock_stop
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                # Price at TP target but TP disabled
+                current_price = Decimal("52000")
+                result = daemon._check_trailing_stop(current_price)
+
+                assert result is None, "Take profit should NOT trigger when disabled"
+                mock_database.deactivate_trailing_stop.assert_not_called()
+
+
+def test_hard_stop_has_priority_over_take_profit(mock_settings):
+    """
+    CRITICAL: Hard stop must trigger BEFORE take profit check.
+
+    Priority order: Hard stop (1) -> Take profit (2)
+
+    Edge case: If both conditions are met (shouldn't happen normally),
+    hard stop takes priority for capital protection.
+    """
+    mock_settings.enable_take_profit = True
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None
+    mock_database.get_last_regime.return_value = None
+
+    mock_stop = Mock()
+    mock_stop.side = "buy"
+    mock_stop.get_entry_price.return_value = Decimal("50000")
+    mock_stop.get_trailing_activation.return_value = Decimal("51000")
+    mock_stop.get_trailing_distance.return_value = Decimal("500")
+    mock_stop.get_trailing_stop.return_value = None
+    mock_stop.get_hard_stop.return_value = Decimal("49000")  # Hard stop
+    mock_stop.get_take_profit_price.return_value = Decimal("52000")
+    mock_stop.trailing_active = False
+    mock_stop.breakeven_reached = False
+
+    mock_database.get_active_trailing_stop.return_value = mock_stop
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier') as mock_notifier_class:
+                mock_notifier = Mock()
+                mock_notifier_class.return_value = mock_notifier
+                daemon = TradingDaemon(mock_settings)
+
+                # Price below hard stop - hard stop should trigger, not TP
+                current_price = Decimal("48500")
+                result = daemon._check_trailing_stop(current_price)
+
+                assert result == "sell", "Hard stop should trigger"
+                # Check that it was hard stop notification, not TP
+                call_args = mock_notifier.send_message.call_args[0][0]
+                assert "Hard Stop" in call_args, "Should be hard stop notification"
+
+
+def test_take_profit_stored_in_trailing_stop(mock_settings):
+    """Take profit price should be stored when creating trailing stop."""
+    mock_settings.enable_take_profit = True
+    mock_settings.take_profit_atr_multiplier = 2.0
+    mock_settings.trailing_stop_atr_multiplier = 1.0
+    mock_settings.breakeven_atr_multiplier = 0.5
+    mock_settings.stop_loss_atr_multiplier = 1.5
+    mock_settings.min_stop_loss_percent = 0.1
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None
+    mock_database.get_last_regime.return_value = None
+    mock_database.get_active_trailing_stop.return_value = None  # First buy
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                entry_price = Decimal("50000")
+                avg_cost = Decimal("50300")  # With fees
+                take_profit_price = Decimal("52000")  # Calculated by position sizer
+
+                candles = pd.DataFrame({
+                    'high': [50500.0] * 20,
+                    'low': [49500.0] * 20,
+                    'close': [50000.0] * 20,
+                })
+
+                with patch('src.indicators.atr.calculate_atr') as mock_atr:
+                    mock_atr_result = Mock()
+                    mock_atr_result.atr = pd.Series([1000.0] * 20)
+                    mock_atr.return_value = mock_atr_result
+
+                    daemon._create_trailing_stop(
+                        entry_price=entry_price,
+                        candles=candles,
+                        is_paper=True,
+                        avg_cost=avg_cost,
+                        take_profit_price=take_profit_price,
+                    )
+
+                    # Verify TP was stored
+                    call_kwargs = mock_database.create_trailing_stop.call_args[1]
+                    assert call_kwargs['take_profit_price'] == take_profit_price, \
+                        "Take profit price should be passed to database"
+
+
+def test_take_profit_recalculated_on_dca(mock_settings):
+    """
+    CRITICAL: Take profit must be recalculated based on new avg_cost after DCA.
+
+    Bug context: Original TP was based on first entry price, not weighted average.
+    After DCA at lower price, TP should be lower (based on new avg_cost).
+    """
+    mock_settings.enable_take_profit = True
+    mock_settings.take_profit_atr_multiplier = 2.0
+    mock_settings.trailing_stop_atr_multiplier = 1.0
+    mock_settings.breakeven_atr_multiplier = 0.5
+    mock_settings.stop_loss_atr_multiplier = 1.5
+    mock_settings.min_stop_loss_percent = 0.1
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None
+    mock_database.get_last_regime.return_value = None
+
+    # Simulate existing stop from first buy
+    mock_existing_stop = Mock()
+    mock_existing_stop.id = 1
+    mock_database.get_active_trailing_stop.return_value = mock_existing_stop
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                # DCA scenario: second buy at lower price
+                # First buy: $50,000, Second buy (DCA): $48,000
+                # New avg_cost: ~$49,000
+                new_avg_cost = Decimal("49000")
+                entry_price = Decimal("48000")  # DCA entry
+
+                candles = pd.DataFrame({
+                    'high': [49500.0] * 20,
+                    'low': [48500.0] * 20,
+                    'close': [49000.0] * 20,
+                })
+
+                with patch('src.indicators.atr.calculate_atr') as mock_atr:
+                    mock_atr_result = Mock()
+                    mock_atr_result.atr = pd.Series([1000.0] * 20)  # ATR = $1000
+                    mock_atr.return_value = mock_atr_result
+
+                    daemon._create_trailing_stop(
+                        entry_price=entry_price,
+                        candles=candles,
+                        is_paper=True,
+                        avg_cost=new_avg_cost,
+                        take_profit_price=Decimal("52000"),  # Old TP from position sizer
+                    )
+
+                    # Verify DCA update was called (not create)
+                    assert mock_database.update_trailing_stop_for_dca.called, \
+                        "DCA should update existing stop, not create new"
+
+                    call_kwargs = mock_database.update_trailing_stop_for_dca.call_args[1]
+
+                    # TP should be recalculated: avg_cost + (ATR * multiplier)
+                    # = 49000 + (1000 * 2.0) = 51000
+                    expected_tp = new_avg_cost + (Decimal("1000") * Decimal("2.0"))
+
+                    assert call_kwargs['take_profit_price'] == expected_tp, \
+                        f"TP should be recalculated from avg_cost: expected {expected_tp}, got {call_kwargs['take_profit_price']}"
+
+
+def test_take_profit_null_when_disabled(mock_settings):
+    """Take profit should be None when enable_take_profit=False."""
+    mock_settings.enable_take_profit = False
+    mock_settings.trailing_stop_atr_multiplier = 1.0
+    mock_settings.breakeven_atr_multiplier = 0.5
+    mock_settings.stop_loss_atr_multiplier = 1.5
+    mock_settings.min_stop_loss_percent = 0.1
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None
+    mock_database.get_last_regime.return_value = None
+    mock_database.get_active_trailing_stop.return_value = None
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                candles = pd.DataFrame({
+                    'high': [50500.0] * 20,
+                    'low': [49500.0] * 20,
+                    'close': [50000.0] * 20,
+                })
+
+                with patch('src.indicators.atr.calculate_atr') as mock_atr:
+                    mock_atr_result = Mock()
+                    mock_atr_result.atr = pd.Series([1000.0] * 20)
+                    mock_atr.return_value = mock_atr_result
+
+                    daemon._create_trailing_stop(
+                        entry_price=Decimal("50000"),
+                        candles=candles,
+                        is_paper=True,
+                        avg_cost=Decimal("50300"),
+                        take_profit_price=None,  # Disabled
+                    )
+
+                    call_kwargs = mock_database.create_trailing_stop.call_args[1]
+                    assert call_kwargs['take_profit_price'] is None, \
+                        "Take profit should be None when disabled"
+
+
+def test_take_profit_priority_over_trailing_in_gap(mock_settings):
+    """
+    Test TP takes priority over trailing stop when price gaps above both.
+
+    Scenario: Price gaps from $50,500 directly to $53,000
+    - Trailing activation: $51,000
+    - Trailing stop (if active): $52,500
+    - Take profit: $52,000
+
+    TP should trigger (priority #2) before trailing stop logic (priority #6).
+    """
+    mock_settings.enable_take_profit = True
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None
+    mock_database.get_last_regime.return_value = None
+
+    mock_stop = Mock()
+    mock_stop.side = "buy"
+    mock_stop.get_entry_price.return_value = Decimal("50000")
+    mock_stop.get_trailing_activation.return_value = Decimal("51000")
+    mock_stop.get_trailing_distance.return_value = Decimal("500")
+    mock_stop.get_trailing_stop.return_value = Decimal("52500")  # Trailing is active
+    mock_stop.get_hard_stop.return_value = Decimal("49000")
+    mock_stop.get_take_profit_price.return_value = Decimal("52000")  # TP below trailing stop
+    mock_stop.trailing_active = True
+    mock_stop.breakeven_reached = True
+
+    mock_database.get_active_trailing_stop.return_value = mock_stop
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier') as mock_notifier_class:
+                mock_notifier = Mock()
+                mock_notifier_class.return_value = mock_notifier
+                daemon = TradingDaemon(mock_settings)
+
+                # Price gaps above both TP ($52,000) and trailing stop ($52,500)
+                current_price = Decimal("53000")
+                result = daemon._check_trailing_stop(current_price)
+
+                assert result == "sell", "Should trigger sell"
+                # Verify it was TP notification (checked first due to priority)
+                call_args = mock_notifier.send_message.call_args[0][0]
+                assert "Take Profit" in call_args, "Should be TP notification, not trailing stop"
