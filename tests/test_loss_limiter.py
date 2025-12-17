@@ -36,9 +36,10 @@ from src.safety.loss_limiter import (
 def config():
     """Default loss limiter configuration."""
     return LossLimitConfig(
+        throttle_at_percent=50.0,
+        throttle_min_multiplier=0.3,
         max_daily_loss_percent=10.0,
         max_hourly_loss_percent=3.0,
-        throttle_at_percent=50.0,
         hourly_cooldown_seconds=3600,
         daily_reset_hour_utc=0,
     )
@@ -84,9 +85,10 @@ def test_initialization_default_config():
 def test_initialization_custom_config():
     """Test loss limiter accepts custom configuration."""
     config = LossLimitConfig(
+        throttle_at_percent=60.0,
+        throttle_min_multiplier=0.3,
         max_daily_loss_percent=5.0,
         max_hourly_loss_percent=2.0,
-        throttle_at_percent=60.0
     )
     limiter = LossLimiter(config=config, starting_balance=Decimal("1000"))
     assert limiter.config.max_daily_loss_percent == 5.0

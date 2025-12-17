@@ -155,6 +155,15 @@ class SignalScorer:
         high_volume_boost_percent: float = 0.20,
         mtf_aligned_boost: int = 20,
         mtf_counter_penalty: int = 20,
+        max_oversold_buys_24h: int = 2,
+        price_stabilization_window: int = 12,
+        volume_sma_window: int = 20,
+        high_volume_threshold: float = 1.5,
+        low_volume_threshold: float = 0.7,
+        low_volume_penalty: int = 10,
+        extreme_rsi_lower: int = 25,
+        extreme_rsi_upper: int = 75,
+        trend_filter_penalty: int = 20,
     ):
         """
         Initialize signal scorer.
@@ -210,6 +219,21 @@ class SignalScorer:
         # Multi-Timeframe confirmation parameters
         self.mtf_aligned_boost = mtf_aligned_boost
         self.mtf_counter_penalty = mtf_counter_penalty
+
+        # Crash protection parameters
+        self.max_oversold_buys_24h = max_oversold_buys_24h
+        self.price_stabilization_window = price_stabilization_window
+        self.extreme_rsi_lower = extreme_rsi_lower
+        self.extreme_rsi_upper = extreme_rsi_upper
+
+        # Volume analysis parameters
+        self.volume_sma_window = volume_sma_window
+        self.high_volume_threshold = high_volume_threshold
+        self.low_volume_threshold = low_volume_threshold
+        self.low_volume_penalty = low_volume_penalty
+
+        # Trend filter parameters
+        self.trend_filter_penalty = trend_filter_penalty
 
     def update_settings(
         self,
@@ -380,23 +404,25 @@ class SignalScorer:
         logger.debug("oversold_buy_recorded", count=len(self._oversold_buy_times))
 
     def can_buy_oversold(self) -> bool:
-        """Check if we can make another oversold buy (max 2 per 24h)."""
+        """Check if we can make another oversold buy (max per 24h)."""
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(hours=24)
         recent_buys = [t for t in self._oversold_buy_times if t > cutoff]
-        return len(recent_buys) < 2
+        return len(recent_buys) < self.max_oversold_buys_24h
 
-    def is_price_stabilized(self, close_prices: pd.Series, window_candles: int = 12) -> bool:
+    def is_price_stabilized(self, close_prices: pd.Series, window_candles: Optional[int] = None) -> bool:
         """
         Check if price has stopped falling (stabilized).
 
         Args:
             close_prices: Series of closing prices
-            window_candles: Number of candles to check (default 12 = ~2 hours with 10-min candles)
+            window_candles: Number of candles to check (uses self.price_stabilization_window if None)
 
         Returns:
             True if price is stable/recovering (not making new lows)
         """
+        if window_candles is None:
+            window_candles = self.price_stabilization_window
         if len(close_prices) < window_candles:
             return True  # Not enough data, allow trade
 
@@ -554,8 +580,8 @@ class SignalScorer:
         # not the whale direction. This is intentional - whale activity increases
         # conviction in whatever direction the indicators suggest, rather than
         # overriding the technical analysis.
-        if volume is not None and len(volume) >= 20:
-            volume_sma = volume.rolling(window=20).mean().iloc[-1]
+        if volume is not None and len(volume) >= self.volume_sma_window:
+            volume_sma = volume.rolling(window=self.volume_sma_window).mean().iloc[-1]
             current_volume = volume.iloc[-1]
 
             if not pd.isna(volume_sma) and volume_sma > 0:
@@ -599,7 +625,7 @@ class SignalScorer:
                     else:
                         breakdown["_whale_direction"] = "unknown"
                         breakdown["_price_change_pct"] = None
-                elif volume_ratio > 1.5:
+                elif volume_ratio > self.high_volume_threshold:
                     # High volume: boost signal by configurable percentage (default 20%)
                     volume_boost = int(abs(total_score) * self.high_volume_boost_percent)
                     if total_score > 0:
@@ -612,14 +638,14 @@ class SignalScorer:
                         breakdown["volume"] = 0
                     breakdown["_whale_activity"] = False
                     breakdown["_volume_ratio"] = volume_ratio
-                elif volume_ratio < 0.7:
-                    # Low volume: fixed 10-point penalty (consistent behavior)
+                elif volume_ratio < self.low_volume_threshold:
+                    # Low volume: fixed penalty (consistent behavior)
                     if total_score > 0:
-                        breakdown["volume"] = -10
-                        total_score -= 10
+                        breakdown["volume"] = -self.low_volume_penalty
+                        total_score -= self.low_volume_penalty
                     elif total_score < 0:
-                        breakdown["volume"] = 10
-                        total_score += 10
+                        breakdown["volume"] = self.low_volume_penalty
+                        total_score += self.low_volume_penalty
                     else:
                         breakdown["volume"] = 0
                     breakdown["_whale_activity"] = False
@@ -656,7 +682,7 @@ class SignalScorer:
         # Skip penalty for extreme RSI (mean-reversion zones) with crash protection
         trend = get_ema_trend(ema_result)
         trend_adjustment = 0
-        rsi_extreme = indicators.rsi is not None and (indicators.rsi < 25 or indicators.rsi > 75)
+        rsi_extreme = indicators.rsi is not None and (indicators.rsi < self.extreme_rsi_lower or indicators.rsi > self.extreme_rsi_upper)
 
         # Crash protection checks for mean-reversion trades
         can_mean_revert = self.can_buy_oversold()
@@ -670,24 +696,24 @@ class SignalScorer:
             logger.debug("trend_filter_applied", reason="oversold_buy_limit_reached", rsi=indicators.rsi)
             if total_score > 0 and trend == "bearish":
                 signal_confidence = abs(total_score) / 100
-                trend_adjustment = -int(20 * (1 - signal_confidence * 0.5))
+                trend_adjustment = -int(self.trend_filter_penalty * (1 - signal_confidence * 0.5))
                 total_score += trend_adjustment
         elif rsi_extreme and not price_stable:
             # Price still falling - apply trend filter
             logger.debug("trend_filter_applied", reason="price_still_falling", rsi=indicators.rsi)
             if total_score > 0 and trend == "bearish":
                 signal_confidence = abs(total_score) / 100
-                trend_adjustment = -int(20 * (1 - signal_confidence * 0.5))
+                trend_adjustment = -int(self.trend_filter_penalty * (1 - signal_confidence * 0.5))
                 total_score += trend_adjustment
         elif total_score > 0 and trend == "bearish":
-            # Scale penalty: stronger signals get less penalty (10-20 points)
+            # Scale penalty: stronger signals get less penalty
             signal_confidence = abs(total_score) / 100
-            trend_adjustment = -int(20 * (1 - signal_confidence * 0.5))
+            trend_adjustment = -int(self.trend_filter_penalty * (1 - signal_confidence * 0.5))
             total_score += trend_adjustment
         elif total_score < 0 and trend == "bullish":
             # Scale penalty: stronger signals get less penalty
             signal_confidence = abs(total_score) / 100
-            trend_adjustment = int(20 * (1 - signal_confidence * 0.5))
+            trend_adjustment = int(self.trend_filter_penalty * (1 - signal_confidence * 0.5))
             total_score += trend_adjustment
         breakdown["trend_filter"] = trend_adjustment
 

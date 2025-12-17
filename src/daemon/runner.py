@@ -30,7 +30,7 @@ from src.api.paper_client import PaperTradingClient
 from src.notifications.telegram import TelegramNotifier
 from src.safety.circuit_breaker import CircuitBreaker, CircuitBreakerConfig, BreakerLevel
 from src.safety.kill_switch import KillSwitch
-from src.safety.loss_limiter import LossLimiter
+from src.safety.loss_limiter import LossLimiter, LossLimitConfig
 from src.safety.trade_cooldown import TradeCooldown, TradeCooldownConfig
 from src.safety.validator import OrderValidator, OrderRequest, ValidatorConfig
 from sqlalchemy.exc import SQLAlchemyError
@@ -235,6 +235,12 @@ class TradingDaemon:
         )
 
         self.loss_limiter = LossLimiter(
+            config=LossLimitConfig(
+                throttle_at_percent=settings.loss_throttle_start_percent,
+                throttle_min_multiplier=settings.loss_throttle_min_multiplier,
+                max_daily_loss_percent=settings.max_daily_loss_percent,
+                max_hourly_loss_percent=settings.max_hourly_loss_percent,
+            ),
             on_limit_hit=lambda limit_type, percent: self.notifier.notify_loss_limit(
                 limit_type, percent
             )
@@ -243,6 +249,8 @@ class TradingDaemon:
         # Initialize order validator
         self.validator = OrderValidator(
             config=ValidatorConfig(
+                estimated_fee_percent=settings.estimated_fee_percent,
+                profit_margin_multiplier=settings.profit_margin_multiplier,
                 min_trade_quote=settings.min_trade_quote,
                 max_position_percent=settings.max_position_percent,
             ),
@@ -293,10 +301,21 @@ class TradingDaemon:
             high_volume_boost_percent=settings.high_volume_boost_percent,
             mtf_aligned_boost=settings.mtf_aligned_boost,
             mtf_counter_penalty=settings.mtf_counter_penalty,
+            max_oversold_buys_24h=settings.max_oversold_buys_24h,
+            price_stabilization_window=settings.price_stabilization_window,
+            volume_sma_window=settings.volume_sma_window,
+            high_volume_threshold=settings.high_volume_threshold,
+            low_volume_threshold=settings.low_volume_threshold,
+            low_volume_penalty=settings.low_volume_penalty,
+            extreme_rsi_lower=settings.extreme_rsi_lower,
+            extreme_rsi_upper=settings.extreme_rsi_upper,
+            trend_filter_penalty=settings.trend_filter_penalty,
         )
 
         self.position_sizer = PositionSizer(
             config=PositionSizeConfig(
+                risk_per_trade_percent=settings.risk_per_trade_percent,
+                min_trade_base=settings.min_trade_base,
                 max_position_percent=settings.position_size_percent,
                 stop_loss_atr_multiplier=settings.stop_loss_atr_multiplier,
                 min_stop_loss_percent=settings.min_stop_loss_percent,

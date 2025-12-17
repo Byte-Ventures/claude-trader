@@ -146,6 +146,29 @@ def mock_settings():
     # AI max tokens
     settings.ai_max_tokens = 4000
 
+    # Risk Management (new parameters)
+    settings.risk_per_trade_percent = 0.5
+    settings.estimated_fee_percent = 0.006
+    settings.profit_margin_multiplier = 2.0
+    settings.loss_throttle_start_percent = 50.0
+    settings.loss_throttle_min_multiplier = 0.3
+    settings.min_trade_base = 0.0001
+    settings.max_daily_loss_percent = 10.0
+    settings.max_hourly_loss_percent = 3.0
+
+    # Crash Protection (new parameters)
+    settings.max_oversold_buys_24h = 2
+    settings.price_stabilization_window = 12
+    settings.extreme_rsi_lower = 25
+    settings.extreme_rsi_upper = 75
+
+    # Volume Analysis (new parameters)
+    settings.volume_sma_window = 20
+    settings.high_volume_threshold = 1.5
+    settings.low_volume_threshold = 0.7
+    settings.low_volume_penalty = 10
+    settings.trend_filter_penalty = 20
+
     return settings
 
 

@@ -38,6 +38,8 @@ from src.safety.loss_limiter import LossLimitStatus
 def config():
     """Default validator configuration."""
     return ValidatorConfig(
+        estimated_fee_percent=0.006,  # Required from settings
+        profit_margin_multiplier=2.0,  # Required from settings
         min_trade_quote=10.0,
         max_position_percent=80.0,
         price_sanity_percent=5.0,
@@ -130,6 +132,8 @@ def test_initialization_default_config():
 def test_initialization_custom_config():
     """Test validator accepts custom configuration."""
     config = ValidatorConfig(
+        estimated_fee_percent=0.006,  # Required
+        profit_margin_multiplier=2.0,  # Required
         min_trade_quote=20.0,
         max_position_percent=90.0,
         price_sanity_percent=10.0
@@ -792,9 +796,10 @@ def test_profit_margin_custom_fee_config():
     """Test profit margin check with custom fee configuration."""
     # Higher fees (e.g., 1% round-trip)
     config = ValidatorConfig(
+        estimated_fee_percent=0.01,  # 1% round-trip (required)
+        profit_margin_multiplier=2.0,  # Required
         min_trade_quote=10.0,
         max_position_percent=80.0,
-        estimated_fee_percent=0.01,  # 1% round-trip
     )
     validator = OrderValidator(config=config)
     validator.update_balances(

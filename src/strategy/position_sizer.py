@@ -25,16 +25,18 @@ logger = structlog.get_logger(__name__)
 class PositionSizeConfig:
     """Configuration for position sizing."""
 
+    # Required fields (must come before fields with defaults)
+    risk_per_trade_percent: float  # Risk per trade (from settings)
+    min_trade_base: float  # Minimum trade size in base currency (from settings)
+
     # Target position limit during order calculation (conservative default).
     # This is the "soft limit" that guides normal order sizing.
     # The validator has a separate "hard limit" (80%) that catches edge cases.
     # Two-tier design: 40% target prevents over-concentration, 80% hard stop for safety.
     max_position_percent: float = 40.0
-    risk_per_trade_percent: float = 0.5  # Risk 0.5% per trade (conservative)
     stop_loss_atr_multiplier: float = 1.5  # Stop at 1.5x ATR
     min_trade_quote: float = 100.0  # Minimum trade size in quote currency
     max_trade_quote: Optional[float] = None  # Maximum trade size in quote currency (None = no limit)
-    min_trade_base: float = 0.0001  # Minimum trade size in base currency (e.g., BTC)
     min_stop_loss_percent: float = 1.5  # Minimum stop as % of price (floor for short timeframes)
 
 
@@ -76,7 +78,10 @@ class PositionSizer:
             atr_period: ATR calculation period
             take_profit_atr_multiplier: Take profit distance as ATR multiple
         """
-        self.config = config or PositionSizeConfig()
+        self.config = config or PositionSizeConfig(
+            risk_per_trade_percent=0.5,  # Default: 0.5% risk per trade
+            min_trade_base=0.0001,  # Default: 0.0001 BTC minimum
+        )
         self.atr_period = atr_period
         self.take_profit_multiplier = take_profit_atr_multiplier
 

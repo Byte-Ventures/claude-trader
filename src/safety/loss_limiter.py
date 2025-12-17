@@ -23,12 +23,13 @@ logger = structlog.get_logger(__name__)
 class LossLimitConfig:
     """Configuration for loss limits."""
 
+    # Required fields (from settings)
+    throttle_at_percent: float  # Start reducing position at X% of limit (from settings.loss_throttle_start_percent)
+    throttle_min_multiplier: float  # Minimum position multiplier at max loss (from settings.loss_throttle_min_multiplier)
+
     # Maximum loss percentages
     max_daily_loss_percent: float = 10.0  # Stop trading for the day
     max_hourly_loss_percent: float = 3.0  # Pause for 1 hour
-
-    # Throttling thresholds
-    throttle_at_percent: float = 50.0  # Start reducing position at 50% of limit
 
     # Cooldown after hitting limit
     hourly_cooldown_seconds: int = 3600  # 1 hour
@@ -85,7 +86,10 @@ class LossLimiter:
             starting_balance: Starting portfolio balance for percentage calculations
             on_limit_hit: Callback when a limit is hit
         """
-        self.config = config or LossLimitConfig()
+        self.config = config or LossLimitConfig(
+            throttle_at_percent=50.0,  # Default: start throttling at 50% of limit
+            throttle_min_multiplier=0.3,  # Default: 0.3x minimum multiplier
+        )
         self._on_limit_hit = on_limit_hit
 
         # Balance tracking
@@ -304,9 +308,10 @@ class LossLimiter:
         if max_loss_percent < throttle_threshold:
             return 1.0
 
-        # Linear reduction from 1.0 to 0.3 as we approach limit
+        # Linear reduction from 1.0 to throttle_min_multiplier as we approach limit
         progress = (max_loss_percent - throttle_threshold) / (limit - throttle_threshold)
-        multiplier = max(0.3, 1.0 - (progress * 0.7))
+        min_multiplier = self.config.throttle_min_multiplier
+        multiplier = max(min_multiplier, 1.0 - (progress * (1.0 - min_multiplier)))
 
         logger.debug(
             "loss_limiter_throttling",

@@ -36,15 +36,20 @@ from src.strategy.position_sizer import (
 @pytest.fixture
 def sizer():
     """Position sizer with default settings."""
-    return PositionSizer()
+    config = PositionSizeConfig(
+        risk_per_trade_percent=0.5,  # Required from settings
+        min_trade_base=0.0001,  # Required from settings
+    )
+    return PositionSizer(config=config)
 
 
 @pytest.fixture
 def custom_config():
     """Custom position size configuration."""
     return PositionSizeConfig(
+        risk_per_trade_percent=1.0,  # Required from settings
+        min_trade_base=0.0001,  # Required from settings
         max_position_percent=30.0,
-        risk_per_trade_percent=1.0,
         stop_loss_atr_multiplier=2.0,
         min_trade_quote=20.0,
     )
@@ -921,9 +926,10 @@ def test_min_stop_loss_floor_applied_when_atr_too_small(very_low_volatility_df):
     """Test that min_stop_loss_percent is used when ATR < min %."""
     # Configure with specific min_stop_loss_percent
     config = PositionSizeConfig(
+        risk_per_trade_percent=0.5,  # Required
+        min_trade_base=0.0001,  # Required
         min_stop_loss_percent=1.5,  # 1.5% minimum stop
         stop_loss_atr_multiplier=1.5,
-        risk_per_trade_percent=0.5,
         max_position_percent=40.0,
     )
     sizer = PositionSizer(config=config)
@@ -961,9 +967,10 @@ def test_min_stop_loss_floor_applied_when_atr_too_small(very_low_volatility_df):
 def test_atr_stop_used_when_larger_than_min(high_volatility_df):
     """Test that ATR-based stop is used when it's larger than min %."""
     config = PositionSizeConfig(
+        risk_per_trade_percent=0.5,  # Required
+        min_trade_base=0.0001,  # Required
         min_stop_loss_percent=0.5,  # 0.5% minimum (low floor)
         stop_loss_atr_multiplier=2.0,  # 2x ATR
-        risk_per_trade_percent=0.5,
         max_position_percent=40.0,
     )
     sizer = PositionSizer(config=config)
@@ -1006,9 +1013,10 @@ def test_min_stop_loss_floor_with_different_percentages():
 
     for min_pct in [1.0, 1.5, 2.0, 3.0]:
         config = PositionSizeConfig(
+            risk_per_trade_percent=0.5,  # Required
+            min_trade_base=0.0001,  # Required
             min_stop_loss_percent=min_pct,
             stop_loss_atr_multiplier=1.5,
-            risk_per_trade_percent=0.5,
         )
         sizer = PositionSizer(config=config)
 
@@ -1033,6 +1041,8 @@ def test_min_stop_loss_floor_with_different_percentages():
 def test_min_stop_loss_floor_for_sell_orders(very_low_volatility_df):
     """Test min_stop_loss_percent floor also applies to sell orders."""
     config = PositionSizeConfig(
+        risk_per_trade_percent=0.5,  # Required
+        min_trade_base=0.0001,  # Required
         min_stop_loss_percent=1.5,
         stop_loss_atr_multiplier=1.5,
     )
