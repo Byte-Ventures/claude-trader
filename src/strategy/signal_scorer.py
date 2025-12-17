@@ -690,6 +690,8 @@ class SignalScorer:
         # - Bearish signal (-score): -boost if HTF bearish (more negative = stronger sell),
         #                            +penalty if HTF bullish (less negative = weaker sell)
         htf_adjustment = 0
+        extreme_fear_override_applied = False  # Track if extreme fear override was used
+
         if htf_bias and htf_bias != "neutral":
             # Strong HTF bias (daily + 4H agree): apply full adjustment
             if total_score > 0:  # Bullish signal (potential buy)
@@ -723,6 +725,9 @@ class SignalScorer:
             if sentiment_category == "extreme_fear" and htf_daily == "bearish" and total_score > 0:
                 # Buying into bearish daily trend during extreme fear - apply FULL penalty
                 htf_adjustment = -self.mtf_counter_penalty
+                extreme_fear_override_applied = True
+                score_before = total_score
+                total_score += htf_adjustment
                 logger.info(
                     "extreme_fear_daily_penalty_applied",
                     htf_daily=htf_daily,
@@ -730,11 +735,16 @@ class SignalScorer:
                     sentiment=sentiment_category,
                     signal_direction="buy",
                     adjustment=htf_adjustment,
+                    score_before=score_before,
+                    score_after=total_score,
                 )
             elif sentiment_category == "extreme_fear" and htf_daily == "bullish" and total_score < 0:
                 # Selling into bullish daily trend during extreme fear - apply FULL penalty
                 # to weaken sell signal more aggressively (prevent panic selling)
                 htf_adjustment = self.mtf_counter_penalty
+                extreme_fear_override_applied = True
+                score_before = total_score
+                total_score += htf_adjustment
                 logger.info(
                     "extreme_fear_daily_penalty_applied",
                     htf_daily=htf_daily,
@@ -742,6 +752,8 @@ class SignalScorer:
                     sentiment=sentiment_category,
                     signal_direction="sell",
                     adjustment=htf_adjustment,
+                    score_before=score_before,
+                    score_after=total_score,
                 )
             elif total_score > 0 and htf_daily == "bearish":
                 # Buying into bearish daily trend - apply half penalty
@@ -750,13 +762,15 @@ class SignalScorer:
                 # Selling into bullish daily trend - weaken sell signal
                 htf_adjustment = half_penalty
 
-        if htf_adjustment != 0:
+        # Apply adjustment and log only if NOT already handled by extreme fear override
+        if htf_adjustment != 0 and not extreme_fear_override_applied:
             total_score += htf_adjustment
             logger.info(
                 "htf_bias_applied",
                 htf_bias=htf_bias or "neutral",
                 htf_daily=htf_daily,
                 htf_4h=htf_4h,
+                sentiment=sentiment_category,
                 signal_direction="bullish" if total_score > 0 else "bearish",
                 adjustment=htf_adjustment,
                 partial_penalty=htf_bias == "neutral" or htf_bias is None,

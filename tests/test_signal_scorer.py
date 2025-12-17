@@ -1886,6 +1886,31 @@ class TestHTFBiasModifier:
             assert result_extreme.breakdown.get("htf_bias") == -20  # full penalty
             assert result_fear.score > result_extreme.score
 
+    def test_extreme_fear_no_effect_when_sentiment_none(self, mtf_scorer, bullish_signal_df):
+        """Test extreme fear override does not apply when sentiment_category is None."""
+        # When sentiment is None (disabled or failed fetch), normal half-penalty logic applies
+        result_with_none = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="neutral",
+            htf_daily="bearish",
+            htf_4h="bullish",
+            sentiment_category=None,
+        )
+
+        result_baseline = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="neutral",
+            htf_daily="bearish",
+            htf_4h="bullish",
+            sentiment_category="fear",  # Non-extreme sentiment
+        )
+
+        # Both should apply half penalty (not full penalty)
+        if result_with_none.score > 0:
+            assert result_with_none.breakdown.get("htf_bias") == -10  # half penalty
+            assert result_baseline.breakdown.get("htf_bias") == -10  # half penalty
+            assert result_with_none.score == result_baseline.score
+
 
 class TestHTFEdgeCases:
     """Edge case tests for HTF bias at boundary score values.
