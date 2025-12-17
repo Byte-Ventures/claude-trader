@@ -45,7 +45,6 @@ from src.indicators.ema import (
 from src.indicators.atr import (
     calculate_atr,
     get_atr_stop_loss,
-    get_atr_take_profit,
     get_volatility_level,
     get_position_size_multiplier,
     calculate_atr_percent,
@@ -360,30 +359,6 @@ def test_atr_stop_loss_sell():
 
     expected = entry_price + Decimal("1500")
     assert stop_loss == expected
-
-
-def test_atr_take_profit_buy():
-    """Test ATR take-profit for buy trade."""
-    entry_price = Decimal("50000")
-    atr_value = 1000.0
-    multiplier = 2.0
-
-    take_profit = get_atr_take_profit(entry_price, atr_value, multiplier, side="buy")
-
-    expected = entry_price + Decimal("2000")
-    assert take_profit == expected
-
-
-def test_atr_take_profit_sell():
-    """Test ATR take-profit for sell trade."""
-    entry_price = Decimal("50000")
-    atr_value = 1000.0
-    multiplier = 2.0
-
-    take_profit = get_atr_take_profit(entry_price, atr_value, multiplier, side="sell")
-
-    expected = entry_price - Decimal("2000")
-    assert take_profit == expected
 
 
 def test_volatility_level_low():

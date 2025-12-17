@@ -35,7 +35,6 @@ class PositionSizeConfig:
     min_trade_quote: float = 100.0  # Minimum trade size in quote currency
     min_trade_base: float = 0.0001  # Minimum trade size in base currency (e.g., BTC)
     min_stop_loss_percent: float = 1.5  # Minimum stop as % of price (floor for short timeframes)
-    min_take_profit_percent: float = 2.0  # Minimum take profit as % of price (floor)
 
 
 @dataclass
@@ -45,7 +44,6 @@ class PositionSizeResult:
     size_base: Decimal  # Size in base currency (e.g., BTC)
     size_quote: Decimal  # Size in quote currency (e.g., USD/EUR)
     stop_loss_price: Decimal
-    take_profit_price: Decimal
     risk_amount_quote: Decimal  # Risk in quote currency
     position_percent: float
 
@@ -66,7 +64,6 @@ class PositionSizer:
         self,
         config: Optional[PositionSizeConfig] = None,
         atr_period: int = 14,
-        take_profit_atr_multiplier: float = 2.0,
     ):
         """
         Initialize position sizer.
@@ -74,20 +71,16 @@ class PositionSizer:
         Args:
             config: Position sizing configuration
             atr_period: ATR calculation period
-            take_profit_atr_multiplier: Take profit distance as ATR multiple
         """
         self.config = config or PositionSizeConfig()
         self.atr_period = atr_period
-        self.take_profit_multiplier = take_profit_atr_multiplier
 
     def update_settings(
         self,
         max_position_percent: Optional[float] = None,
         stop_loss_atr_multiplier: Optional[float] = None,
-        take_profit_atr_multiplier: Optional[float] = None,
         atr_period: Optional[int] = None,
         min_stop_loss_percent: Optional[float] = None,
-        min_take_profit_percent: Optional[float] = None,
     ) -> None:
         """
         Update position sizer settings at runtime.
@@ -98,14 +91,10 @@ class PositionSizer:
             self.config.max_position_percent = max_position_percent
         if stop_loss_atr_multiplier is not None:
             self.config.stop_loss_atr_multiplier = stop_loss_atr_multiplier
-        if take_profit_atr_multiplier is not None:
-            self.take_profit_multiplier = take_profit_atr_multiplier
         if atr_period is not None:
             self.atr_period = atr_period
         if min_stop_loss_percent is not None:
             self.config.min_stop_loss_percent = min_stop_loss_percent
-        if min_take_profit_percent is not None:
-            self.config.min_take_profit_percent = min_take_profit_percent
 
         logger.info("position_sizer_settings_updated")
 
@@ -223,18 +212,11 @@ class PositionSizer:
             )
             return self._zero_result(current_price, side)
 
-        # Calculate take-profit distance with minimum floor (like stop loss)
-        atr_tp_distance = atr_decimal * Decimal(str(self.take_profit_multiplier))
-        min_tp_pct_distance = current_price * Decimal(str(self.config.min_take_profit_percent)) / Decimal("100")
-        tp_distance = max(atr_tp_distance, min_tp_pct_distance)
-
-        # Calculate stop-loss and take-profit prices
+        # Calculate stop-loss price
         if side == "buy":
             stop_loss = current_price - stop_distance
-            take_profit = current_price + tp_distance
         else:  # sell
             stop_loss = current_price + stop_distance
-            take_profit = current_price - tp_distance
 
         # Calculate actual position percentage
         position_percent = float(size_quote / total_value * 100)
@@ -243,7 +225,6 @@ class PositionSizer:
             size_base=size_base.quantize(Decimal("0.00000001")),
             size_quote=size_quote.quantize(Decimal("0.01")),
             stop_loss_price=stop_loss.quantize(Decimal("0.01")),
-            take_profit_price=take_profit.quantize(Decimal("0.01")),
             risk_amount_quote=risk_amount.quantize(Decimal("0.01")),
             position_percent=position_percent,
         )
@@ -258,38 +239,14 @@ class PositionSizer:
                 min_pct=self.config.min_stop_loss_percent,
             )
 
-        # Log which method determined the take-profit distance
-        used_min_tp_pct = min_tp_pct_distance > atr_tp_distance
-        if used_min_tp_pct:
-            logger.info(
-                "take_profit_using_min_percent",
-                atr_distance=str(atr_tp_distance),
-                min_pct_distance=str(min_tp_pct_distance),
-                min_pct=self.config.min_take_profit_percent,
-            )
-
-        # Calculate and log R:R ratio
-        rr_ratio = float(tp_distance / stop_distance) if stop_distance > 0 else 0
-        if rr_ratio < 1.0 and result.size_quote > 0:
-            logger.warning(
-                "unfavorable_risk_reward_ratio",
-                rr_ratio=f"{rr_ratio:.2f}",
-                tp_distance=str(tp_distance),
-                stop_distance=str(stop_distance),
-            )
-
         logger.debug(
             "position_size_calculated",
             size_base=str(result.size_base),
             size_quote=str(result.size_quote),
             stop_loss=str(result.stop_loss_price),
-            take_profit=str(result.take_profit_price),
             atr=str(atr_decimal),
             stop_distance=str(stop_distance),
-            tp_distance=str(tp_distance),
-            risk_reward_ratio=f"{rr_ratio:.2f}",
             stop_method="min_pct" if used_min_stop_pct else "atr",
-            tp_method="min_pct" if used_min_tp_pct else "atr",
             volatility_mult=volatility_multiplier,
             safety_mult=safety_multiplier,
         )
@@ -302,7 +259,6 @@ class PositionSizer:
             size_base=Decimal("0"),
             size_quote=Decimal("0"),
             stop_loss_price=current_price,
-            take_profit_price=current_price,
             risk_amount_quote=Decimal("0"),
             position_percent=0.0,
         )
@@ -328,7 +284,6 @@ class PositionSizer:
             size_base=base_balance,
             size_quote=size_quote,
             stop_loss_price=Decimal("0"),
-            take_profit_price=Decimal("0"),
             risk_amount_quote=Decimal("0"),
             position_percent=100.0,
         )

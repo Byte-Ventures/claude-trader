@@ -120,32 +120,6 @@ def get_atr_stop_loss(
         return entry_price + atr_distance
 
 
-def get_atr_take_profit(
-    entry_price: Decimal,
-    atr_value: float,
-    multiplier: float = 2.0,
-    side: str = "buy",
-) -> Decimal:
-    """
-    Calculate take-profit price based on ATR.
-
-    Args:
-        entry_price: Trade entry price
-        atr_value: Current ATR value
-        multiplier: ATR multiplier for distance (default: 2.0)
-        side: Trade side ("buy" or "sell")
-
-    Returns:
-        Take-profit price
-    """
-    atr_distance = Decimal(str(atr_value)) * Decimal(str(multiplier))
-
-    if side == "buy":
-        return entry_price + atr_distance
-    else:  # sell
-        return entry_price - atr_distance
-
-
 def get_volatility_level(
     atr_result: ATRResult,
     lookback: int = 50,
