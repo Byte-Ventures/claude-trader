@@ -747,6 +747,8 @@ class Settings(BaseSettings):
                     headers={
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
+                        "HTTP-Referer": "https://github.com/Byte-Ventures/claude-trader",
+                        "X-Title": "Claude Trader",
                     },
                     json={
                         "model": "openai/gpt-3.5-turbo",
