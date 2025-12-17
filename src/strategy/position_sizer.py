@@ -234,7 +234,9 @@ class PositionSizer:
                 size_quote = max_quote
                 size_base = size_quote / current_price
 
-        # Calculate take-profit distance (ATR-based, informational only - not used for exits)
+        # Calculate take-profit distance (ATR-based)
+        # NOTE: Take profit prices are calculated and logged but exit logic is NOT YET IMPLEMENTED
+        # This is tracked in GitHub issue #153. Currently informational only.
         tp_distance = atr_decimal * Decimal(str(self.take_profit_multiplier))
 
         # Calculate stop-loss and take-profit prices

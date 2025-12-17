@@ -467,6 +467,16 @@ class TestCoinbaseOrderValidation:
                 f"(recommended: {recommended_balance} {quote_currency})"
             )
 
+        # Warn if balance is below recommended (50% buffer for test flakiness mitigation)
+        if balance.available < recommended_balance:
+            logger.warning(
+                "balance_below_recommended",
+                currency=quote_currency,
+                available=str(balance.available),
+                recommended=str(recommended_balance),
+                message="Balance meets minimum but below recommended. Test failures may occur if prior runs left partial orders."
+            )
+
         logger.info(
             "balance_check_passed",
             currency=quote_currency,

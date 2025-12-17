@@ -300,6 +300,7 @@ class CoinbaseClient:
         Returns:
             Order data dict with fill details
         """
+        order_data = {}  # Initialize to prevent NameError if all attempts fail
         for attempt in range(max_attempts):
             try:
                 order_status = self.get_order(order_id)
@@ -326,7 +327,7 @@ class CoinbaseClient:
 
         # Return last known state even if not filled
         logger.warning("order_poll_timeout", order_id=order_id, max_attempts=max_attempts)
-        return order_data if "order_data" in dir() else {}
+        return order_data
 
     @retry(
         stop=stop_after_attempt(3),
@@ -384,6 +385,15 @@ class CoinbaseClient:
             avg_price = filled_order.get("average_filled_price")
             total_fees = Decimal(filled_order.get("total_fees", "0"))
             status = filled_order.get("status", "unknown")
+
+            # Detect polling timeout: empty dict or no filled_size when status is unknown
+            if not filled_order or (filled_size == Decimal("0") and status == "unknown"):
+                logger.warning(
+                    "market_buy_polling_timeout",
+                    order_id=order_id,
+                    message="Order may have filled but polling timed out. Check order status manually.",
+                )
+                status = "timeout"
 
             logger.info(
                 "market_buy_completed",
@@ -472,6 +482,15 @@ class CoinbaseClient:
             avg_price = filled_order.get("average_filled_price")
             total_fees = Decimal(filled_order.get("total_fees", "0"))
             status = filled_order.get("status", "unknown")
+
+            # Detect polling timeout: empty dict or no filled_size when status is unknown
+            if not filled_order or (filled_size == Decimal("0") and status == "unknown"):
+                logger.warning(
+                    "market_sell_polling_timeout",
+                    order_id=order_id,
+                    message="Order may have filled but polling timed out. Check order status manually.",
+                )
+                status = "timeout"
 
             logger.info(
                 "market_sell_completed",
