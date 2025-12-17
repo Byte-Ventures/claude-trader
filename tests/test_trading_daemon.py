@@ -93,6 +93,7 @@ def mock_settings():
     settings.stop_loss_atr_multiplier = 2.0
     settings.min_stop_loss_percent = 0.5
     settings.take_profit_atr_multiplier = 3.0
+    settings.enable_take_profit = True
     settings.stop_loss_pct = None
     settings.trailing_stop_enabled = False
     settings.use_limit_orders = True
@@ -977,6 +978,16 @@ def test_ai_failure_mode_safe_skips_trade(mock_settings, mock_exchange_client, m
                 # Reset mock to clear init calls
                 mock_exchange_client.market_buy.reset_mock()
 
+                # CRITICAL: Set base balance to 0 so position_percent is 0% (not 83%)
+                # This ensures can_buy=True and direction_is_tradeable=True
+                def get_balance_zero_btc(currency):
+                    return Balance(
+                        currency=currency,
+                        available=Decimal("10000") if currency == "USD" else Decimal("0"),
+                        hold=Decimal("0")
+                    )
+                mock_exchange_client.get_balance.side_effect = get_balance_zero_btc
+
                 # Run trading iteration
                 daemon._trading_iteration()
 
@@ -1249,6 +1260,16 @@ def test_ai_failure_notification_cooldown(mock_settings, mock_exchange_client, m
                 daemon.trade_reviewer.review_trade = Mock(side_effect=Exception("AI API Timeout"))
 
                 notifier_instance = mock_notifier.return_value
+
+                # CRITICAL: Set base balance to 0 so position_percent is 0% (not 83%)
+                # This ensures can_buy=True and direction_is_tradeable=True
+                def get_balance_zero_btc(currency):
+                    return Balance(
+                        currency=currency,
+                        available=Decimal("10000") if currency == "USD" else Decimal("0"),
+                        hold=Decimal("0")
+                    )
+                mock_exchange_client.get_balance.side_effect = get_balance_zero_btc
 
                 # First failure: should send notification
                 daemon._trading_iteration()

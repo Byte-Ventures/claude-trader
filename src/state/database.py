@@ -199,6 +199,7 @@ class TrailingStop(Base):
     trailing_activation = Column(String(50), nullable=True)  # Price where trailing activates
     trailing_distance = Column(String(50), nullable=True)  # ATR-based distance
     hard_stop = Column(String(50), nullable=True)  # Hard stop: emergency exit, moves to entry at break-even
+    take_profit_price = Column(String(50), nullable=True)  # Target profit price for automatic exit
     breakeven_triggered = Column(Boolean, default=False)  # True when stop moved to break-even
     is_active = Column(Boolean, default=False)
     is_paper = Column(Boolean, default=False)
@@ -219,6 +220,10 @@ class TrailingStop(Base):
 
     def get_hard_stop(self) -> Optional[Decimal]:
         return Decimal(self.hard_stop) if self.hard_stop else None
+
+    def get_take_profit_price(self) -> Optional[Decimal]:
+        """Return take profit target price, or None if not set."""
+        return Decimal(self.take_profit_price) if self.take_profit_price else None
 
     def is_breakeven_active(self) -> bool:
         """Return True if break-even protection has been triggered."""
@@ -701,6 +706,19 @@ class Database:
                     conn.commit()
             except Exception as e:
                 logger.debug("signal_history_htf_migration_skipped", reason=str(e))
+
+            # Add take_profit_price column to trailing_stops table
+            try:
+                result = conn.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type='table' AND name='trailing_stops'")
+                )
+                ts_schema = result.scalar()
+                if ts_schema and "take_profit_price" not in ts_schema:
+                    conn.execute(text("ALTER TABLE trailing_stops ADD COLUMN take_profit_price VARCHAR(50)"))
+                    logger.info("migrated_trailing_stops_added_take_profit_price")
+                    conn.commit()
+            except Exception as e:
+                logger.debug("trailing_stops_take_profit_migration_skipped", reason=str(e))
 
     @contextmanager
     def session(self) -> Generator[Session, None, None]:
@@ -1191,8 +1209,9 @@ class Database:
         trailing_distance: Decimal,
         is_paper: bool = False,
         hard_stop: Optional[Decimal] = None,
+        take_profit_price: Optional[Decimal] = None,
     ) -> TrailingStop:
-        """Create a new trailing stop record with optional hard stop-loss."""
+        """Create a new trailing stop record with optional hard stop-loss and take profit."""
         with self.session() as session:
             # Deactivate any existing active trailing stops for this symbol/mode
             session.query(TrailingStop).filter(
@@ -1208,6 +1227,7 @@ class Database:
                 trailing_activation=str(trailing_activation),
                 trailing_distance=str(trailing_distance),
                 hard_stop=str(hard_stop) if hard_stop else None,
+                take_profit_price=str(take_profit_price) if take_profit_price else None,
                 is_active=True,
                 is_paper=is_paper,
             )
@@ -1222,6 +1242,7 @@ class Database:
                 activation=str(trailing_activation),
                 distance=str(trailing_distance),
                 hard_stop=str(hard_stop) if hard_stop else None,
+                take_profit_price=str(take_profit_price) if take_profit_price else None,
             )
             return trailing_stop
 
@@ -1289,6 +1310,7 @@ class Database:
         trailing_activation: Decimal,
         trailing_distance: Decimal,
         hard_stop: Optional[Decimal] = None,
+        take_profit_price: Optional[Decimal] = None,
         is_paper: bool = False,
     ) -> Optional[TrailingStop]:
         """
@@ -1319,6 +1341,7 @@ class Database:
             ts.trailing_activation = str(trailing_activation)
             ts.trailing_distance = str(trailing_distance)
             ts.hard_stop = str(hard_stop) if hard_stop else None
+            ts.take_profit_price = str(take_profit_price) if take_profit_price else None
             # Reset break-even flag so it can re-trigger at new avg_cost level
             ts.breakeven_triggered = False
             # Note: Don't reset trailing_stop level - let it continue trailing
@@ -1331,6 +1354,7 @@ class Database:
                 entry_price=str(entry_price),
                 activation=str(trailing_activation),
                 hard_stop=str(hard_stop) if hard_stop else None,
+                take_profit_price=str(take_profit_price) if take_profit_price else None,
             )
             return ts
 

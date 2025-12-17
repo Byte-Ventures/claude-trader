@@ -2038,7 +2038,15 @@ class TradingDaemon:
             # CRITICAL: If stop creation fails, immediately close position (fail-safe)
             try:
                 new_avg_cost = self._update_position_after_buy(result.size, filled_price, result.fee, is_paper)
-                self._create_trailing_stop(filled_price, candles, is_paper, avg_cost=new_avg_cost, volatility=volatility)
+                take_profit_price = position.take_profit_price if self.settings.enable_take_profit else None
+                self._create_trailing_stop(
+                    filled_price,
+                    candles,
+                    is_paper,
+                    avg_cost=new_avg_cost,
+                    volatility=volatility,
+                    take_profit_price=take_profit_price,
+                )
             except Exception as stop_error:
                 # FAIL-SAFE: Cannot protect position, must close immediately
                 logger.critical(
@@ -2807,6 +2815,7 @@ class TradingDaemon:
         *,  # Force keyword-only for avg_cost
         avg_cost: Decimal,
         volatility: str = "normal",
+        take_profit_price: Optional[Decimal] = None,
     ) -> None:
         """Create or update trailing stop for a position.
 
@@ -2818,6 +2827,7 @@ class TradingDaemon:
                      Must be passed from caller to avoid race conditions.
                      Do NOT query DB here - caller has the authoritative value.
             volatility: Current volatility level (low/normal/high/extreme)
+            take_profit_price: Optional take profit target price
         """
         from src.indicators.atr import calculate_atr
 
@@ -2887,6 +2897,7 @@ class TradingDaemon:
                     trailing_activation=activation,
                     trailing_distance=distance,
                     hard_stop=hard_stop,
+                    take_profit_price=take_profit_price,
                     is_paper=is_paper,
                 )
                 logger.info(
@@ -2896,6 +2907,7 @@ class TradingDaemon:
                     activation=str(activation),
                     distance=str(distance),
                     hard_stop=str(hard_stop),
+                    take_profit_price=str(take_profit_price) if take_profit_price else None,
                 )
             else:
                 # First buy: Create new stop
@@ -2907,6 +2919,7 @@ class TradingDaemon:
                     trailing_distance=distance,
                     is_paper=is_paper,
                     hard_stop=hard_stop,
+                    take_profit_price=take_profit_price,
                 )
                 logger.info(
                     "trailing_stop_created",
@@ -2915,6 +2928,7 @@ class TradingDaemon:
                     activation=str(activation),
                     distance=str(distance),
                     hard_stop=str(hard_stop),
+                    take_profit_price=str(take_profit_price) if take_profit_price else None,
                 )
         except Exception as e:
             # CRITICAL: Re-raise to allow caller to handle (emergency close position)
@@ -2927,10 +2941,11 @@ class TradingDaemon:
 
         Priority order (for buy positions):
         1. Hard stop (capital protection, triggers sell)
-        2. Break-even trigger (moves hard stop to entry at +0.5 ATR, no sell)
-        3. Trailing activation (activates at +1 ATR, no sell)
-        4. Trailing update (moves stop up, no sell)
-        5. Trailing trigger (locks profit, triggers sell)
+        2. Take profit (profit target, triggers sell)
+        3. Break-even trigger (moves hard stop to entry at +0.5 ATR, no sell)
+        4. Trailing activation (activates at +1 ATR, no sell)
+        5. Trailing update (moves stop up, no sell)
+        6. Trailing trigger (locks profit, triggers sell)
 
         The entry_price stored in trailing_stops is the weighted average cost,
         not the individual entry price, ensuring correct calculations for DCA.
@@ -2992,6 +3007,49 @@ class TradingDaemon:
                     is_paper=is_paper,
                 )
                 return "sell"
+
+            # CHECK TAKE PROFIT (if enabled) - Priority #2
+            if self.settings.enable_take_profit:
+                take_profit = ts.get_take_profit_price()
+                if take_profit is not None and current_price >= take_profit:
+                    # Calculate profit percentage (with validation)
+                    if entry_price <= 0:
+                        logger.critical(
+                            "invalid_entry_price_halting_trading",
+                            entry_price=str(entry_price),
+                            context="take_profit_check",
+                        )
+                        self.notifier.send_alert(
+                            f"🔴 CRITICAL: Invalid entry_price ({entry_price}) detected. Halting trading!"
+                        )
+                        self.kill_switch.activate(f"Data corruption: entry_price={entry_price}")
+                        profit_pct = Decimal("0")
+                    else:
+                        profit_pct = ((current_price - entry_price) / entry_price * 100).quantize(
+                            Decimal("0.01"), rounding=ROUND_HALF_UP
+                        )
+
+                    logger.info(
+                        "take_profit_triggered",
+                        exit_type="profit_target",
+                        current_price=str(current_price),
+                        take_profit_price=str(take_profit),
+                        entry_price=str(entry_price),
+                        profit_percent=str(profit_pct),
+                    )
+
+                    self.notifier.send_message(
+                        f"🎯 Take Profit Target Reached\n"
+                        f"Entry: ¤{entry_price:,.2f} | Exit: ¤{current_price:,.2f} (+{profit_pct}%)\n"
+                        f"Target: ¤{take_profit:,.2f}"
+                    )
+
+                    self.db.deactivate_trailing_stop(
+                        symbol=self.settings.trading_pair,
+                        is_paper=is_paper,
+                    )
+
+                    return "sell"
 
             # Check break-even trigger (protects capital once in moderate profit)
             # This triggers BEFORE trailing activation (0.5 ATR vs 1 ATR)
@@ -3160,6 +3218,7 @@ class TradingDaemon:
                 is_paper=is_paper,
                 avg_cost=avg_cost,
                 volatility=self._last_volatility,  # Use last known volatility for appropriate stop width
+                take_profit_price=None,  # Emergency recovery: no TP target available
             )
             logger.info("emergency_stop_created", avg_cost=str(avg_cost))
             self.notifier.send_alert("✅ Emergency stop protection created successfully.")

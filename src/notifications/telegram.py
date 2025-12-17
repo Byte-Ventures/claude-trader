@@ -413,6 +413,7 @@ class TelegramNotifier:
         is_paper: bool = False,
         signal_score: Optional[int] = None,
         stop_loss: Optional[Decimal] = None,
+        take_profit: Optional[Decimal] = None,
         position_percent: Optional[float] = None,
         realized_pnl: Optional[Decimal] = None,
         entry_price: Optional[Decimal] = None,
@@ -436,6 +437,9 @@ class TelegramNotifier:
         if stop_loss is not None and side == "buy":
             stop_pct = ((price - stop_loss) / price * 100) if price > 0 else 0
             lines.append(f"Stop Loss: ¤{stop_loss:,.2f} ({stop_pct:.1f}% below)")
+        if take_profit is not None and side == "buy":
+            tp_pct = ((take_profit - price) / price * 100) if price > 0 else 0
+            lines.append(f"Take Profit: ¤{take_profit:,.2f} ({tp_pct:.1f}% above)")
         if position_percent is not None:
             lines.append(f"Position Size: {position_percent:.1f}% of portfolio")
         if realized_pnl is not None and side == "sell":

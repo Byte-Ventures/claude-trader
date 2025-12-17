@@ -314,6 +314,10 @@ class Settings(BaseSettings):
         le=10.0,
         description="Take profit distance as ATR multiple"
     )
+    enable_take_profit: bool = Field(
+        default=True,
+        description="Enable automatic take profit exits at target price"
+    )
     trailing_stop_atr_multiplier: float = Field(
         default=1.0,
         ge=0.5,
