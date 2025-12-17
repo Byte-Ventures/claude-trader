@@ -300,7 +300,7 @@ class OrderValidator:
                 )
 
             warnings = []
-            if new_position_percent >= self.config.max_position_percent * 0.9:
+            if new_position_percent >= self.config.max_position_percent * Decimal("0.9"):
                 warnings.append(
                     f"Position nearing limit: {new_position_percent:.1f}%"
                 )
