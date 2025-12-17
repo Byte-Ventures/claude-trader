@@ -144,7 +144,7 @@ jobs:
           git push origin "$BRANCH"
 
           # Create PR
-          PR_BODY=$(printf "## Automated Release v%s\n\nThis PR was automatically created by semantic-release.\n\n**Changes:**\n- Version bump to %s\n- Updated CHANGELOG.md\n\nMerge this PR to complete the release." "$VERSION" "$VERSION")
+          PR_BODY=$(printf "## Automated Release v%s\n\nThis PR was automatically created by semantic-release.\n\n**Changes:**\n- Version bump to %s\n- Updated CHANGELOG.md\n\nThis PR will be auto-merged once checks pass." "$VERSION" "$VERSION")
           if ! PR_URL=$(gh pr create --base main --head "$BRANCH" --title "chore(release): ${VERSION}" --body "$PR_BODY"); then
             echo "::error::Failed to create PR for release $VERSION"
             # Cleanup orphaned branch
@@ -153,4 +153,10 @@ jobs:
           fi
 
           echo "Created PR: $PR_URL"
+
+          # Enable auto-merge (waits for required status checks before merging)
+          if ! gh pr merge "$BRANCH" --auto --squash; then
+            echo "::warning::Failed to enable auto-merge. PR created but requires manual merge."
+          fi
+
           echo "::notice::Release PR created at $PR_URL"
