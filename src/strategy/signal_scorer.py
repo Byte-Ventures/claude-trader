@@ -10,7 +10,7 @@ Trade execution requires score magnitude >= threshold (default: 60).
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 import pandas as pd
 import structlog
@@ -23,6 +23,8 @@ from src.indicators.atr import calculate_atr, get_volatility_level
 
 logger = structlog.get_logger(__name__)
 
+# Type alias for sentiment categories from Fear & Greed Index
+SentimentCategory = Literal["extreme_fear", "fear", "neutral", "greed", "extreme_greed"]
 
 # Recommended signal thresholds by candle interval
 # Shorter candles capture faster moves, so lower thresholds are appropriate
@@ -413,6 +415,7 @@ class SignalScorer:
         htf_bias: Optional[str] = None,
         htf_daily: Optional[str] = None,
         htf_4h: Optional[str] = None,
+        sentiment_category: Optional[SentimentCategory] = None,
     ) -> SignalResult:
         """
         Calculate composite signal score from OHLCV data.
@@ -423,10 +426,22 @@ class SignalScorer:
             htf_bias: Combined HTF bias ("bullish", "bearish", "neutral", or None)
             htf_daily: Daily timeframe trend (for AI context)
             htf_4h: 4-hour timeframe trend (for AI context)
+            sentiment_category: Fear & Greed category ("extreme_fear", "fear", etc.)
 
         Returns:
             SignalResult with score, action, and breakdown
         """
+        # Validate sentiment_category at runtime to ensure type safety in financial logic
+        if sentiment_category is not None and sentiment_category not in (
+            "extreme_fear", "fear", "neutral", "greed", "extreme_greed"
+        ):
+            logger.error(
+                "invalid_sentiment_category",
+                category=sentiment_category,
+                impact="extreme_fear_override_disabled",
+            )
+            sentiment_category = None  # Fail safe
+
         if df.empty or len(df) < max(self.ema_slow_period, self.bollinger_period, 26):
             return SignalResult(
                 score=0,
@@ -686,6 +701,8 @@ class SignalScorer:
         # - Bearish signal (-score): -boost if HTF bearish (more negative = stronger sell),
         #                            +penalty if HTF bullish (less negative = weaker sell)
         htf_adjustment = 0
+        extreme_fear_override_applied = False  # Track if extreme fear override was used
+
         if htf_bias and htf_bias != "neutral":
             # Strong HTF bias (daily + 4H agree): apply full adjustment
             if total_score > 0:  # Bullish signal (potential buy)
@@ -708,20 +725,63 @@ class SignalScorer:
             # Apply half penalty when daily trend opposes signal - daily is more reliable.
             # Use round() to handle odd mtf_counter_penalty values correctly.
             half_penalty = round(self.mtf_counter_penalty / 2)
-            if total_score > 0 and htf_daily == "bearish":
+
+            # EXTREME FEAR OVERRIDE: Only applies when daily/4H disagree (htf_bias=neutral)
+            # When both timeframes agree, the existing aligned/counter logic already applies
+            # full penalties, so no override is needed.
+            #
+            # During extreme fear conditions, when daily/4H disagree, apply FULL counter-penalty
+            # based on daily trend (instead of the usual half penalty). This prevents 4H neutral
+            # signals from neutralizing the more reliable daily trend during extreme conditions.
+            if sentiment_category == "extreme_fear" and htf_daily == "bearish" and total_score > 0:
+                # Buying into bearish daily trend during extreme fear - apply FULL penalty
+                htf_adjustment = -self.mtf_counter_penalty
+                extreme_fear_override_applied = True
+                score_before = total_score
+                total_score += htf_adjustment
+                logger.info(
+                    "extreme_fear_daily_penalty_applied",
+                    htf_daily=htf_daily,
+                    htf_4h=htf_4h,
+                    sentiment=sentiment_category,
+                    signal_direction="buy",
+                    adjustment=htf_adjustment,
+                    score_before=score_before,
+                    score_after=total_score,
+                )
+            elif sentiment_category == "extreme_fear" and htf_daily == "bullish" and total_score < 0:
+                # Selling into bullish daily trend during extreme fear - apply FULL penalty
+                # to weaken sell signal more aggressively (prevent panic selling)
+                htf_adjustment = self.mtf_counter_penalty
+                extreme_fear_override_applied = True
+                score_before = total_score
+                total_score += htf_adjustment
+                logger.info(
+                    "extreme_fear_daily_penalty_applied",
+                    htf_daily=htf_daily,
+                    htf_4h=htf_4h,
+                    sentiment=sentiment_category,
+                    signal_direction="sell",
+                    adjustment=htf_adjustment,
+                    score_before=score_before,
+                    score_after=total_score,
+                )
+            elif total_score > 0 and htf_daily == "bearish":
                 # Buying into bearish daily trend - apply half penalty
                 htf_adjustment = -half_penalty
             elif total_score < 0 and htf_daily == "bullish":
                 # Selling into bullish daily trend - weaken sell signal
                 htf_adjustment = half_penalty
 
-        if htf_adjustment != 0:
+        # Apply adjustment and log only if NOT already handled by extreme fear override
+        if htf_adjustment != 0 and not extreme_fear_override_applied:
             total_score += htf_adjustment
             logger.info(
                 "htf_bias_applied",
                 htf_bias=htf_bias or "neutral",
                 htf_daily=htf_daily,
                 htf_4h=htf_4h,
+                sentiment=sentiment_category,
                 signal_direction="bullish" if total_score > 0 else "bearish",
                 adjustment=htf_adjustment,
                 partial_penalty=htf_bias == "neutral" or htf_bias is None,

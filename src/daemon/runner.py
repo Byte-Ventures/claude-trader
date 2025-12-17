@@ -1184,12 +1184,42 @@ class TradingDaemon:
         # Get HTF bias for multi-timeframe confirmation
         htf_bias, daily_trend, four_hour_trend = self._get_htf_bias()
 
-        # Calculate signal with HTF context
+        # Fetch sentiment before signal calculation to enable extreme fear override in MTF logic.
+        # This must happen BEFORE calculate_score() because sentiment_category is used to
+        # determine whether to apply full vs half counter-penalties when daily/4H disagree.
+        sentiment = None
+        sentiment_category = None
+        if self.settings.regime_sentiment_enabled:
+            try:
+                sentiment = self._run_async_with_timeout(get_cached_sentiment(), timeout=30)
+                if sentiment and sentiment.value is not None:
+                    # Reuse existing classification logic from MarketRegime
+                    sentiment_category = self.market_regime._classify_sentiment(sentiment.value)
+                    logger.debug(
+                        "sentiment_fetch_success",
+                        category=sentiment_category,
+                        value=sentiment.value,
+                    )
+                else:
+                    logger.warning(
+                        "sentiment_unavailable_for_trade_evaluation",
+                        reason="fetch_returned_none",
+                        impact="extreme_fear_override_disabled",
+                    )
+            except Exception as e:
+                logger.warning(
+                    "sentiment_fetch_failed_during_trade_evaluation",
+                    error=str(e),
+                    impact="extreme_fear_override_disabled",
+                )
+
+        # Calculate signal with HTF context and sentiment
         signal_result = self.signal_scorer.calculate_score(
             candles, current_price,
             htf_bias=htf_bias,
             htf_daily=daily_trend,
             htf_4h=four_hour_trend,
+            sentiment_category=sentiment_category,
         )
 
         # Log indicator values for debugging
@@ -1237,12 +1267,7 @@ class TradingDaemon:
                 )
 
         # Calculate market regime for strategy adaptation
-        sentiment = None
-        if self.settings.regime_sentiment_enabled:
-            try:
-                sentiment = self._run_async_with_timeout(get_cached_sentiment(), timeout=30)
-            except Exception as e:
-                logger.debug("sentiment_fetch_skipped", error=str(e))
+        # Note: sentiment already fetched above before signal calculation
         trend = get_ema_trend_from_values(ind.ema_fast, ind.ema_slow) if ind.ema_fast and ind.ema_slow else "neutral"
 
         regime = self.market_regime.calculate(
