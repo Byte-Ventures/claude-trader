@@ -3281,3 +3281,50 @@ def test_take_profit_null_when_disabled(mock_settings):
                     call_kwargs = mock_database.create_trailing_stop.call_args[1]
                     assert call_kwargs['take_profit_price'] is None, \
                         "Take profit should be None when disabled"
+
+
+def test_take_profit_priority_over_trailing_in_gap(mock_settings):
+    """
+    Test TP takes priority over trailing stop when price gaps above both.
+
+    Scenario: Price gaps from $50,500 directly to $53,000
+    - Trailing activation: $51,000
+    - Trailing stop (if active): $52,500
+    - Take profit: $52,000
+
+    TP should trigger (priority #2) before trailing stop logic (priority #6).
+    """
+    mock_settings.enable_take_profit = True
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None
+    mock_database.get_last_regime.return_value = None
+
+    mock_stop = Mock()
+    mock_stop.side = "buy"
+    mock_stop.get_entry_price.return_value = Decimal("50000")
+    mock_stop.get_trailing_activation.return_value = Decimal("51000")
+    mock_stop.get_trailing_distance.return_value = Decimal("500")
+    mock_stop.get_trailing_stop.return_value = Decimal("52500")  # Trailing is active
+    mock_stop.get_hard_stop.return_value = Decimal("49000")
+    mock_stop.get_take_profit_price.return_value = Decimal("52000")  # TP below trailing stop
+    mock_stop.trailing_active = True
+    mock_stop.breakeven_reached = True
+
+    mock_database.get_active_trailing_stop.return_value = mock_stop
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier') as mock_notifier_class:
+                mock_notifier = Mock()
+                mock_notifier_class.return_value = mock_notifier
+                daemon = TradingDaemon(mock_settings)
+
+                # Price gaps above both TP ($52,000) and trailing stop ($52,500)
+                current_price = Decimal("53000")
+                result = daemon._check_trailing_stop(current_price)
+
+                assert result == "sell", "Should trigger sell"
+                # Verify it was TP notification (checked first due to priority)
+                call_args = mock_notifier.send_message.call_args[0][0]
+                assert "Take Profit" in call_args, "Should be TP notification, not trailing stop"

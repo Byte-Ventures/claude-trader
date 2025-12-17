@@ -2038,7 +2038,7 @@ class TradingDaemon:
             # CRITICAL: If stop creation fails, immediately close position (fail-safe)
             try:
                 new_avg_cost = self._update_position_after_buy(result.size, filled_price, result.fee, is_paper)
-                take_profit_price = position.take_profit_price if self.settings.enable_take_profit else None
+                take_profit_price = position.take_profit_price if (self.settings.enable_take_profit and position.take_profit_price) else None
                 self._create_trailing_stop(
                     filled_price,
                     candles,
@@ -3249,7 +3249,7 @@ class TradingDaemon:
                 volatility=self._last_volatility,  # Use last known volatility for appropriate stop width
                 take_profit_price=take_profit_price,
             )
-            logger.info("emergency_stop_created", avg_cost=str(avg_cost), take_profit=str(take_profit_price) if take_profit_price else None)
+            logger.info("emergency_stop_created", avg_cost=str(avg_cost), take_profit_price=str(take_profit_price) if take_profit_price else None)
             self.notifier.send_alert("✅ Emergency stop protection created successfully.")
         except Exception as e:
             logger.error("emergency_stop_creation_failed", error=str(e))
