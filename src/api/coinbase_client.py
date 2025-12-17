@@ -325,9 +325,11 @@ class CoinbaseClient:
                 logger.warning("poll_order_failed", order_id=order_id, attempt=attempt + 1, error=str(e))
                 time.sleep(poll_interval)
 
-        # Return last known state even if not filled
-        logger.warning("order_poll_timeout", order_id=order_id, max_attempts=max_attempts)
-        return order_data
+        # Timeout: order may have filled but we don't have confirmation
+        # Raise exception to trigger retry logic or fail safely
+        error_msg = f"Order polling timed out after {max_attempts} attempts"
+        logger.error("order_poll_timeout", order_id=order_id, max_attempts=max_attempts)
+        raise TimeoutError(error_msg)
 
     @retry(
         stop=stop_after_attempt(3),
@@ -379,21 +381,13 @@ class CoinbaseClient:
                 )
 
             # Poll for fill details (Coinbase fills async)
+            # Raises TimeoutError if polling exceeds max_attempts
             filled_order = self._poll_order_fill(order_id)
 
             filled_size = Decimal(filled_order.get("filled_size", "0"))
             avg_price = filled_order.get("average_filled_price")
             total_fees = Decimal(filled_order.get("total_fees", "0"))
             status = filled_order.get("status", "unknown")
-
-            # Detect polling timeout: empty dict or no filled_size when status is unknown
-            if not filled_order or (filled_size == Decimal("0") and status == "unknown"):
-                logger.warning(
-                    "market_buy_polling_timeout",
-                    order_id=order_id,
-                    message="Order may have filled but polling timed out. Check order status manually.",
-                )
-                status = "timeout"
 
             logger.info(
                 "market_buy_completed",
@@ -476,21 +470,13 @@ class CoinbaseClient:
                 )
 
             # Poll for fill details (Coinbase fills async)
+            # Raises TimeoutError if polling exceeds max_attempts
             filled_order = self._poll_order_fill(order_id)
 
             filled_size = Decimal(filled_order.get("filled_size", "0"))
             avg_price = filled_order.get("average_filled_price")
             total_fees = Decimal(filled_order.get("total_fees", "0"))
             status = filled_order.get("status", "unknown")
-
-            # Detect polling timeout: empty dict or no filled_size when status is unknown
-            if not filled_order or (filled_size == Decimal("0") and status == "unknown"):
-                logger.warning(
-                    "market_sell_polling_timeout",
-                    order_id=order_id,
-                    message="Order may have filled but polling timed out. Check order status manually.",
-                )
-                status = "timeout"
 
             logger.info(
                 "market_sell_completed",

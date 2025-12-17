@@ -779,6 +779,35 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def validate_trade_size_limits(self) -> "Settings":
+        """Validate order size limits are properly ordered."""
+        if self.max_trade_quote is not None:
+            if self.max_trade_quote < self.min_trade_quote:
+                raise ValueError(
+                    f"max_trade_quote ({self.max_trade_quote}) must be >= "
+                    f"min_trade_quote ({self.min_trade_quote})"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def validate_extreme_rsi_thresholds(self) -> "Settings":
+        """Validate extreme RSI thresholds are properly ordered with minimum gap."""
+        if self.extreme_rsi_lower >= self.extreme_rsi_upper:
+            raise ValueError(
+                f"extreme_rsi_lower ({self.extreme_rsi_lower}) must be < "
+                f"extreme_rsi_upper ({self.extreme_rsi_upper})"
+            )
+
+        # Require at least 40-point gap for meaningful crash/pump detection
+        gap = self.extreme_rsi_upper - self.extreme_rsi_lower
+        if gap < 40:
+            raise ValueError(
+                f"extreme_rsi thresholds must have at least 40-point gap "
+                f"(current gap: {gap}). Narrow gaps create false crash/pump signals."
+            )
+        return self
+
     @model_validator(mode="before")
     @classmethod
     def migrate_deprecated_claude_vars(cls, data: dict) -> dict:
