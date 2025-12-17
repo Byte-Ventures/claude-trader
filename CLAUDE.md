@@ -170,6 +170,7 @@ This ensures the PR only shows commits that are actually new.
 
 - All merges to `main` must be done via pull requests
 - Direct commits to `main` are not allowed
+- **NEVER delete the `develop` branch** - feature branches depend on it. Do NOT use `--delete-branch` when merging PRs from develop to main.
 - **ALWAYS check that a PR is still OPEN before pushing commits to it** - use `gh pr view {NUMBER} --json state`
 - **NEVER push additional commits to `develop` after a PR is merged** - reset develop to main first, then create a new PR for any additional fixes
 - **After ANY PR merge to `main`**: immediately reset `develop` to `main` before doing anything else
