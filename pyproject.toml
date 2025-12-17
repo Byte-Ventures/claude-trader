@@ -1,11 +1,16 @@
 [tool.semantic_release]
 version_variables = ["src/version.py:__version__"]
-branch = "main"
 commit_message = "chore(release): {version}"
-commit_parser = "angular"
+commit_parser = "conventional"
 build_command = ""
 
+[tool.semantic_release.branches.main]
+match = "main"
+
 [tool.semantic_release.changelog]
+mode = "update"
+
+[tool.semantic_release.changelog.default_templates]
 changelog_file = "CHANGELOG.md"
 
 [tool.semantic_release.remote]
