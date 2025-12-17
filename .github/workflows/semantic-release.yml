@@ -72,8 +72,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -e  # Exit on any error
+
           VERSION="${{ steps.version.outputs.next }}"
           BRANCH="release/v${VERSION}"
+
+          # Validate VERSION is set and looks like a semver
+          if [ -z "$VERSION" ] || ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Invalid or empty VERSION: '$VERSION'"
+            exit 1
+          fi
 
           # Delete branch if it exists from a previous failed run
           if git show-ref --verify --quiet refs/heads/"$BRANCH"; then
@@ -88,12 +96,57 @@ jobs:
           # Create release branch
           git checkout -b "$BRANCH"
 
-          # Run semantic-release to update version files and commit
-          # --no-push: don't push yet (we'll push the branch manually)
-          # --no-tag: don't create tag yet (will be created after PR merge)
-          # --no-vcs-release: don't create GitHub release yet
-          if ! semantic-release version --no-push --no-tag --no-vcs-release; then
-            echo "::error::semantic-release failed to update version files"
+          # Manually update version file
+          # Note: semantic-release won't update files on non-release branches,
+          # so we do it manually. The version was already calculated above.
+          sed -i "s/^__version__ = .*/__version__ = \"${VERSION}\"/" src/version.py
+
+          # Validate the version was actually updated
+          if ! grep -q "^__version__ = \"${VERSION}\"" src/version.py; then
+            echo "::error::Failed to update src/version.py to version ${VERSION}"
+            cat src/version.py
+            exit 1
+          fi
+
+          # Generate minimal changelog entry (full details in GitHub release)
+          DATE=$(date +%Y-%m-%d)
+          REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+
+          CHANGELOG_ENTRY="## v${VERSION} (${DATE})
+
+See [GitHub Release](${REPO_URL}/releases/tag/v${VERSION}) for details.
+"
+
+          # Update CHANGELOG.md - insert before first version entry (## v)
+          if [ -f CHANGELOG.md ] && [ -s CHANGELOG.md ]; then
+            if grep -q '^## v' CHANGELOG.md; then
+              # Insert before first version entry
+              awk -v entry="$CHANGELOG_ENTRY" '/^## v/ && !inserted {print entry; inserted=1} {print}' CHANGELOG.md > CHANGELOG.tmp
+              mv CHANGELOG.tmp CHANGELOG.md
+            else
+              # No version entries - append to end of file
+              echo "" >> CHANGELOG.md
+              echo "$CHANGELOG_ENTRY" >> CHANGELOG.md
+            fi
+          else
+            # File doesn't exist or is empty - create with standard header
+            cat > CHANGELOG.md << 'HEADER'
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+This file is automatically updated by semantic-release.
+
+HEADER
+            echo "$CHANGELOG_ENTRY" >> CHANGELOG.md
+          fi
+
+          # Stage changes and commit only if there are actual changes
+          git add src/version.py CHANGELOG.md
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(release): ${VERSION}"
+          else
+            echo "::error::No changes to commit - version may already be ${VERSION}"
             exit 1
           fi
 
