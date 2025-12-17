@@ -1681,10 +1681,15 @@ class TradingDaemon:
                         logger.error("claude_review_failed", error=str(e), exc_info=True)
 
                         # Check AI failure mode setting (per-action)
+                        # Only apply failure mode logic to actual trades, not holds
                         if effective_action == "buy":
                             failure_mode = self.settings.ai_failure_mode_buy
-                        else:  # sell
+                        elif effective_action == "sell":
                             failure_mode = self.settings.ai_failure_mode_sell
+                        else:  # hold - AI review was for "interesting_hold" or debug mode
+                            # No trade to skip, just log and continue
+                            logger.info("ai_review_failed_for_hold", action=effective_action)
+                            failure_mode = AIFailureMode.OPEN  # Continue to hold decision
 
                         if failure_mode == AIFailureMode.SAFE:
                             logger.warning(

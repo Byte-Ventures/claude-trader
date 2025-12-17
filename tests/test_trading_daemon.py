@@ -964,17 +964,21 @@ def test_ai_failure_mode_safe_skips_trade(mock_settings, mock_exchange_client, m
                 notifier_instance.send_message.assert_called()
 
 
-def test_ai_failure_mode_open_is_default(mock_settings, mock_exchange_client, mock_database):
-    """Verify AIFailureMode.OPEN is the default for backward compatibility."""
+def test_ai_failure_mode_defaults(mock_settings, mock_exchange_client, mock_database):
+    """Verify AI failure mode defaults: safe for buys, open for sells."""
     from config.settings import AIFailureMode, Settings
 
-    # Create real settings to check default
+    # Create real settings to check defaults
     with patch.dict('os.environ', {}, clear=False):
         settings = Settings(
             trading_mode="paper",
             trading_pair="BTC-USD",
         )
+        # Legacy setting default (for backward compatibility)
         assert settings.ai_failure_mode == AIFailureMode.OPEN
+        # New per-action defaults
+        assert settings.ai_failure_mode_buy == AIFailureMode.SAFE, "Buys should default to SAFE (skip on AI failure)"
+        assert settings.ai_failure_mode_sell == AIFailureMode.OPEN, "Sells should default to OPEN (proceed on AI failure)"
 
 
 def test_ai_failure_mode_sell_proceeds_on_failure(mock_settings, mock_exchange_client, mock_database):
