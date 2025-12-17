@@ -1180,12 +1180,34 @@ class TradingDaemon:
         # Get HTF bias for multi-timeframe confirmation
         htf_bias, daily_trend, four_hour_trend = self._get_htf_bias()
 
-        # Calculate signal with HTF context
+        # Fetch sentiment before signal calculation for extreme fear check in MTF scoring
+        sentiment = None
+        sentiment_category = None
+        if self.settings.regime_sentiment_enabled:
+            try:
+                sentiment = self._run_async_with_timeout(get_cached_sentiment(), timeout=30)
+                if sentiment and sentiment.value is not None:
+                    # Classify sentiment value into category
+                    if sentiment.value < 25:
+                        sentiment_category = "extreme_fear"
+                    elif sentiment.value < 45:
+                        sentiment_category = "fear"
+                    elif sentiment.value <= 55:
+                        sentiment_category = "neutral"
+                    elif sentiment.value <= 75:
+                        sentiment_category = "greed"
+                    else:
+                        sentiment_category = "extreme_greed"
+            except Exception as e:
+                logger.debug("sentiment_fetch_skipped", error=str(e))
+
+        # Calculate signal with HTF context and sentiment
         signal_result = self.signal_scorer.calculate_score(
             candles, current_price,
             htf_bias=htf_bias,
             htf_daily=daily_trend,
             htf_4h=four_hour_trend,
+            sentiment_category=sentiment_category,
         )
 
         # Log indicator values for debugging
@@ -1233,12 +1255,7 @@ class TradingDaemon:
                 )
 
         # Calculate market regime for strategy adaptation
-        sentiment = None
-        if self.settings.regime_sentiment_enabled:
-            try:
-                sentiment = self._run_async_with_timeout(get_cached_sentiment(), timeout=30)
-            except Exception as e:
-                logger.debug("sentiment_fetch_skipped", error=str(e))
+        # Note: sentiment already fetched above before signal calculation
         trend = get_ema_trend_from_values(ind.ema_fast, ind.ema_slow) if ind.ema_fast and ind.ema_slow else "neutral"
 
         regime = self.market_regime.calculate(
