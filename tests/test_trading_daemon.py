@@ -92,7 +92,6 @@ def mock_settings():
     settings.position_size_percent = Decimal("25")
     settings.stop_loss_atr_multiplier = 2.0
     settings.min_stop_loss_percent = 0.5
-    settings.min_take_profit_percent = 2.0
     settings.take_profit_atr_multiplier = 3.0
     settings.stop_loss_pct = None
     settings.trailing_stop_enabled = False

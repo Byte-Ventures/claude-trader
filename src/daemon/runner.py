@@ -300,7 +300,6 @@ class TradingDaemon:
                 max_position_percent=settings.position_size_percent,
                 stop_loss_atr_multiplier=settings.stop_loss_atr_multiplier,
                 min_stop_loss_percent=settings.min_stop_loss_percent,
-                min_take_profit_percent=settings.min_take_profit_percent,
             ),
             atr_period=settings.atr_period,
             take_profit_atr_multiplier=settings.take_profit_atr_multiplier,
@@ -608,7 +607,6 @@ class TradingDaemon:
                 take_profit_atr_multiplier=new_settings.take_profit_atr_multiplier,
                 atr_period=new_settings.atr_period,
                 min_stop_loss_percent=new_settings.min_stop_loss_percent,
-                min_take_profit_percent=new_settings.min_take_profit_percent,
             )
 
             # Update OrderValidator
