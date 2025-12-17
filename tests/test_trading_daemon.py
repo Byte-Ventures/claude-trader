@@ -796,16 +796,18 @@ def test_ai_threshold_adjustment_scales_with_confidence(mock_settings, mock_exch
 
 def test_ai_failure_mode_open_does_not_skip_trade(mock_settings, mock_exchange_client, mock_database):
     """
-    CRITICAL: Verify AI_FAILURE_MODE=open does NOT skip trade when AI review fails.
+    CRITICAL: Verify AI_FAILURE_MODE_BUY=open does NOT skip trade when AI review fails.
 
-    This is the default fail-open behavior - the code should NOT return early
+    This tests fail-open behavior for buys - the code should NOT return early
     after AI failure, allowing the trade to proceed.
     """
     from config.settings import AIFailureMode, VetoAction
 
-    # Enable AI review and set to OPEN mode (default)
+    # Enable AI review and set to OPEN mode for buys
     mock_settings.ai_review_enabled = True
-    mock_settings.ai_failure_mode = AIFailureMode.OPEN
+    mock_settings.ai_failure_mode = AIFailureMode.OPEN  # Fallback
+    mock_settings.ai_failure_mode_buy = AIFailureMode.OPEN  # Per-action setting
+    mock_settings.ai_failure_mode_sell = AIFailureMode.OPEN
     mock_settings.openrouter_api_key = Mock()
     mock_settings.openrouter_api_key.get_secret_value.return_value = "test_key"
     mock_settings.reviewer_model_1 = "test/model1"
@@ -879,16 +881,18 @@ def test_ai_failure_mode_open_does_not_skip_trade(mock_settings, mock_exchange_c
 
 def test_ai_failure_mode_safe_skips_trade(mock_settings, mock_exchange_client, mock_database):
     """
-    CRITICAL: Verify AI_FAILURE_MODE=safe skips trade when AI review fails.
+    CRITICAL: Verify AI_FAILURE_MODE_BUY=safe skips trade when AI review fails.
 
-    In safe mode, trades are NOT executed when AI review is unavailable,
+    In safe mode, buys are NOT executed when AI review is unavailable,
     providing protection against trading blind during AI outages.
     """
     from config.settings import AIFailureMode, VetoAction
 
-    # Enable AI review and set to SAFE mode
+    # Enable AI review and set to SAFE mode for buys
     mock_settings.ai_review_enabled = True
-    mock_settings.ai_failure_mode = AIFailureMode.SAFE
+    mock_settings.ai_failure_mode = AIFailureMode.OPEN  # Fallback
+    mock_settings.ai_failure_mode_buy = AIFailureMode.SAFE  # Per-action setting (safe for buys)
+    mock_settings.ai_failure_mode_sell = AIFailureMode.OPEN
     mock_settings.openrouter_api_key = Mock()
     mock_settings.openrouter_api_key.get_secret_value.return_value = "test_key"
     mock_settings.reviewer_model_1 = "test/model1"
@@ -983,9 +987,11 @@ def test_ai_failure_notification_cooldown(mock_settings, mock_exchange_client, m
     from config.settings import AIFailureMode, VetoAction
     from datetime import datetime, timedelta, timezone
 
-    # Enable AI review and set to SAFE mode
+    # Enable AI review and set to SAFE mode for buys
     mock_settings.ai_review_enabled = True
-    mock_settings.ai_failure_mode = AIFailureMode.SAFE
+    mock_settings.ai_failure_mode = AIFailureMode.OPEN  # Fallback
+    mock_settings.ai_failure_mode_buy = AIFailureMode.SAFE  # Per-action setting
+    mock_settings.ai_failure_mode_sell = AIFailureMode.OPEN
     mock_settings.openrouter_api_key = Mock()
     mock_settings.openrouter_api_key.get_secret_value.return_value = "test_key"
     mock_settings.reviewer_model_1 = "test/model1"
