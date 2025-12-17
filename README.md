@@ -103,7 +103,8 @@ Uses 3 reviewer agents with different stances (Pro, Neutral, Opposing) plus a ju
 | `JUDGE_MODEL` | `deepseek/deepseek-chat-v3.1` | Judge model for final decision |
 | `VETO_ACTION` | `info` | `skip`, `reduce`, `delay`, or `info` |
 | `AI_REVIEW_ALL` | `false` | Review ALL decisions (debug mode) |
-| `AI_FAILURE_MODE` | `open` | `open` (proceed) or `safe` (skip) on failure |
+| `AI_FAILURE_MODE_BUY` | `safe` | AI failure behavior for buys: `safe` (skip) or `open` (proceed) |
+| `AI_FAILURE_MODE_SELL` | `open` | AI failure behavior for sells: `safe` (skip) or `open` (proceed) |
 | `AI_RECOMMENDATION_TTL_MINUTES` | `20` | How long AI recs influence thresholds |
 | `AI_MAX_TOKENS` | `4000` | Max tokens for AI responses |
 

@@ -75,6 +75,18 @@ class TradingDaemon:
         self.settings = settings
         self.shutdown_event = Event()
         self._running = False
+
+        # Check for deprecated AI_FAILURE_MODE setting
+        import os
+        if "AI_FAILURE_MODE" in os.environ and (
+            "AI_FAILURE_MODE_BUY" not in os.environ or "AI_FAILURE_MODE_SELL" not in os.environ
+        ):
+            logger.warning(
+                "deprecated_setting_detected",
+                setting="AI_FAILURE_MODE",
+                message="AI_FAILURE_MODE is deprecated. Use AI_FAILURE_MODE_BUY and AI_FAILURE_MODE_SELL instead. "
+                        "New defaults: BUY=safe (skip on AI failure), SELL=open (proceed on AI failure)."
+            )
         self._last_daily_report: Optional[date] = None
         self._last_weekly_report: Optional[date] = None
         self._last_monthly_report: Optional[date] = None
