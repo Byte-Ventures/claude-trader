@@ -1780,7 +1780,10 @@ class TestHTFBiasModifier:
             sentiment_category="extreme_fear",
         )
 
-        # Test only applies if signal is positive (buy signal). If not, verify no unintended effects
+        # Test only applies if signal is positive (buy signal)
+        # NOTE: Test fixtures may not always produce expected signal direction due to
+        # trend filters and other factors. We test the logic when applicable, and verify
+        # no unintended side effects otherwise.
         if result_baseline.score > 0:
             # Without extreme fear, partial penalty (-10) is applied
             assert result_baseline.breakdown.get("htf_bias") == -10, "Expected half penalty without extreme fear"
@@ -1813,7 +1816,10 @@ class TestHTFBiasModifier:
             sentiment_category="extreme_fear",
         )
 
-        # Test only applies if signal is negative (sell signal). If not, verify no unintended effects
+        # Test only applies if signal is negative (sell signal)
+        # NOTE: Test fixtures may not always produce expected signal direction due to
+        # trend filters and other factors. We test the logic when applicable, and verify
+        # no unintended side effects otherwise.
         if result_baseline.score < 0:
             # Without extreme fear, partial penalty (+10) is applied
             assert result_baseline.breakdown.get("htf_bias") == 10, "Expected half penalty without extreme fear"
