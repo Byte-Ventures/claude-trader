@@ -1687,9 +1687,10 @@ class TradingDaemon:
                         elif effective_action == "sell":
                             failure_mode = self.settings.ai_failure_mode_sell
                         else:  # hold - AI review was for "interesting_hold" or debug mode
-                            # No trade to skip, just log and continue
+                            # Holds don't execute trades, so failure mode is irrelevant
+                            # Set to OPEN to skip the SAFE branch (no trade to skip anyway)
                             logger.info("ai_review_failed_for_hold", action=effective_action)
-                            failure_mode = AIFailureMode.OPEN  # Continue to hold decision
+                            failure_mode = AIFailureMode.OPEN
 
                         if failure_mode == AIFailureMode.SAFE:
                             logger.warning(
