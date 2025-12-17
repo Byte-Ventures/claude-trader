@@ -1181,7 +1181,8 @@ class TradingDaemon:
         # Determine which trade directions are possible
         min_quote = Decimal(str(self.position_sizer.config.min_trade_quote))
         min_base = Decimal(str(self.position_sizer.config.min_trade_base))
-        max_position_pct = self.position_sizer.config.max_position_percent
+        # Use validator's hard limit (MAX_POSITION_PERCENT), not position sizer's soft target
+        max_position_pct = self.validator.config.max_position_percent
 
         # Check if there's meaningful room to buy (at least 1% of portfolio or min_trade_quote)
         # This prevents running AI review when position is nearly at limit
