@@ -72,8 +72,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -e  # Exit on any error
+
           VERSION="${{ steps.version.outputs.next }}"
           BRANCH="release/v${VERSION}"
+
+          # Validate VERSION is set and looks like a semver
+          if [ -z "$VERSION" ] || ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Invalid or empty VERSION: '$VERSION'"
+            exit 1
+          fi
 
           # Delete branch if it exists from a previous failed run
           if git show-ref --verify --quiet refs/heads/"$BRANCH"; then
@@ -91,7 +99,8 @@ jobs:
           # Manually update version file
           # Note: semantic-release won't update files on non-release branches,
           # so we do it manually. The version was already calculated above.
-          sed -i "s/__version__ = .*/__version__ = \"${VERSION}\"/" src/version.py
+          # Use anchored regex to match only the actual assignment, not comments
+          sed -i "s/^__version__ = .*/__version__ = \"${VERSION}\"/" src/version.py
 
           # Generate minimal changelog entry (full details in GitHub release)
           DATE=$(date +%Y-%m-%d)
@@ -104,20 +113,26 @@ See [GitHub Release](${REPO_URL}/releases/tag/v${VERSION}) for details.
 "
 
           # Update CHANGELOG.md
-          if [ -f CHANGELOG.md ]; then
-            # Create temp file with new entry after header
+          if [ -f CHANGELOG.md ] && [ -s CHANGELOG.md ]; then
+            # File exists and is not empty - insert after header
             head -n 1 CHANGELOG.md > CHANGELOG.tmp
             echo "" >> CHANGELOG.tmp
             echo "$CHANGELOG_ENTRY" >> CHANGELOG.tmp
             tail -n +2 CHANGELOG.md >> CHANGELOG.tmp
             mv CHANGELOG.tmp CHANGELOG.md
           else
+            # File doesn't exist or is empty - create fresh
             echo -e "# Changelog\n\n${CHANGELOG_ENTRY}" > CHANGELOG.md
           fi
 
-          # Commit changes
+          # Stage changes and commit only if there are actual changes
           git add src/version.py CHANGELOG.md
-          git commit -m "chore(release): ${VERSION}"
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(release): ${VERSION}"
+          else
+            echo "::error::No changes to commit - version may already be ${VERSION}"
+            exit 1
+          fi
 
           # Push the release branch
           git push origin "$BRANCH"
