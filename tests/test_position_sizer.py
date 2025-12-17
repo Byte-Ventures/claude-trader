@@ -53,7 +53,7 @@ def custom_config():
 @pytest.fixture
 def sizer_custom(custom_config):
     """Position sizer with custom configuration."""
-    return PositionSizer(config=custom_config, atr_period=20, take_profit_atr_multiplier=3.0)
+    return PositionSizer(config=custom_config, atr_period=20)
 
 
 @pytest.fixture
@@ -166,19 +166,17 @@ def test_default_initialization():
     assert sizer.config.stop_loss_atr_multiplier == 1.5
     assert sizer.config.min_trade_quote == 100.0
     assert sizer.atr_period == 14
-    assert sizer.take_profit_multiplier == 2.0
 
 
 def test_custom_configuration(custom_config):
     """Test sizer accepts custom configuration."""
-    sizer = PositionSizer(config=custom_config, atr_period=20, take_profit_atr_multiplier=3.0)
+    sizer = PositionSizer(config=custom_config, atr_period=20)
 
     assert sizer.config.max_position_percent == 30.0
     assert sizer.config.risk_per_trade_percent == 1.0
     assert sizer.config.stop_loss_atr_multiplier == 2.0
     assert sizer.config.min_trade_quote == 20.0
     assert sizer.atr_period == 20
-    assert sizer.take_profit_multiplier == 3.0
 
 
 # ============================================================================
@@ -205,7 +203,6 @@ def test_calculate_size_returns_result(sizer, sample_df):
     assert isinstance(result.size_base, Decimal)
     assert isinstance(result.size_quote, Decimal)
     assert isinstance(result.stop_loss_price, Decimal)
-    assert isinstance(result.take_profit_price, Decimal)
 
 
 def test_position_size_respects_max_position_percent(sizer, sample_df):
@@ -524,74 +521,6 @@ def test_stop_loss_distance_uses_atr_multiplier(sizer, sample_df):
 
 
 # ============================================================================
-# Take-Profit Tests
-# ============================================================================
-
-def test_buy_take_profit_above_price(sizer, sample_df):
-    """Test buy order take-profit is above entry price."""
-    current_price = Decimal("50000.00")
-    quote_balance = Decimal("10000.00")
-    base_balance = Decimal("0.0")
-    signal_strength = 80
-
-    result = sizer.calculate_size(
-        sample_df,
-        current_price,
-        quote_balance,
-        base_balance,
-        signal_strength,
-        side="buy",
-    )
-
-    if result.size_quote > 0:
-        assert result.take_profit_price > current_price
-
-
-def test_sell_take_profit_below_price(sizer, sample_df):
-    """Test sell order take-profit is below entry price."""
-    current_price = Decimal("50000.00")
-    quote_balance = Decimal("10000.00")
-    base_balance = Decimal("0.5")
-    signal_strength = 80
-
-    result = sizer.calculate_size(
-        sample_df,
-        current_price,
-        quote_balance,
-        base_balance,
-        signal_strength,
-        side="sell",
-    )
-
-    if result.size_quote > 0:
-        assert result.take_profit_price < current_price
-
-
-def test_take_profit_distance_uses_multiplier(sizer_custom, sample_df):
-    """Test take-profit distance uses configured multiplier."""
-    current_price = Decimal("50000.00")
-    quote_balance = Decimal("10000.00")
-    base_balance = Decimal("0.0")
-    signal_strength = 80
-
-    # Custom sizer has take_profit_atr_multiplier=3.0
-    result = sizer_custom.calculate_size(
-        sample_df,
-        current_price,
-        quote_balance,
-        base_balance,
-        signal_strength,
-        side="buy",
-    )
-
-    if result.size_quote > 0:
-        tp_distance = result.take_profit_price - current_price
-        # TP distance should be larger than stop distance (3.0 vs 2.0 multiplier)
-        stop_distance = current_price - result.stop_loss_price
-        assert tp_distance > stop_distance
-
-
-# ============================================================================
 # Risk Calculation Tests
 # ============================================================================
 
@@ -816,15 +745,6 @@ def test_update_settings_changes_stop_loss_multiplier():
     assert sizer.config.stop_loss_atr_multiplier == 2.5
 
 
-def test_update_settings_changes_take_profit_multiplier():
-    """Test update_settings modifies take_profit_atr_multiplier."""
-    sizer = PositionSizer()
-
-    sizer.update_settings(take_profit_atr_multiplier=2.5)
-
-    assert sizer.take_profit_multiplier == 2.5
-
-
 def test_update_settings_changes_atr_period():
     """Test update_settings modifies ATR period."""
     sizer = PositionSizer()
@@ -873,7 +793,6 @@ def test_sell_all_stop_loss_zero():
     result = sizer.calculate_sell_all_size(base_balance, current_price)
 
     assert result.stop_loss_price == Decimal("0")
-    assert result.take_profit_price == Decimal("0")
     assert result.risk_amount_quote == Decimal("0")
 
 
@@ -962,12 +881,6 @@ def test_price_precision(sizer, sample_df):
         str_stop = str(result.stop_loss_price)
         if '.' in str_stop:
             decimals = len(str_stop.split('.')[1])
-            assert decimals <= 2
-
-        # Check take-profit precision
-        str_tp = str(result.take_profit_price)
-        if '.' in str_tp:
-            decimals = len(str_tp.split('.')[1])
             assert decimals <= 2
 
 

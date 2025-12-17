@@ -302,7 +302,6 @@ class TradingDaemon:
                 min_stop_loss_percent=settings.min_stop_loss_percent,
             ),
             atr_period=settings.atr_period,
-            take_profit_atr_multiplier=settings.take_profit_atr_multiplier,
         )
 
         # Initialize market regime detector
@@ -604,7 +603,6 @@ class TradingDaemon:
             self.position_sizer.update_settings(
                 max_position_percent=new_settings.position_size_percent,
                 stop_loss_atr_multiplier=new_settings.stop_loss_atr_multiplier,
-                take_profit_atr_multiplier=new_settings.take_profit_atr_multiplier,
                 atr_period=new_settings.atr_period,
                 min_stop_loss_percent=new_settings.min_stop_loss_percent,
             )
@@ -2046,7 +2044,6 @@ class TradingDaemon:
                 is_paper=is_paper,
                 signal_score=signal_score,
                 stop_loss=position.stop_loss_price,
-                take_profit=position.take_profit_price,
                 position_percent=position.position_percent,
             )
 

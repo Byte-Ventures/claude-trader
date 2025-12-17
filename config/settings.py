@@ -244,12 +244,6 @@ class Settings(BaseSettings):
         le=10.0,
         description="Minimum stop loss distance as percentage below entry (prevents whipsaw exits during normal market volatility)"
     )
-    take_profit_atr_multiplier: float = Field(
-        default=2.0,
-        ge=1.0,
-        le=10.0,
-        description="Take profit distance as ATR multiple"
-    )
     trailing_stop_atr_multiplier: float = Field(
         default=1.0,
         ge=0.5,
