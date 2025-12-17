@@ -1189,6 +1189,11 @@ class TradingDaemon:
                 if sentiment and sentiment.value is not None:
                     # Reuse existing classification logic from MarketRegime
                     sentiment_category = self.market_regime._classify_sentiment(sentiment.value)
+                    logger.debug(
+                        "sentiment_fetch_success",
+                        category=sentiment_category,
+                        value=sentiment.value,
+                    )
                 else:
                     logger.warning(
                         "sentiment_unavailable_for_trade_evaluation",

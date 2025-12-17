@@ -10,7 +10,7 @@ Trade execution requires score magnitude >= threshold (default: 60).
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 import pandas as pd
 import structlog
@@ -23,6 +23,8 @@ from src.indicators.atr import calculate_atr, get_volatility_level
 
 logger = structlog.get_logger(__name__)
 
+# Type alias for sentiment categories from Fear & Greed Index
+SentimentCategory = Literal["extreme_fear", "fear", "neutral", "greed", "extreme_greed"]
 
 # Recommended signal thresholds by candle interval
 # Shorter candles capture faster moves, so lower thresholds are appropriate
@@ -413,7 +415,7 @@ class SignalScorer:
         htf_bias: Optional[str] = None,
         htf_daily: Optional[str] = None,
         htf_4h: Optional[str] = None,
-        sentiment_category: Optional[str] = None,
+        sentiment_category: Optional[SentimentCategory] = None,
     ) -> SignalResult:
         """
         Calculate composite signal score from OHLCV data.
@@ -712,12 +714,12 @@ class SignalScorer:
             half_penalty = round(self.mtf_counter_penalty / 2)
 
             # EXTREME FEAR OVERRIDE: Only applies when daily/4H disagree (htf_bias=neutral)
-            # When both agree, the standard aligned/counter logic is already strong enough.
-            # This prevents over-penalizing and maintains trade flow during extreme conditions.
+            # When both timeframes agree, the existing aligned/counter logic already applies
+            # full penalties, so no override is needed.
             #
-            # When sentiment is extreme_fear, apply FULL counter-penalty based on daily trend
-            # even if 4H disagrees. This prevents 4H neutral signals from neutralizing daily
-            # trends during extreme conditions.
+            # During extreme fear conditions, when daily/4H disagree, apply FULL counter-penalty
+            # based on daily trend (instead of the usual half penalty). This prevents 4H neutral
+            # signals from neutralizing the more reliable daily trend during extreme conditions.
             if sentiment_category == "extreme_fear" and htf_daily == "bearish" and total_score > 0:
                 # Buying into bearish daily trend during extreme fear - apply FULL penalty
                 htf_adjustment = -self.mtf_counter_penalty
