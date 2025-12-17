@@ -154,9 +154,7 @@ jobs:
 
           echo "Created PR: $PR_URL"
 
-          # Enable auto-merge (waits for required status checks before merging)
-          if ! gh pr merge "$BRANCH" --auto --squash; then
-            echo "::warning::Failed to enable auto-merge. PR created but requires manual merge."
-          fi
+          # Merge the release PR directly
+          gh pr merge "$BRANCH" --squash --delete-branch
 
-          echo "::notice::Release PR created at $PR_URL"
+          echo "::notice::Release PR merged: $PR_URL"
