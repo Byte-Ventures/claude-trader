@@ -412,7 +412,15 @@ class Settings(BaseSettings):
     )
     ai_failure_mode: AIFailureMode = Field(
         default=AIFailureMode.OPEN,
-        description="Behavior when AI review fails: open (proceed with trade) or safe (skip trade)"
+        description="DEPRECATED: Use ai_failure_mode_buy/sell instead. Fallback if per-action not set."
+    )
+    ai_failure_mode_buy: AIFailureMode = Field(
+        default=AIFailureMode.SAFE,
+        description="Behavior when AI review fails for BUY: safe (skip) is recommended - missing opportunity < bad entry"
+    )
+    ai_failure_mode_sell: AIFailureMode = Field(
+        default=AIFailureMode.OPEN,
+        description="Behavior when AI review fails for SELL: open (proceed) is recommended - don't get trapped in crash"
     )
 
     # Hourly Market Analysis (uses same multi-agent system as trade reviews)

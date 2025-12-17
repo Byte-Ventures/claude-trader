@@ -75,6 +75,18 @@ class TradingDaemon:
         self.settings = settings
         self.shutdown_event = Event()
         self._running = False
+
+        # Check for deprecated AI_FAILURE_MODE setting
+        import os
+        if "AI_FAILURE_MODE" in os.environ and (
+            "AI_FAILURE_MODE_BUY" not in os.environ or "AI_FAILURE_MODE_SELL" not in os.environ
+        ):
+            logger.warning(
+                "deprecated_setting_detected",
+                setting="AI_FAILURE_MODE",
+                message="AI_FAILURE_MODE is deprecated. Use AI_FAILURE_MODE_BUY and AI_FAILURE_MODE_SELL instead. "
+                        "New defaults: BUY=safe (skip on AI failure), SELL=open (proceed on AI failure)."
+            )
         self._last_daily_report: Optional[date] = None
         self._last_weekly_report: Optional[date] = None
         self._last_monthly_report: Optional[date] = None
@@ -1668,8 +1680,20 @@ class TradingDaemon:
                     except Exception as e:
                         logger.error("claude_review_failed", error=str(e), exc_info=True)
 
-                        # Check AI failure mode setting
-                        if self.settings.ai_failure_mode == AIFailureMode.SAFE:
+                        # Check AI failure mode setting (per-action)
+                        # Only apply failure mode logic to actual trades, not holds
+                        if effective_action == "buy":
+                            failure_mode = self.settings.ai_failure_mode_buy
+                        elif effective_action == "sell":
+                            failure_mode = self.settings.ai_failure_mode_sell
+                        else:
+                            # Hold - AI review was for "interesting_hold" or debug mode
+                            # AI failure only affects threshold adjustments, not trade execution
+                            # No trade to skip or proceed with, so return early
+                            logger.info("ai_review_failed_for_hold", action=effective_action)
+                            return
+
+                        if failure_mode == AIFailureMode.SAFE:
                             logger.warning(
                                 "trade_skipped_ai_unavailable",
                                 signal_score=signal_result.score,
