@@ -454,6 +454,33 @@ claude-trader/
 └── .env                         # Configuration
 ```
 
+## Testing
+
+The project includes a comprehensive test suite with 300+ tests covering safety systems, strategy logic, and API integrations.
+
+**Run all tests:**
+```bash
+pytest
+```
+
+**Run with coverage:**
+```bash
+pytest --cov=src --cov-report=html
+```
+
+**Live Integration Tests:**
+
+The test suite includes optional integration tests that make real API calls to Coinbase. These tests verify authentication, data retrieval, and order execution against the live API.
+
+⚠️  **WARNING**: Live tests place real orders and cost real money in fees (~$0.30-0.60 per run).
+
+Setup requires a separate test account with $100+ balance. See [tests/README.md](tests/README.md#live-integration-tests) for detailed setup instructions, safety features, and usage.
+
+```bash
+# Run live integration tests (requires setup)
+pytest tests/test_coinbase_integration_live.py --run-live-tests -v
+```
+
 ## Running as a Service
 
 ### Ubuntu (Recommended)

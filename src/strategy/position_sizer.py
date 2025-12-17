@@ -33,6 +33,7 @@ class PositionSizeConfig:
     risk_per_trade_percent: float = 0.5  # Risk 0.5% per trade (conservative)
     stop_loss_atr_multiplier: float = 1.5  # Stop at 1.5x ATR
     min_trade_quote: float = 100.0  # Minimum trade size in quote currency
+    max_trade_quote: Optional[float] = None  # Maximum trade size in quote currency (None = no limit)
     min_trade_base: float = 0.0001  # Minimum trade size in base currency (e.g., BTC)
     min_stop_loss_percent: float = 1.5  # Minimum stop as % of price (floor for short timeframes)
 
@@ -44,6 +45,7 @@ class PositionSizeResult:
     size_base: Decimal  # Size in base currency (e.g., BTC)
     size_quote: Decimal  # Size in quote currency (e.g., USD/EUR)
     stop_loss_price: Decimal
+    take_profit_price: Decimal
     risk_amount_quote: Decimal  # Risk in quote currency
     position_percent: float
 
@@ -64,6 +66,7 @@ class PositionSizer:
         self,
         config: Optional[PositionSizeConfig] = None,
         atr_period: int = 14,
+        take_profit_atr_multiplier: float = 2.0,
     ):
         """
         Initialize position sizer.
@@ -71,14 +74,17 @@ class PositionSizer:
         Args:
             config: Position sizing configuration
             atr_period: ATR calculation period
+            take_profit_atr_multiplier: Take profit distance as ATR multiple
         """
         self.config = config or PositionSizeConfig()
         self.atr_period = atr_period
+        self.take_profit_multiplier = take_profit_atr_multiplier
 
     def update_settings(
         self,
         max_position_percent: Optional[float] = None,
         stop_loss_atr_multiplier: Optional[float] = None,
+        take_profit_atr_multiplier: Optional[float] = None,
         atr_period: Optional[int] = None,
         min_stop_loss_percent: Optional[float] = None,
     ) -> None:
@@ -91,6 +97,8 @@ class PositionSizer:
             self.config.max_position_percent = max_position_percent
         if stop_loss_atr_multiplier is not None:
             self.config.stop_loss_atr_multiplier = stop_loss_atr_multiplier
+        if take_profit_atr_multiplier is not None:
+            self.take_profit_multiplier = take_profit_atr_multiplier
         if atr_period is not None:
             self.atr_period = atr_period
         if min_stop_loss_percent is not None:
@@ -200,8 +208,10 @@ class PositionSizer:
             # For sells, only cap at available base currency (no position limit for exits)
             size_base = min(size_base, base_balance)
 
-        # Step 8: Ensure minimum trade size
+        # Step 8: Calculate quote size and enforce min/max limits
         size_quote = size_base * current_price
+
+        # Check minimum
         if size_quote < Decimal(str(self.config.min_trade_quote)):
             logger.info(
                 "position_size_below_minimum",
@@ -212,11 +222,30 @@ class PositionSizer:
             )
             return self._zero_result(current_price, side)
 
-        # Calculate stop-loss price
+        # Enforce maximum order size if configured
+        if self.config.max_trade_quote is not None:
+            max_quote = Decimal(str(self.config.max_trade_quote))
+            if size_quote > max_quote:
+                logger.info(
+                    "position_size_capped_at_maximum",
+                    original_size_quote=str(size_quote),
+                    max_trade_quote=self.config.max_trade_quote,
+                )
+                size_quote = max_quote
+                size_base = size_quote / current_price
+
+        # Calculate take-profit distance (ATR-based)
+        # NOTE: Take profit prices are calculated and logged but exit logic is NOT YET IMPLEMENTED
+        # This is tracked in GitHub issue #153. Currently informational only.
+        tp_distance = atr_decimal * Decimal(str(self.take_profit_multiplier))
+
+        # Calculate stop-loss and take-profit prices
         if side == "buy":
             stop_loss = current_price - stop_distance
+            take_profit = current_price + tp_distance
         else:  # sell
             stop_loss = current_price + stop_distance
+            take_profit = current_price - tp_distance
 
         # Calculate actual position percentage
         position_percent = float(size_quote / total_value * 100)
@@ -225,6 +254,7 @@ class PositionSizer:
             size_base=size_base.quantize(Decimal("0.00000001")),
             size_quote=size_quote.quantize(Decimal("0.01")),
             stop_loss_price=stop_loss.quantize(Decimal("0.01")),
+            take_profit_price=take_profit.quantize(Decimal("0.01")),
             risk_amount_quote=risk_amount.quantize(Decimal("0.01")),
             position_percent=position_percent,
         )
@@ -239,13 +269,26 @@ class PositionSizer:
                 min_pct=self.config.min_stop_loss_percent,
             )
 
+        # Calculate and log R:R ratio
+        rr_ratio = float(tp_distance / stop_distance) if stop_distance > 0 else 0
+        if rr_ratio < 1.0 and result.size_quote > 0:
+            logger.warning(
+                "unfavorable_risk_reward_ratio",
+                rr_ratio=f"{rr_ratio:.2f}",
+                tp_distance=str(tp_distance),
+                stop_distance=str(stop_distance),
+            )
+
         logger.debug(
             "position_size_calculated",
             size_base=str(result.size_base),
             size_quote=str(result.size_quote),
             stop_loss=str(result.stop_loss_price),
+            take_profit=str(result.take_profit_price),
             atr=str(atr_decimal),
             stop_distance=str(stop_distance),
+            tp_distance=str(tp_distance),
+            risk_reward_ratio=f"{rr_ratio:.2f}",
             stop_method="min_pct" if used_min_stop_pct else "atr",
             volatility_mult=volatility_multiplier,
             safety_mult=safety_multiplier,
@@ -259,6 +302,7 @@ class PositionSizer:
             size_base=Decimal("0"),
             size_quote=Decimal("0"),
             stop_loss_price=current_price,
+            take_profit_price=current_price,
             risk_amount_quote=Decimal("0"),
             position_percent=0.0,
         )
@@ -284,6 +328,7 @@ class PositionSizer:
             size_base=base_balance,
             size_quote=size_quote,
             stop_loss_price=Decimal("0"),
+            take_profit_price=Decimal("0"),
             risk_amount_quote=Decimal("0"),
             position_percent=100.0,
         )

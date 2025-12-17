@@ -92,9 +92,12 @@ def mock_settings():
     settings.position_size_percent = Decimal("25")
     settings.stop_loss_atr_multiplier = 2.0
     settings.min_stop_loss_percent = 0.5
+    settings.take_profit_atr_multiplier = 3.0
     settings.stop_loss_pct = None
     settings.trailing_stop_enabled = False
     settings.use_limit_orders = True
+    settings.min_trade_quote = 10.0  # Minimum order size in quote currency
+    settings.max_trade_quote = None  # Maximum order size (None = no limit)
 
     # Regime config
     settings.regime_adaptation_enabled = False
@@ -2473,6 +2476,7 @@ class TestDualExtremeBlocking:
                         size_base=Decimal("0.002"),
                         size_quote=Decimal("100"),
                         stop_loss_price=Decimal("49000"),
+                        take_profit_price=Decimal("52000"),
                         risk_amount_quote=Decimal("2"),
                         position_percent=1.0,
                     ))
@@ -2550,6 +2554,7 @@ class TestDualExtremeBlocking:
                         size_base=Decimal("0.002"),
                         size_quote=Decimal("100"),
                         stop_loss_price=Decimal("49000"),
+                        take_profit_price=Decimal("52000"),
                         risk_amount_quote=Decimal("2"),
                         position_percent=1.0,
                     ))
@@ -2619,6 +2624,7 @@ class TestDualExtremeBlocking:
                         size_base=Decimal("0.002"),
                         size_quote=Decimal("100"),
                         stop_loss_price=Decimal("49000"),
+                        take_profit_price=Decimal("52000"),
                         risk_amount_quote=Decimal("2"),
                         position_percent=1.0,
                     ))
@@ -2780,6 +2786,7 @@ class TestDualExtremeBlocking:
                         size_base=Decimal("0.002"),
                         size_quote=Decimal("100"),
                         stop_loss_price=Decimal("49000"),
+                        take_profit_price=Decimal("52000"),
                         risk_amount_quote=Decimal("2"),
                         position_percent=1.0,
                     ))

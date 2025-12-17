@@ -243,7 +243,7 @@ class TradingDaemon:
         # Initialize order validator
         self.validator = OrderValidator(
             config=ValidatorConfig(
-                min_trade_quote=100.0,
+                min_trade_quote=settings.min_trade_quote,
                 max_position_percent=settings.max_position_percent,
             ),
             kill_switch=self.kill_switch,
@@ -300,8 +300,11 @@ class TradingDaemon:
                 max_position_percent=settings.position_size_percent,
                 stop_loss_atr_multiplier=settings.stop_loss_atr_multiplier,
                 min_stop_loss_percent=settings.min_stop_loss_percent,
+                min_trade_quote=settings.min_trade_quote,
+                max_trade_quote=settings.max_trade_quote,
             ),
             atr_period=settings.atr_period,
+            take_profit_atr_multiplier=settings.take_profit_atr_multiplier,
         )
 
         # Initialize market regime detector
@@ -603,6 +606,7 @@ class TradingDaemon:
             self.position_sizer.update_settings(
                 max_position_percent=new_settings.position_size_percent,
                 stop_loss_atr_multiplier=new_settings.stop_loss_atr_multiplier,
+                take_profit_atr_multiplier=new_settings.take_profit_atr_multiplier,
                 atr_period=new_settings.atr_period,
                 min_stop_loss_percent=new_settings.min_stop_loss_percent,
             )
@@ -2044,6 +2048,7 @@ class TradingDaemon:
                 is_paper=is_paper,
                 signal_score=signal_score,
                 stop_loss=position.stop_loss_price,
+                take_profit=position.take_profit_price,
                 position_percent=position.position_percent,
             )
 

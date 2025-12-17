@@ -5,6 +5,7 @@ Uses custom JWT authentication since the official SDK doesn't support Ed25519 ye
 Implements the ExchangeClient protocol for multi-exchange support.
 """
 
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -186,13 +187,27 @@ class CoinbaseClient:
         Returns:
             MarketData with current prices
         """
+        # Get ticker data with best bid/ask
+        ticker = self._request("GET", f"/api/v3/brokerage/market/products/{product_id}/ticker")
+
+        # Get product data for volume
         product = self.get_product(product_id)
+
+        # Extract best bid/ask from ticker
+        best_bid = ticker.get("best_bid", "0")
+        best_ask = ticker.get("best_ask", "0")
+
+        # Calculate mid price from bid/ask, fallback to product price
+        if best_bid and best_ask and best_bid != "" and best_ask != "":
+            mid_price = (Decimal(best_bid) + Decimal(best_ask)) / Decimal("2")
+        else:
+            mid_price = Decimal(product.get("price", "0"))
 
         return MarketData(
             symbol=product_id,
-            price=Decimal(product.get("price", "0")),
-            bid=Decimal(product.get("bid", "0")),
-            ask=Decimal(product.get("ask", "0")),
+            price=mid_price,
+            bid=Decimal(best_bid) if best_bid else Decimal("0"),
+            ask=Decimal(best_ask) if best_ask else Decimal("0"),
             volume_24h=Decimal(product.get("volume_24h", "0")),
             timestamp=datetime.now(timezone.utc),
         )
@@ -264,6 +279,56 @@ class CoinbaseClient:
 
         return df
 
+    def _poll_order_fill(
+        self,
+        order_id: str,
+        max_attempts: int = 10,
+        poll_interval: float = 0.5,
+    ) -> dict:
+        """
+        Poll for order fill status.
+
+        Coinbase API returns order_id immediately but fill details (filled_size,
+        average_filled_price) are populated asynchronously. This method polls
+        until the order fills or times out.
+
+        Args:
+            order_id: The order ID to poll
+            max_attempts: Maximum number of polling attempts
+            poll_interval: Seconds between polls
+
+        Returns:
+            Order data dict with fill details
+        """
+        order_data = {}  # Initialize to prevent NameError if all attempts fail
+        for attempt in range(max_attempts):
+            try:
+                order_status = self.get_order(order_id)
+                order_data = order_status.get("order", order_status)
+                status = order_data.get("status", "")
+                filled_size = Decimal(order_data.get("filled_size", "0"))
+
+                logger.debug(
+                    "polling_order_status",
+                    order_id=order_id,
+                    attempt=attempt + 1,
+                    status=status,
+                    filled_size=str(filled_size),
+                )
+
+                if status in ["FILLED", "COMPLETED"] or filled_size > Decimal("0"):
+                    return order_data
+
+                time.sleep(poll_interval)
+
+            except Exception as e:
+                logger.warning("poll_order_failed", order_id=order_id, attempt=attempt + 1, error=str(e))
+                time.sleep(poll_interval)
+
+        # Return last known state even if not filled
+        logger.warning("order_poll_timeout", order_id=order_id, max_attempts=max_attempts)
+        return order_data
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),
@@ -282,7 +347,7 @@ class CoinbaseClient:
             quote_size: Amount to spend in quote currency (USD)
 
         Returns:
-            OrderResult with execution details
+            OrderResult with execution details (polls until filled)
         """
         try:
             order_data = {
@@ -297,17 +362,55 @@ class CoinbaseClient:
             }
 
             result = self._request("POST", "/api/v3/brokerage/orders", data=order_data)
-
             order = result.get("success_response", result)
+            order_id = order.get("order_id", "")
+
+            if not order_id:
+                logger.error("market_buy_no_order_id", response=result)
+                return OrderResult(
+                    order_id="",
+                    side="buy",
+                    size=Decimal("0"),
+                    filled_price=None,
+                    status="failed",
+                    fee=Decimal("0"),
+                    success=False,
+                    error="No order_id in response",
+                )
+
+            # Poll for fill details (Coinbase fills async)
+            filled_order = self._poll_order_fill(order_id)
+
+            filled_size = Decimal(filled_order.get("filled_size", "0"))
+            avg_price = filled_order.get("average_filled_price")
+            total_fees = Decimal(filled_order.get("total_fees", "0"))
+            status = filled_order.get("status", "unknown")
+
+            # Detect polling timeout: empty dict or no filled_size when status is unknown
+            if not filled_order or (filled_size == Decimal("0") and status == "unknown"):
+                logger.warning(
+                    "market_buy_polling_timeout",
+                    order_id=order_id,
+                    message="Order may have filled but polling timed out. Check order status manually.",
+                )
+                status = "timeout"
+
+            logger.info(
+                "market_buy_completed",
+                order_id=order_id,
+                filled_size=str(filled_size),
+                average_price=avg_price,
+                status=status,
+            )
 
             return OrderResult(
-                order_id=order.get("order_id", ""),
+                order_id=order_id,
                 side="buy",
-                size=Decimal(order.get("filled_size", "0")),
-                filled_price=Decimal(order.get("average_filled_price", "0")) if order.get("average_filled_price") else None,
-                status=order.get("status", "unknown"),
-                fee=Decimal(order.get("total_fees", "0")),
-                success=True,
+                size=filled_size,
+                filled_price=Decimal(avg_price) if avg_price else None,
+                status=status,
+                fee=total_fees,
+                success=filled_size > Decimal("0"),
             )
 
         except Exception as e:
@@ -341,7 +444,7 @@ class CoinbaseClient:
             base_size: Amount to sell in base currency (BTC)
 
         Returns:
-            OrderResult with execution details
+            OrderResult with execution details (polls until filled)
         """
         try:
             order_data = {
@@ -356,17 +459,55 @@ class CoinbaseClient:
             }
 
             result = self._request("POST", "/api/v3/brokerage/orders", data=order_data)
-
             order = result.get("success_response", result)
+            order_id = order.get("order_id", "")
+
+            if not order_id:
+                logger.error("market_sell_no_order_id", response=result)
+                return OrderResult(
+                    order_id="",
+                    side="sell",
+                    size=Decimal("0"),
+                    filled_price=None,
+                    status="failed",
+                    fee=Decimal("0"),
+                    success=False,
+                    error="No order_id in response",
+                )
+
+            # Poll for fill details (Coinbase fills async)
+            filled_order = self._poll_order_fill(order_id)
+
+            filled_size = Decimal(filled_order.get("filled_size", "0"))
+            avg_price = filled_order.get("average_filled_price")
+            total_fees = Decimal(filled_order.get("total_fees", "0"))
+            status = filled_order.get("status", "unknown")
+
+            # Detect polling timeout: empty dict or no filled_size when status is unknown
+            if not filled_order or (filled_size == Decimal("0") and status == "unknown"):
+                logger.warning(
+                    "market_sell_polling_timeout",
+                    order_id=order_id,
+                    message="Order may have filled but polling timed out. Check order status manually.",
+                )
+                status = "timeout"
+
+            logger.info(
+                "market_sell_completed",
+                order_id=order_id,
+                filled_size=str(filled_size),
+                average_price=avg_price,
+                status=status,
+            )
 
             return OrderResult(
-                order_id=order.get("order_id", ""),
+                order_id=order_id,
                 side="sell",
-                size=Decimal(order.get("filled_size", "0")),
-                filled_price=Decimal(order.get("average_filled_price", "0")) if order.get("average_filled_price") else None,
-                status=order.get("status", "unknown"),
-                fee=Decimal(order.get("total_fees", "0")),
-                success=True,
+                size=filled_size,
+                filled_price=Decimal(avg_price) if avg_price else None,
+                status=status,
+                fee=total_fees,
+                success=filled_size > Decimal("0"),
             )
 
         except Exception as e:
@@ -530,3 +671,155 @@ class CoinbaseClient:
         except Exception as e:
             logger.error("cancel_order_failed", error=str(e), order_id=order_id)
             return False
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        retry=retry_if_exception_type(RETRY_EXCEPTIONS),
+    )
+    def limit_buy(
+        self,
+        symbol: str,
+        base_size: Decimal,
+        limit_price: Decimal,
+    ) -> dict:
+        """
+        Place a Good-Till-Cancelled (GTC) limit buy order.
+
+        Order remains in the book until filled or manually cancelled.
+        Used primarily for integration testing.
+
+        Args:
+            symbol: Trading pair (e.g., BTC-USD)
+            base_size: Amount to buy in base currency (BTC)
+            limit_price: Maximum price willing to pay
+
+        Returns:
+            dict with order details including order_id
+
+        Raises:
+            ValueError: If order parameters are invalid
+        """
+        # Validate parameters
+        if base_size <= Decimal("0"):
+            raise ValueError(f"base_size must be positive, got {base_size}")
+        if limit_price <= Decimal("0"):
+            raise ValueError(f"limit_price must be positive, got {limit_price}")
+
+        # Calculate order value for safety check
+        order_value_usd = base_size * limit_price
+
+        # Warn if order value seems excessive (likely a bug)
+        # This method is primarily for testing, so large orders are suspicious
+        if order_value_usd > Decimal("100"):
+            logger.warning(
+                "large_order_detected",
+                symbol=symbol,
+                base_size=str(base_size),
+                limit_price=str(limit_price),
+                order_value_usd=str(order_value_usd),
+                message="Order value exceeds $100. This method is primarily for integration testing. "
+                        "Verify this is intentional and not a calculation error."
+            )
+
+        order_data = {
+            "client_order_id": str(uuid.uuid4()),
+            "product_id": symbol,
+            "side": "BUY",
+            "order_configuration": {
+                "limit_limit_gtc": {
+                    "base_size": str(base_size),
+                    "limit_price": str(limit_price),
+                    "post_only": False,
+                }
+            },
+        }
+
+        result = self._request("POST", "/api/v3/brokerage/orders", data=order_data)
+        order = result.get("success_response", result)
+
+        logger.info(
+            "limit_buy_placed",
+            order_id=order.get("order_id"),
+            symbol=symbol,
+            base_size=str(base_size),
+            limit_price=str(limit_price),
+        )
+
+        return order
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        retry=retry_if_exception_type(RETRY_EXCEPTIONS),
+    )
+    def limit_sell(
+        self,
+        symbol: str,
+        base_size: Decimal,
+        limit_price: Decimal,
+    ) -> dict:
+        """
+        Place a Good-Till-Cancelled (GTC) limit sell order.
+
+        Order remains in the book until filled or manually cancelled.
+        Used primarily for integration testing.
+
+        Args:
+            symbol: Trading pair (e.g., BTC-USD)
+            base_size: Amount to sell in base currency (BTC)
+            limit_price: Minimum price willing to accept
+
+        Returns:
+            dict with order details including order_id
+
+        Raises:
+            ValueError: If order parameters are invalid
+        """
+        # Validate parameters
+        if base_size <= Decimal("0"):
+            raise ValueError(f"base_size must be positive, got {base_size}")
+        if limit_price <= Decimal("0"):
+            raise ValueError(f"limit_price must be positive, got {limit_price}")
+
+        # Calculate order value for safety check
+        order_value_usd = base_size * limit_price
+
+        # Warn if order value seems excessive (likely a bug)
+        # This method is primarily for testing, so large orders are suspicious
+        if order_value_usd > Decimal("100"):
+            logger.warning(
+                "large_order_detected",
+                symbol=symbol,
+                base_size=str(base_size),
+                limit_price=str(limit_price),
+                order_value_usd=str(order_value_usd),
+                message="Order value exceeds $100. This method is primarily for integration testing. "
+                        "Verify this is intentional and not a calculation error."
+            )
+
+        order_data = {
+            "client_order_id": str(uuid.uuid4()),
+            "product_id": symbol,
+            "side": "SELL",
+            "order_configuration": {
+                "limit_limit_gtc": {
+                    "base_size": str(base_size),
+                    "limit_price": str(limit_price),
+                    "post_only": False,
+                }
+            },
+        }
+
+        result = self._request("POST", "/api/v3/brokerage/orders", data=order_data)
+        order = result.get("success_response", result)
+
+        logger.info(
+            "limit_sell_placed",
+            order_id=order.get("order_id"),
+            symbol=symbol,
+            base_size=str(base_size),
+            limit_price=str(limit_price),
+        )
+
+        return order
