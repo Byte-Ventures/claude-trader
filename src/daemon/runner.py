@@ -78,7 +78,11 @@ class TradingDaemon:
         self._last_daily_report: Optional[date] = None
         self._last_weekly_report: Optional[date] = None
         self._last_monthly_report: Optional[date] = None
-        self._last_volatility: str = "normal"  # For adaptive interval
+        # For adaptive interval and emergency stop creation. Default "normal" is intentionally
+        # conservative - if bot restarts during extreme volatility before first iteration,
+        # emergency stops use tighter (1.5x ATR) rather than wider (2.0x) multiplier.
+        # This is safer than no stop at all; volatility updates after first iteration.
+        self._last_volatility: str = "normal"
         self._last_regime: str = "neutral"  # For regime change notifications
         self._pending_regime: Optional[str] = None  # Flap protection: pending regime change
         self._last_hourly_analysis: Optional[datetime] = None  # For hourly market analysis

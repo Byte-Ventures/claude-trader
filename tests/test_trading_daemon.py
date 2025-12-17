@@ -2271,6 +2271,9 @@ class TestDualExtremeBlocking:
     def test_blocks_buy_during_dual_extreme_conditions(self, mock_settings, mock_exchange_client, mock_database):
         """CRITICAL: Test buy is blocked when extreme_fear + extreme volatility."""
         mock_settings.block_trades_extreme_conditions = True
+        mock_settings.use_limit_orders = False  # Simplify to direct market orders
+        mock_settings.is_paper_trading = False  # Use mock client directly (avoid paper wrapper)
+        mock_settings.max_position_percent = Decimal("100")  # Allow large positions for test
 
         with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
             with patch('src.daemon.runner.Database', return_value=mock_database):
@@ -2279,6 +2282,22 @@ class TestDualExtremeBlocking:
                     mock_notifier_class.return_value = mock_notifier
 
                     daemon = TradingDaemon(mock_settings)
+
+                    # Mock position_sizer config to ensure can_buy=True
+                    daemon.position_sizer.config.min_trade_quote = Decimal("10")
+                    daemon.position_sizer.config.max_position_percent = Decimal("100")
+                    daemon.position_sizer.config.min_trade_base = Decimal("0.0001")
+
+                    # Mock position_sizer.calculate_size to return valid position
+                    from src.strategy.position_sizer import PositionSizeResult
+                    daemon.position_sizer.calculate_size = Mock(return_value=PositionSizeResult(
+                        size_base=Decimal("0.002"),
+                        size_quote=Decimal("100"),
+                        stop_loss_price=Decimal("49000"),
+                        take_profit_price=Decimal("52000"),
+                        risk_amount_quote=Decimal("2"),
+                        position_percent=1.0,
+                    ))
 
                     # Mock market_regime to return dual-extreme conditions
                     daemon.market_regime = Mock()
@@ -2313,8 +2332,9 @@ class TestDualExtremeBlocking:
                         confidence=0.8
                     ))
 
-                    # Reset mock after initialization
+                    # Reset mocks after initialization
                     mock_exchange_client.reset_mock()
+                    mock_notifier.reset_mock()
 
                     # Run iteration
                     daemon._trading_iteration()
@@ -2322,10 +2342,12 @@ class TestDualExtremeBlocking:
                     # Verify buy was blocked (no order placed)
                     mock_exchange_client.market_buy.assert_not_called()
 
-                    # NOTE: Test notification assertion was suggested in PR review but not added
-                    # because the blocking code path isn't being reached in this test (may require
-                    # additional mocking of weight_profile_selector or other components).
-                    # The review marked this as 🟢 LOW PRIORITY ("Not blocking - current test is sufficient").
+                    # Verify the dual-extreme blocking notification was sent
+                    mock_notifier.notify_trade_rejected.assert_called_once()
+                    call_kwargs = mock_notifier.notify_trade_rejected.call_args[1]
+                    assert call_kwargs["side"] == "buy"
+                    assert "extreme_fear" in call_kwargs["reason"]
+                    assert "extreme_volatility" in call_kwargs["reason"]
 
     def test_allows_buy_extreme_fear_normal_volatility(self, mock_settings, mock_exchange_client, mock_database):
         """Test buy proceeds with extreme_fear but normal volatility."""
