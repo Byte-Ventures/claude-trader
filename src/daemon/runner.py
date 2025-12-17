@@ -1189,8 +1189,18 @@ class TradingDaemon:
                 if sentiment and sentiment.value is not None:
                     # Reuse existing classification logic from MarketRegime
                     sentiment_category = self.market_regime._classify_sentiment(sentiment.value)
+                else:
+                    logger.warning(
+                        "sentiment_unavailable_for_trade_evaluation",
+                        reason="fetch_returned_none",
+                        impact="extreme_fear_override_disabled",
+                    )
             except Exception as e:
-                logger.debug("sentiment_fetch_skipped", error=str(e))
+                logger.warning(
+                    "sentiment_fetch_failed_during_trade_evaluation",
+                    error=str(e),
+                    impact="extreme_fear_override_disabled",
+                )
 
         # Calculate signal with HTF context and sentiment
         signal_result = self.signal_scorer.calculate_score(
