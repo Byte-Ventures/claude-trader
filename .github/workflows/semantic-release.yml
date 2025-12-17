@@ -154,7 +154,14 @@ jobs:
 
           echo "Created PR: $PR_URL"
 
+          # Wait for GitHub to process the PR
+          sleep 5
+
           # Merge the release PR directly
-          gh pr merge "$BRANCH" --squash --delete-branch
+          if ! gh pr merge "$BRANCH" --squash --delete-branch; then
+            echo "::error::Failed to merge release PR"
+            echo "::notice::Manual merge required: $PR_URL"
+            exit 1
+          fi
 
           echo "::notice::Release PR merged: $PR_URL"
