@@ -1180,7 +1180,9 @@ class TradingDaemon:
         # Get HTF bias for multi-timeframe confirmation
         htf_bias, daily_trend, four_hour_trend = self._get_htf_bias()
 
-        # Fetch sentiment before signal calculation for extreme fear check in MTF scoring
+        # Fetch sentiment before signal calculation to enable extreme fear override in MTF logic.
+        # This must happen BEFORE calculate_score() because sentiment_category is used to
+        # determine whether to apply full vs half counter-penalties when daily/4H disagree.
         sentiment = None
         sentiment_category = None
         if self.settings.regime_sentiment_enabled:

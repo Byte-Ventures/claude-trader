@@ -1780,14 +1780,19 @@ class TestHTFBiasModifier:
             sentiment_category="extreme_fear",
         )
 
-        # Only applies if signal is positive (buy signal)
+        # Test only applies if signal is positive (buy signal). If not, verify no unintended effects
         if result_baseline.score > 0:
             # Without extreme fear, partial penalty (-10) is applied
-            assert result_baseline.breakdown.get("htf_bias") == -10
+            assert result_baseline.breakdown.get("htf_bias") == -10, "Expected half penalty without extreme fear"
             # With extreme fear, FULL penalty (-20) should be applied
-            assert result_with_fear.breakdown.get("htf_bias") == -20
+            assert result_with_fear.breakdown.get("htf_bias") == -20, "Expected full penalty with extreme fear"
             # Score difference should be exactly 10 points (full vs half penalty)
-            assert result_baseline.score - result_with_fear.score == 10
+            assert result_baseline.score - result_with_fear.score == 10, "Expected 10-point difference"
+        else:
+            # If baseline isn't bullish, extreme fear override shouldn't activate
+            # (it only applies to buy signals during bearish daily)
+            assert result_baseline.breakdown.get("htf_bias") == result_with_fear.breakdown.get("htf_bias"), \
+                "HTF bias should not change when signal direction doesn't match extreme fear condition"
 
     def test_extreme_fear_full_penalty_on_bullish_daily_sell(self, mtf_scorer, bearish_signal_df):
         """Test extreme fear applies full penalty when selling into bullish daily trend."""
@@ -1808,14 +1813,19 @@ class TestHTFBiasModifier:
             sentiment_category="extreme_fear",
         )
 
-        # Only applies if signal is negative (sell signal)
+        # Test only applies if signal is negative (sell signal). If not, verify no unintended effects
         if result_baseline.score < 0:
             # Without extreme fear, partial penalty (+10) is applied
-            assert result_baseline.breakdown.get("htf_bias") == 10
+            assert result_baseline.breakdown.get("htf_bias") == 10, "Expected half penalty without extreme fear"
             # With extreme fear, FULL penalty (+20) should be applied to weaken sell
-            assert result_with_fear.breakdown.get("htf_bias") == 20
+            assert result_with_fear.breakdown.get("htf_bias") == 20, "Expected full penalty with extreme fear"
             # Score difference should be exactly 10 points (full vs half penalty)
-            assert result_with_fear.score - result_baseline.score == 10
+            assert result_with_fear.score - result_baseline.score == 10, "Expected 10-point difference"
+        else:
+            # If baseline isn't bearish, extreme fear override shouldn't activate
+            # (it only applies to sell signals during bullish daily)
+            assert result_baseline.breakdown.get("htf_bias") == result_with_fear.breakdown.get("htf_bias"), \
+                "HTF bias should not change when signal direction doesn't match extreme fear condition"
 
     def test_extreme_fear_no_effect_when_daily_and_4h_agree(self, mtf_scorer, bullish_signal_df):
         """Test extreme fear has no additional effect when daily and 4H agree."""

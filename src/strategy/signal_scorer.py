@@ -431,6 +431,17 @@ class SignalScorer:
         Returns:
             SignalResult with score, action, and breakdown
         """
+        # Validate sentiment_category at runtime to ensure type safety in financial logic
+        if sentiment_category is not None and sentiment_category not in (
+            "extreme_fear", "fear", "neutral", "greed", "extreme_greed"
+        ):
+            logger.error(
+                "invalid_sentiment_category",
+                category=sentiment_category,
+                impact="extreme_fear_override_disabled",
+            )
+            sentiment_category = None  # Fail safe
+
         if df.empty or len(df) < max(self.ema_slow_period, self.bollinger_period, 26):
             return SignalResult(
                 score=0,
