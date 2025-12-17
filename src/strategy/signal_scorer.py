@@ -10,7 +10,7 @@ Trade execution requires score magnitude >= threshold (default: 60).
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 import pandas as pd
 import structlog
@@ -23,6 +23,8 @@ from src.indicators.atr import calculate_atr, get_volatility_level
 
 logger = structlog.get_logger(__name__)
 
+# Type alias for sentiment categories from Fear & Greed Index
+SentimentCategory = Literal["extreme_fear", "fear", "neutral", "greed", "extreme_greed"]
 
 # Recommended signal thresholds by candle interval
 # Shorter candles capture faster moves, so lower thresholds are appropriate
@@ -153,6 +155,15 @@ class SignalScorer:
         high_volume_boost_percent: float = 0.20,
         mtf_aligned_boost: int = 20,
         mtf_counter_penalty: int = 20,
+        max_oversold_buys_24h: int = 2,
+        price_stabilization_window: int = 12,
+        volume_sma_window: int = 20,
+        high_volume_threshold: float = 1.5,
+        low_volume_threshold: float = 0.7,
+        low_volume_penalty: int = 10,
+        extreme_rsi_lower: int = 25,
+        extreme_rsi_upper: int = 75,
+        trend_filter_penalty: int = 20,
     ):
         """
         Initialize signal scorer.
@@ -208,6 +219,21 @@ class SignalScorer:
         # Multi-Timeframe confirmation parameters
         self.mtf_aligned_boost = mtf_aligned_boost
         self.mtf_counter_penalty = mtf_counter_penalty
+
+        # Crash protection parameters
+        self.max_oversold_buys_24h = max_oversold_buys_24h
+        self.price_stabilization_window = price_stabilization_window
+        self.extreme_rsi_lower = extreme_rsi_lower
+        self.extreme_rsi_upper = extreme_rsi_upper
+
+        # Volume analysis parameters
+        self.volume_sma_window = volume_sma_window
+        self.high_volume_threshold = high_volume_threshold
+        self.low_volume_threshold = low_volume_threshold
+        self.low_volume_penalty = low_volume_penalty
+
+        # Trend filter parameters
+        self.trend_filter_penalty = trend_filter_penalty
 
     def update_settings(
         self,
@@ -378,23 +404,25 @@ class SignalScorer:
         logger.debug("oversold_buy_recorded", count=len(self._oversold_buy_times))
 
     def can_buy_oversold(self) -> bool:
-        """Check if we can make another oversold buy (max 2 per 24h)."""
+        """Check if we can make another oversold buy (max per 24h)."""
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(hours=24)
         recent_buys = [t for t in self._oversold_buy_times if t > cutoff]
-        return len(recent_buys) < 2
+        return len(recent_buys) < self.max_oversold_buys_24h
 
-    def is_price_stabilized(self, close_prices: pd.Series, window_candles: int = 12) -> bool:
+    def is_price_stabilized(self, close_prices: pd.Series, window_candles: Optional[int] = None) -> bool:
         """
         Check if price has stopped falling (stabilized).
 
         Args:
             close_prices: Series of closing prices
-            window_candles: Number of candles to check (default 12 = ~2 hours with 10-min candles)
+            window_candles: Number of candles to check (uses self.price_stabilization_window if None)
 
         Returns:
             True if price is stable/recovering (not making new lows)
         """
+        if window_candles is None:
+            window_candles = self.price_stabilization_window
         if len(close_prices) < window_candles:
             return True  # Not enough data, allow trade
 
@@ -413,6 +441,7 @@ class SignalScorer:
         htf_bias: Optional[str] = None,
         htf_daily: Optional[str] = None,
         htf_4h: Optional[str] = None,
+        sentiment_category: Optional[SentimentCategory] = None,
     ) -> SignalResult:
         """
         Calculate composite signal score from OHLCV data.
@@ -423,10 +452,22 @@ class SignalScorer:
             htf_bias: Combined HTF bias ("bullish", "bearish", "neutral", or None)
             htf_daily: Daily timeframe trend (for AI context)
             htf_4h: 4-hour timeframe trend (for AI context)
+            sentiment_category: Fear & Greed category ("extreme_fear", "fear", etc.)
 
         Returns:
             SignalResult with score, action, and breakdown
         """
+        # Validate sentiment_category at runtime to ensure type safety in financial logic
+        if sentiment_category is not None and sentiment_category not in (
+            "extreme_fear", "fear", "neutral", "greed", "extreme_greed"
+        ):
+            logger.error(
+                "invalid_sentiment_category",
+                category=sentiment_category,
+                impact="extreme_fear_override_disabled",
+            )
+            sentiment_category = None  # Fail safe
+
         if df.empty or len(df) < max(self.ema_slow_period, self.bollinger_period, 26):
             return SignalResult(
                 score=0,
@@ -539,8 +580,8 @@ class SignalScorer:
         # not the whale direction. This is intentional - whale activity increases
         # conviction in whatever direction the indicators suggest, rather than
         # overriding the technical analysis.
-        if volume is not None and len(volume) >= 20:
-            volume_sma = volume.rolling(window=20).mean().iloc[-1]
+        if volume is not None and len(volume) >= self.volume_sma_window:
+            volume_sma = volume.rolling(window=self.volume_sma_window).mean().iloc[-1]
             current_volume = volume.iloc[-1]
 
             if not pd.isna(volume_sma) and volume_sma > 0:
@@ -584,7 +625,7 @@ class SignalScorer:
                     else:
                         breakdown["_whale_direction"] = "unknown"
                         breakdown["_price_change_pct"] = None
-                elif volume_ratio > 1.5:
+                elif volume_ratio > self.high_volume_threshold:
                     # High volume: boost signal by configurable percentage (default 20%)
                     volume_boost = int(abs(total_score) * self.high_volume_boost_percent)
                     if total_score > 0:
@@ -597,14 +638,14 @@ class SignalScorer:
                         breakdown["volume"] = 0
                     breakdown["_whale_activity"] = False
                     breakdown["_volume_ratio"] = volume_ratio
-                elif volume_ratio < 0.7:
-                    # Low volume: fixed 10-point penalty (consistent behavior)
+                elif volume_ratio < self.low_volume_threshold:
+                    # Low volume: fixed penalty (consistent behavior)
                     if total_score > 0:
-                        breakdown["volume"] = -10
-                        total_score -= 10
+                        breakdown["volume"] = -self.low_volume_penalty
+                        total_score -= self.low_volume_penalty
                     elif total_score < 0:
-                        breakdown["volume"] = 10
-                        total_score += 10
+                        breakdown["volume"] = self.low_volume_penalty
+                        total_score += self.low_volume_penalty
                     else:
                         breakdown["volume"] = 0
                     breakdown["_whale_activity"] = False
@@ -641,7 +682,7 @@ class SignalScorer:
         # Skip penalty for extreme RSI (mean-reversion zones) with crash protection
         trend = get_ema_trend(ema_result)
         trend_adjustment = 0
-        rsi_extreme = indicators.rsi is not None and (indicators.rsi < 25 or indicators.rsi > 75)
+        rsi_extreme = indicators.rsi is not None and (indicators.rsi < self.extreme_rsi_lower or indicators.rsi > self.extreme_rsi_upper)
 
         # Crash protection checks for mean-reversion trades
         can_mean_revert = self.can_buy_oversold()
@@ -655,24 +696,24 @@ class SignalScorer:
             logger.debug("trend_filter_applied", reason="oversold_buy_limit_reached", rsi=indicators.rsi)
             if total_score > 0 and trend == "bearish":
                 signal_confidence = abs(total_score) / 100
-                trend_adjustment = -int(20 * (1 - signal_confidence * 0.5))
+                trend_adjustment = -int(self.trend_filter_penalty * (1 - signal_confidence * 0.5))
                 total_score += trend_adjustment
         elif rsi_extreme and not price_stable:
             # Price still falling - apply trend filter
             logger.debug("trend_filter_applied", reason="price_still_falling", rsi=indicators.rsi)
             if total_score > 0 and trend == "bearish":
                 signal_confidence = abs(total_score) / 100
-                trend_adjustment = -int(20 * (1 - signal_confidence * 0.5))
+                trend_adjustment = -int(self.trend_filter_penalty * (1 - signal_confidence * 0.5))
                 total_score += trend_adjustment
         elif total_score > 0 and trend == "bearish":
-            # Scale penalty: stronger signals get less penalty (10-20 points)
+            # Scale penalty: stronger signals get less penalty
             signal_confidence = abs(total_score) / 100
-            trend_adjustment = -int(20 * (1 - signal_confidence * 0.5))
+            trend_adjustment = -int(self.trend_filter_penalty * (1 - signal_confidence * 0.5))
             total_score += trend_adjustment
         elif total_score < 0 and trend == "bullish":
             # Scale penalty: stronger signals get less penalty
             signal_confidence = abs(total_score) / 100
-            trend_adjustment = int(20 * (1 - signal_confidence * 0.5))
+            trend_adjustment = int(self.trend_filter_penalty * (1 - signal_confidence * 0.5))
             total_score += trend_adjustment
         breakdown["trend_filter"] = trend_adjustment
 
@@ -686,6 +727,8 @@ class SignalScorer:
         # - Bearish signal (-score): -boost if HTF bearish (more negative = stronger sell),
         #                            +penalty if HTF bullish (less negative = weaker sell)
         htf_adjustment = 0
+        extreme_fear_override_applied = False  # Track if extreme fear override was used
+
         if htf_bias and htf_bias != "neutral":
             # Strong HTF bias (daily + 4H agree): apply full adjustment
             if total_score > 0:  # Bullish signal (potential buy)
@@ -708,20 +751,63 @@ class SignalScorer:
             # Apply half penalty when daily trend opposes signal - daily is more reliable.
             # Use round() to handle odd mtf_counter_penalty values correctly.
             half_penalty = round(self.mtf_counter_penalty / 2)
-            if total_score > 0 and htf_daily == "bearish":
+
+            # EXTREME FEAR OVERRIDE: Only applies when daily/4H disagree (htf_bias=neutral)
+            # When both timeframes agree, the existing aligned/counter logic already applies
+            # full penalties, so no override is needed.
+            #
+            # During extreme fear conditions, when daily/4H disagree, apply FULL counter-penalty
+            # based on daily trend (instead of the usual half penalty). This prevents 4H neutral
+            # signals from neutralizing the more reliable daily trend during extreme conditions.
+            if sentiment_category == "extreme_fear" and htf_daily == "bearish" and total_score > 0:
+                # Buying into bearish daily trend during extreme fear - apply FULL penalty
+                htf_adjustment = -self.mtf_counter_penalty
+                extreme_fear_override_applied = True
+                score_before = total_score
+                total_score += htf_adjustment
+                logger.info(
+                    "extreme_fear_daily_penalty_applied",
+                    htf_daily=htf_daily,
+                    htf_4h=htf_4h,
+                    sentiment=sentiment_category,
+                    signal_direction="buy",
+                    adjustment=htf_adjustment,
+                    score_before=score_before,
+                    score_after=total_score,
+                )
+            elif sentiment_category == "extreme_fear" and htf_daily == "bullish" and total_score < 0:
+                # Selling into bullish daily trend during extreme fear - apply FULL penalty
+                # to weaken sell signal more aggressively (prevent panic selling)
+                htf_adjustment = self.mtf_counter_penalty
+                extreme_fear_override_applied = True
+                score_before = total_score
+                total_score += htf_adjustment
+                logger.info(
+                    "extreme_fear_daily_penalty_applied",
+                    htf_daily=htf_daily,
+                    htf_4h=htf_4h,
+                    sentiment=sentiment_category,
+                    signal_direction="sell",
+                    adjustment=htf_adjustment,
+                    score_before=score_before,
+                    score_after=total_score,
+                )
+            elif total_score > 0 and htf_daily == "bearish":
                 # Buying into bearish daily trend - apply half penalty
                 htf_adjustment = -half_penalty
             elif total_score < 0 and htf_daily == "bullish":
                 # Selling into bullish daily trend - weaken sell signal
                 htf_adjustment = half_penalty
 
-        if htf_adjustment != 0:
+        # Apply adjustment and log only if NOT already handled by extreme fear override
+        if htf_adjustment != 0 and not extreme_fear_override_applied:
             total_score += htf_adjustment
             logger.info(
                 "htf_bias_applied",
                 htf_bias=htf_bias or "neutral",
                 htf_daily=htf_daily,
                 htf_4h=htf_4h,
+                sentiment=sentiment_category,
                 signal_direction="bullish" if total_score > 0 else "bearish",
                 adjustment=htf_adjustment,
                 partial_penalty=htf_bias == "neutral" or htf_bias is None,

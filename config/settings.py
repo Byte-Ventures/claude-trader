@@ -199,6 +199,32 @@ class Settings(BaseSettings):
         description="Minimum score to trigger a trade (out of 100)"
     )
 
+    # Crash Protection Parameters
+    max_oversold_buys_24h: int = Field(
+        default=2,
+        ge=1,
+        le=10,
+        description="Maximum allowed buy trades while RSI is oversold (<30) within 24 hours (prevents averaging into crashes)"
+    )
+    price_stabilization_window: int = Field(
+        default=12,
+        ge=5,
+        le=50,
+        description="Number of candles to wait for price stabilization after extreme RSI (25/75) before allowing trades"
+    )
+    extreme_rsi_lower: int = Field(
+        default=25,
+        ge=10,
+        le=30,
+        description="Extreme lower RSI threshold for crash protection"
+    )
+    extreme_rsi_upper: int = Field(
+        default=75,
+        ge=70,
+        le=90,
+        description="Extreme upper RSI threshold for crash protection"
+    )
+
     # Strategy Parameters - Volume/Whale Detection
     whale_volume_threshold: float = Field(
         default=3.0,
@@ -225,7 +251,45 @@ class Settings(BaseSettings):
         description="Signal boost multiplier for high volume (0.20 = 20%)"
     )
 
+    # Volume Analysis Parameters
+    volume_sma_window: int = Field(
+        default=20,
+        ge=5,
+        le=100,
+        description="Window size for volume moving average calculation (candles)"
+    )
+    high_volume_threshold: float = Field(
+        default=1.5,
+        ge=1.1,
+        le=3.0,
+        description="Volume ratio threshold for high volume detection (1.5 = 150% of average)"
+    )
+    low_volume_threshold: float = Field(
+        default=0.7,
+        ge=0.3,
+        le=0.9,
+        description="Volume ratio threshold for low volume detection (0.7 = 70% of average)"
+    )
+    low_volume_penalty: int = Field(
+        default=10,
+        ge=0,
+        le=30,
+        description="Score penalty points for low volume trades"
+    )
+    trend_filter_penalty: int = Field(
+        default=20,
+        ge=10,
+        le=40,
+        description="Score penalty points for counter-trend trades"
+    )
+
     # Risk Management
+    risk_per_trade_percent: float = Field(
+        default=0.5,
+        ge=0.1,
+        le=5.0,
+        description="Risk per trade as percentage of portfolio (used in position sizing calculations)"
+    )
     stop_loss_atr_multiplier: float = Field(
         default=1.5,
         ge=0.5,
@@ -243,6 +307,12 @@ class Settings(BaseSettings):
         ge=0.1,
         le=10.0,
         description="Minimum stop loss distance as percentage below entry (prevents whipsaw exits during normal market volatility)"
+    )
+    take_profit_atr_multiplier: float = Field(
+        default=2.0,
+        ge=1.0,
+        le=10.0,
+        description="Take profit distance as ATR multiple"
     )
     trailing_stop_atr_multiplier: float = Field(
         default=1.0,
@@ -278,11 +348,55 @@ class Settings(BaseSettings):
         le=20.0,
         description="Maximum hourly loss before pausing (percentage)"
     )
+    loss_throttle_start_percent: float = Field(
+        default=50.0,
+        ge=10.0,
+        le=90.0,
+        description="Loss percentage at which position size throttling begins (% of max loss limit)"
+    )
+    loss_throttle_min_multiplier: float = Field(
+        default=0.3,
+        ge=0.1,
+        le=0.8,
+        description="Minimum position size multiplier when at max loss (0.3 = reduce to 30%)"
+    )
     max_position_percent: float = Field(
         default=80.0,
         ge=10.0,
         le=100.0,
         description="Maximum position size as percentage of portfolio"
+    )
+    estimated_fee_percent: float = Field(
+        default=0.006,
+        ge=0.001,
+        le=0.02,
+        description="Estimated round-trip trading fee as decimal (0.006 = 0.6%, typical for Coinbase)"
+    )
+    profit_margin_multiplier: float = Field(
+        default=2.0,
+        ge=1.0,
+        le=5.0,
+        description="Minimum profit margin as multiple of fees for expected value (EV) validation"
+    )
+
+    # Order Size Limits (absolute limits in quote currency)
+    min_trade_quote: float = Field(
+        default=10.0,
+        ge=1.0,
+        le=1000.0,
+        description="Minimum order size in quote currency (e.g., EUR/USD). Orders below this are skipped."
+    )
+    min_trade_base: float = Field(
+        default=0.0001,
+        ge=0.00001,
+        le=0.01,
+        description="Minimum order size in base currency (e.g., BTC). Exchange-specific minimum."
+    )
+    max_trade_quote: Optional[float] = Field(
+        default=None,
+        ge=1.0,
+        le=100000.0,
+        description="Maximum order size in quote currency. None = no limit (use position_size_percent only)."
     )
 
     # Trade Cooldown - prevents rapid consecutive trades
@@ -662,6 +776,35 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"veto thresholds must have at least 0.05 gap between them "
                 f"(current gap: {gap:.3f})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_trade_size_limits(self) -> "Settings":
+        """Validate order size limits are properly ordered."""
+        if self.max_trade_quote is not None:
+            if self.max_trade_quote < self.min_trade_quote:
+                raise ValueError(
+                    f"max_trade_quote ({self.max_trade_quote}) must be >= "
+                    f"min_trade_quote ({self.min_trade_quote})"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def validate_extreme_rsi_thresholds(self) -> "Settings":
+        """Validate extreme RSI thresholds are properly ordered with minimum gap."""
+        if self.extreme_rsi_lower >= self.extreme_rsi_upper:
+            raise ValueError(
+                f"extreme_rsi_lower ({self.extreme_rsi_lower}) must be < "
+                f"extreme_rsi_upper ({self.extreme_rsi_upper})"
+            )
+
+        # Require at least 40-point gap for meaningful crash/pump detection
+        gap = self.extreme_rsi_upper - self.extreme_rsi_lower
+        if gap < 40:
+            raise ValueError(
+                f"extreme_rsi thresholds must have at least 40-point gap "
+                f"(current gap: {gap}). Narrow gaps create false crash/pump signals."
             )
         return self
 

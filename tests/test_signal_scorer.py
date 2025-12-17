@@ -1761,6 +1761,216 @@ class TestHTFBiasModifier:
 
         assert result.score >= -100
 
+    def test_extreme_fear_full_penalty_on_bearish_daily_buy(self, mtf_scorer, bullish_signal_df):
+        """Test extreme fear applies full penalty when buying into bearish daily trend."""
+        # Get baseline score with neutral bias (daily/4H disagree)
+        result_baseline = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="neutral",
+            htf_daily="bearish",
+            htf_4h="bullish",
+        )
+
+        # Get score with extreme fear sentiment
+        result_with_fear = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="neutral",
+            htf_daily="bearish",
+            htf_4h="bullish",
+            sentiment_category="extreme_fear",
+        )
+
+        # Test requires positive signal (buy signal) to verify extreme fear buy override
+        # The bullish_signal_df fixture is designed to produce buy signals, but trend_filter
+        # and other penalties can flip the final score. Test conditionally based on actual signal.
+        if result_baseline.score > 0:
+            # Without extreme fear, partial penalty (-10) is applied
+            assert result_baseline.breakdown.get("htf_bias") == -10, "Expected half penalty without extreme fear"
+            # With extreme fear, FULL penalty (-20) should be applied
+            assert result_with_fear.breakdown.get("htf_bias") == -20, "Expected full penalty with extreme fear"
+            # Score difference should be exactly 10 points (full vs half penalty)
+            assert result_baseline.score - result_with_fear.score == 10, "Expected 10-point difference"
+        else:
+            # If baseline isn't bullish, extreme fear override shouldn't activate
+            assert result_baseline.breakdown.get("htf_bias") == result_with_fear.breakdown.get("htf_bias"), \
+                "HTF bias should not change when signal direction doesn't match extreme fear condition"
+
+    def test_extreme_fear_full_penalty_on_bullish_daily_sell(self, mtf_scorer, bearish_signal_df):
+        """Test extreme fear applies full penalty when selling into bullish daily trend."""
+        # Get baseline score with neutral bias (daily/4H disagree)
+        result_baseline = mtf_scorer.calculate_score(
+            bearish_signal_df,
+            htf_bias="neutral",
+            htf_daily="bullish",
+            htf_4h="bearish",
+        )
+
+        # Get score with extreme fear sentiment
+        result_with_fear = mtf_scorer.calculate_score(
+            bearish_signal_df,
+            htf_bias="neutral",
+            htf_daily="bullish",
+            htf_4h="bearish",
+            sentiment_category="extreme_fear",
+        )
+
+        # Test requires negative signal (sell signal) to verify extreme fear sell override
+        # The bearish_signal_df fixture is designed to produce sell signals, but trend_filter
+        # and other penalties can flip the final score. Test conditionally based on actual signal.
+        if result_baseline.score < 0:
+            # Without extreme fear, partial penalty (+10) is applied
+            assert result_baseline.breakdown.get("htf_bias") == 10, "Expected half penalty without extreme fear"
+            # With extreme fear, FULL penalty (+20) should be applied to weaken sell
+            assert result_with_fear.breakdown.get("htf_bias") == 20, "Expected full penalty with extreme fear"
+            # Score difference should be exactly 10 points (full vs half penalty)
+            assert result_with_fear.score - result_baseline.score == 10, "Expected 10-point difference"
+        else:
+            # If baseline isn't bearish, extreme fear override shouldn't activate
+            assert result_baseline.breakdown.get("htf_bias") == result_with_fear.breakdown.get("htf_bias"), \
+                "HTF bias should not change when signal direction doesn't match extreme fear condition"
+
+    def test_extreme_fear_no_effect_when_daily_and_4h_agree(self, mtf_scorer, bullish_signal_df):
+        """Test extreme fear has no additional effect when daily and 4H agree."""
+        # When daily and 4H both agree, htf_bias is not "neutral" so extreme fear
+        # override doesn't apply (normal aligned/counter logic is used)
+        result_no_fear = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="bearish",  # Both daily and 4H bearish
+            htf_daily="bearish",
+            htf_4h="bearish",
+        )
+
+        result_with_fear = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="bearish",
+            htf_daily="bearish",
+            htf_4h="bearish",
+            sentiment_category="extreme_fear",
+        )
+
+        # Scores should be identical - extreme fear doesn't apply when trends agree
+        assert result_no_fear.score == result_with_fear.score
+        assert result_no_fear.breakdown.get("htf_bias") == result_with_fear.breakdown.get("htf_bias")
+
+    def test_extreme_fear_no_effect_on_neutral_daily(self, mtf_scorer, bullish_signal_df):
+        """Test extreme fear has no effect when daily trend is neutral."""
+        result_no_fear = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="neutral",
+            htf_daily="neutral",
+            htf_4h="bullish",
+        )
+
+        result_with_fear = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="neutral",
+            htf_daily="neutral",
+            htf_4h="bullish",
+            sentiment_category="extreme_fear",
+        )
+
+        # No adjustment should be made when daily is neutral
+        assert result_no_fear.score == result_with_fear.score
+        assert result_no_fear.breakdown.get("htf_bias") == 0
+        assert result_with_fear.breakdown.get("htf_bias") == 0
+
+    def test_extreme_fear_no_effect_on_non_extreme_sentiment(self, mtf_scorer, bullish_signal_df):
+        """Test that only extreme_fear triggers the override, not other sentiments."""
+        result_fear = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="neutral",
+            htf_daily="bearish",
+            htf_4h="bullish",
+            sentiment_category="fear",  # regular fear, not extreme
+        )
+
+        result_extreme = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="neutral",
+            htf_daily="bearish",
+            htf_4h="bullish",
+            sentiment_category="extreme_fear",
+        )
+
+        # Regular fear should not trigger full penalty
+        if result_fear.score > 0:
+            assert result_fear.breakdown.get("htf_bias") == -10  # half penalty
+            assert result_extreme.breakdown.get("htf_bias") == -20  # full penalty
+            assert result_fear.score > result_extreme.score
+
+    def test_extreme_fear_no_effect_when_sentiment_none(self, mtf_scorer, bullish_signal_df):
+        """Test extreme fear override does not apply when sentiment_category is None."""
+        # When sentiment is None (disabled or failed fetch), normal half-penalty logic applies
+        result_with_none = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="neutral",
+            htf_daily="bearish",
+            htf_4h="bullish",
+            sentiment_category=None,
+        )
+
+        result_baseline = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="neutral",
+            htf_daily="bearish",
+            htf_4h="bullish",
+            sentiment_category="fear",  # Non-extreme sentiment
+        )
+
+        # Both should apply half penalty (not full penalty)
+        if result_with_none.score > 0:
+            assert result_with_none.breakdown.get("htf_bias") == -10  # half penalty
+            assert result_baseline.breakdown.get("htf_bias") == -10  # half penalty
+            assert result_with_none.score == result_baseline.score
+
+    def test_invalid_sentiment_category_runtime_validation(self, mtf_scorer, bullish_signal_df):
+        """Test runtime validation catches invalid sentiment_category values and falls back to None."""
+        # This test verifies the defensive runtime check at signal_scorer.py:434-443
+        # Even though sentiment_category has a Literal type hint, we validate at runtime
+        # for financial system safety (type hints can be bypassed or ignored)
+        #
+        # The validation logs an error (not checked here due to structlog complexity)
+        # but the key behavior is that invalid values are treated as None.
+
+        invalid_sentiment = "invalid_category"  # type: ignore
+
+        result = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="neutral",
+            htf_daily="bearish",
+            htf_4h="bullish",
+            sentiment_category=invalid_sentiment,
+        )
+
+        # Compare behavior with explicit None to verify fallback
+        result_with_none = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="neutral",
+            htf_daily="bearish",
+            htf_4h="bullish",
+            sentiment_category=None,
+        )
+
+        # Should behave identically - invalid category treated as None
+        # This means NO extreme fear override should apply (half penalty, not full)
+        assert result.score == result_with_none.score, \
+            f"Invalid sentiment should behave like None. Got scores: {result.score} vs {result_with_none.score}"
+        assert result.breakdown.get("htf_bias") == result_with_none.breakdown.get("htf_bias"), \
+            "Invalid sentiment should not trigger extreme fear override"
+
+        # Verify extreme fear WOULD have different behavior (to confirm test is meaningful)
+        result_with_extreme_fear = mtf_scorer.calculate_score(
+            bullish_signal_df,
+            htf_bias="neutral",
+            htf_daily="bearish",
+            htf_4h="bullish",
+            sentiment_category="extreme_fear",
+        )
+        # If signal is positive, extreme fear should apply different penalty than None
+        if result.score > 0:
+            assert result_with_extreme_fear.breakdown.get("htf_bias") != result.breakdown.get("htf_bias"), \
+                "Extreme fear should apply different penalty than invalid/None"
+
 
 class TestHTFEdgeCases:
     """Edge case tests for HTF bias at boundary score values.

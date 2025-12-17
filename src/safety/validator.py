@@ -46,15 +46,16 @@ class ValidationResult:
 class ValidatorConfig:
     """Configuration for order validator."""
 
+    # Required fields (from settings)
+    estimated_fee_percent: float  # From settings
+    profit_margin_multiplier: float  # From settings
+
     min_trade_quote: float = 100.0  # Minimum trade size in quote currency
     # Hard safety limit for position size (catches edge cases).
     # The position sizer has a lower "soft limit" (40%) for normal sizing.
     # Two-tier design: sizer targets 40%, validator enforces 80% hard stop.
     max_position_percent: float = 80.0
     price_sanity_percent: float = 5.0  # Max deviation from market price
-    # Estimated round-trip fee for profit margin check (buy + sell fees)
-    # Coinbase Advanced: ~0.6% (0.3% each way), Kraken: ~0.5%
-    estimated_fee_percent: float = 0.006
 
 
 class OrderValidator:
@@ -88,7 +89,10 @@ class OrderValidator:
             circuit_breaker: Circuit breaker instance
             loss_limiter: Loss limiter instance
         """
-        self.config = config or ValidatorConfig()
+        self.config = config or ValidatorConfig(
+            estimated_fee_percent=0.006,  # Default: 0.6% per trade
+            profit_margin_multiplier=2.0,  # Default: 2x fees minimum
+        )
         self.kill_switch = kill_switch
         self.circuit_breaker = circuit_breaker
         self.loss_limiter = loss_limiter
@@ -366,8 +370,8 @@ class OrderValidator:
                 reason=f"Invalid stop distance: {stop_distance_percent}",
             )
 
-        # Minimum required margin is 2x round-trip fees for break-even at 50% win rate
-        min_margin = self.config.estimated_fee_percent * 2
+        # Minimum required margin is profit_margin_multiplier x round-trip fees
+        min_margin = self.config.estimated_fee_percent * self.config.profit_margin_multiplier
 
         if stop_distance_percent < min_margin:
             return ValidationResult(

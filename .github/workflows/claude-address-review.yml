@@ -141,7 +141,7 @@ jobs:
                - Implement the fix
                - Verify the fix is correct
             4. Do NOT modify src/version.py
-            5. Run tests: python3 -m pytest tests/ -v
+            5. Run tests: python3 -m pytest tests/ --ignore=tests/test_coinbase_integration_live.py -v
             6. If tests pass, commit with message: "Address review feedback on PR #${{ github.event.issue.number }}"
             7. Push to origin/${{ steps.pr.outputs.branch }}
 

@@ -110,21 +110,26 @@ def test_coinbase_get_current_price(coinbase_client):
 
 def test_coinbase_get_market_data(coinbase_client):
     """Test market data fetching."""
+    # get_market_data calls ticker endpoint for bid/ask and get_product for volume
+    mock_ticker = {
+        "best_bid": "49990",
+        "best_ask": "50010",
+    }
     mock_product = {
         "price": "50000",
-        "bid": "49990",
-        "ask": "50010",
         "volume_24h": "12345.67"
     }
 
-    with patch.object(coinbase_client, '_request', return_value=mock_product):
-        data = coinbase_client.get_market_data("BTC-USD")
+    with patch.object(coinbase_client, '_request', return_value=mock_ticker):
+        with patch.object(coinbase_client, 'get_product', return_value=mock_product):
+            data = coinbase_client.get_market_data("BTC-USD")
 
-        assert data.symbol == "BTC-USD"
-        assert data.price == Decimal("50000")
-        assert data.bid == Decimal("49990")
-        assert data.ask == Decimal("50010")
-        assert data.volume_24h == Decimal("12345.67")
+            assert data.symbol == "BTC-USD"
+            # Price is mid of bid/ask: (49990 + 50010) / 2 = 50000
+            assert data.price == Decimal("50000")
+            assert data.bid == Decimal("49990")
+            assert data.ask == Decimal("50010")
+            assert data.volume_24h == Decimal("12345.67")
 
 
 def test_coinbase_market_buy_success(coinbase_client):
@@ -133,23 +138,29 @@ def test_coinbase_market_buy_success(coinbase_client):
     mock_order_response = {
         "success_response": {
             "order_id": "order-123",
-            "status": "FILLED",
-            "filled_size": "0.02",
-            "average_filled_price": "50000",
-            "total_fees": "5.00"
+            "status": "PENDING",
         }
+    }
+    # Polling returns filled order status
+    mock_poll_result = {
+        "order_id": "order-123",
+        "status": "FILLED",
+        "filled_size": "0.02",
+        "average_filled_price": "50000",
+        "total_fees": "5.00"
     }
 
     with patch.object(coinbase_client, '_request', return_value=mock_order_response):
-        result = coinbase_client.market_buy("BTC-USD", Decimal("1000"))
+        with patch.object(coinbase_client, '_poll_order_fill', return_value=mock_poll_result):
+            result = coinbase_client.market_buy("BTC-USD", Decimal("1000"))
 
-        # Verify order was executed
-        assert result.success is True
-        assert result.order_id == "order-123"
-        assert result.side == "buy"
-        assert result.size == Decimal("0.02")
-        assert result.filled_price == Decimal("50000")
-        assert result.fee == Decimal("5.00")
+            # Verify order was executed
+            assert result.success is True
+            assert result.order_id == "order-123"
+            assert result.side == "buy"
+            assert result.size == Decimal("0.02")
+            assert result.filled_price == Decimal("50000")
+            assert result.fee == Decimal("5.00")
 
 
 def test_coinbase_market_buy_wrong_direction_prevented(coinbase_client):
@@ -170,20 +181,26 @@ def test_coinbase_market_sell_success(coinbase_client):
     mock_order_response = {
         "success_response": {
             "order_id": "order-456",
-            "status": "FILLED",
-            "filled_size": "0.05",
-            "average_filled_price": "51000",
-            "total_fees": "12.75"
+            "status": "PENDING",
         }
+    }
+    # Polling returns filled order status
+    mock_poll_result = {
+        "order_id": "order-456",
+        "status": "FILLED",
+        "filled_size": "0.05",
+        "average_filled_price": "51000",
+        "total_fees": "12.75"
     }
 
     with patch.object(coinbase_client, '_request', return_value=mock_order_response):
-        result = coinbase_client.market_sell("BTC-USD", Decimal("0.05"))
+        with patch.object(coinbase_client, '_poll_order_fill', return_value=mock_poll_result):
+            result = coinbase_client.market_sell("BTC-USD", Decimal("0.05"))
 
-        assert result.success is True
-        assert result.side == "sell"
-        assert result.size == Decimal("0.05")
-        assert result.filled_price == Decimal("51000")
+            assert result.success is True
+            assert result.side == "sell"
+            assert result.size == Decimal("0.05")
+            assert result.filled_price == Decimal("51000")
 
 
 def test_coinbase_market_sell_wrong_direction_prevented(coinbase_client):
@@ -558,20 +575,26 @@ def test_coinbase_full_buy_order_flow(coinbase_client):
     mock_response = {
         "success_response": {
             "order_id": "order-123",
-            "status": "FILLED",
-            "filled_size": "0.02",
-            "average_filled_price": "50000",
-            "total_fees": "5.00"
+            "status": "PENDING",
         }
+    }
+    # Polling returns filled order status
+    mock_poll_result = {
+        "order_id": "order-123",
+        "status": "FILLED",
+        "filled_size": "0.02",
+        "average_filled_price": "50000",
+        "total_fees": "5.00"
     }
 
     with patch.object(coinbase_client, '_request', return_value=mock_response):
-        result = coinbase_client.market_buy("BTC-USD", Decimal("1000"))
+        with patch.object(coinbase_client, '_poll_order_fill', return_value=mock_poll_result):
+            result = coinbase_client.market_buy("BTC-USD", Decimal("1000"))
 
-        # Verify complete flow
-        assert result.success is True
-        assert result.order_id == "order-123"
-        assert result.status == "FILLED"
+            # Verify complete flow
+            assert result.success is True
+            assert result.order_id == "order-123"
+            assert result.status == "FILLED"
 
 
 def test_kraken_full_sell_order_flow(kraken_client):

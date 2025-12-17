@@ -93,3 +93,31 @@ def sample_ohlcv_data():
         return pd.DataFrame(data)
 
     return _generate
+
+
+# ============================================================================
+# Live Integration Test Configuration
+# ============================================================================
+
+def pytest_addoption(parser):
+    """Add custom command line options."""
+    parser.addoption(
+        "--run-live-tests",
+        action="store_true",
+        default=False,
+        help="Run live integration tests that make real API calls (requires credentials)"
+    )
+
+
+@pytest.fixture
+def run_live_tests(request):
+    """Check if --run-live-tests flag is present."""
+    return request.config.getoption("--run-live-tests")
+
+
+@pytest.fixture(autouse=True)
+def skip_live_tests_by_default(request, run_live_tests):
+    """Skip tests marked with integration_live unless --run-live-tests is provided."""
+    if request.node.get_closest_marker('integration_live'):
+        if not run_live_tests:
+            pytest.skip("Live integration tests require --run-live-tests flag")

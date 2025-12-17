@@ -30,7 +30,7 @@ from src.api.paper_client import PaperTradingClient
 from src.notifications.telegram import TelegramNotifier
 from src.safety.circuit_breaker import CircuitBreaker, CircuitBreakerConfig, BreakerLevel
 from src.safety.kill_switch import KillSwitch
-from src.safety.loss_limiter import LossLimiter
+from src.safety.loss_limiter import LossLimiter, LossLimitConfig
 from src.safety.trade_cooldown import TradeCooldown, TradeCooldownConfig
 from src.safety.validator import OrderValidator, OrderRequest, ValidatorConfig
 from sqlalchemy.exc import SQLAlchemyError
@@ -79,7 +79,7 @@ class TradingDaemon:
         # Check for deprecated AI_FAILURE_MODE setting
         import os
         if "AI_FAILURE_MODE" in os.environ and (
-            "AI_FAILURE_MODE_BUY" not in os.environ or "AI_FAILURE_MODE_SELL" not in os.environ
+            "AI_FAILURE_MODE_BUY" not in os.environ and "AI_FAILURE_MODE_SELL" not in os.environ
         ):
             logger.warning(
                 "deprecated_setting_detected",
@@ -235,6 +235,12 @@ class TradingDaemon:
         )
 
         self.loss_limiter = LossLimiter(
+            config=LossLimitConfig(
+                throttle_at_percent=settings.loss_throttle_start_percent,
+                throttle_min_multiplier=settings.loss_throttle_min_multiplier,
+                max_daily_loss_percent=settings.max_daily_loss_percent,
+                max_hourly_loss_percent=settings.max_hourly_loss_percent,
+            ),
             on_limit_hit=lambda limit_type, percent: self.notifier.notify_loss_limit(
                 limit_type, percent
             )
@@ -243,7 +249,9 @@ class TradingDaemon:
         # Initialize order validator
         self.validator = OrderValidator(
             config=ValidatorConfig(
-                min_trade_quote=100.0,
+                estimated_fee_percent=settings.estimated_fee_percent,
+                profit_margin_multiplier=settings.profit_margin_multiplier,
+                min_trade_quote=settings.min_trade_quote,
                 max_position_percent=settings.max_position_percent,
             ),
             kill_switch=self.kill_switch,
@@ -293,15 +301,29 @@ class TradingDaemon:
             high_volume_boost_percent=settings.high_volume_boost_percent,
             mtf_aligned_boost=settings.mtf_aligned_boost,
             mtf_counter_penalty=settings.mtf_counter_penalty,
+            max_oversold_buys_24h=settings.max_oversold_buys_24h,
+            price_stabilization_window=settings.price_stabilization_window,
+            volume_sma_window=settings.volume_sma_window,
+            high_volume_threshold=settings.high_volume_threshold,
+            low_volume_threshold=settings.low_volume_threshold,
+            low_volume_penalty=settings.low_volume_penalty,
+            extreme_rsi_lower=settings.extreme_rsi_lower,
+            extreme_rsi_upper=settings.extreme_rsi_upper,
+            trend_filter_penalty=settings.trend_filter_penalty,
         )
 
         self.position_sizer = PositionSizer(
             config=PositionSizeConfig(
+                risk_per_trade_percent=settings.risk_per_trade_percent,
+                min_trade_base=settings.min_trade_base,
                 max_position_percent=settings.position_size_percent,
                 stop_loss_atr_multiplier=settings.stop_loss_atr_multiplier,
                 min_stop_loss_percent=settings.min_stop_loss_percent,
+                min_trade_quote=settings.min_trade_quote,
+                max_trade_quote=settings.max_trade_quote,
             ),
             atr_period=settings.atr_period,
+            take_profit_atr_multiplier=settings.take_profit_atr_multiplier,
         )
 
         # Initialize market regime detector
@@ -603,6 +625,7 @@ class TradingDaemon:
             self.position_sizer.update_settings(
                 max_position_percent=new_settings.position_size_percent,
                 stop_loss_atr_multiplier=new_settings.stop_loss_atr_multiplier,
+                take_profit_atr_multiplier=new_settings.take_profit_atr_multiplier,
                 atr_period=new_settings.atr_period,
                 min_stop_loss_percent=new_settings.min_stop_loss_percent,
             )
@@ -1180,12 +1203,42 @@ class TradingDaemon:
         # Get HTF bias for multi-timeframe confirmation
         htf_bias, daily_trend, four_hour_trend = self._get_htf_bias()
 
-        # Calculate signal with HTF context
+        # Fetch sentiment before signal calculation to enable extreme fear override in MTF logic.
+        # This must happen BEFORE calculate_score() because sentiment_category is used to
+        # determine whether to apply full vs half counter-penalties when daily/4H disagree.
+        sentiment = None
+        sentiment_category = None
+        if self.settings.regime_sentiment_enabled:
+            try:
+                sentiment = self._run_async_with_timeout(get_cached_sentiment(), timeout=30)
+                if sentiment and sentiment.value is not None:
+                    # Reuse existing classification logic from MarketRegime
+                    sentiment_category = self.market_regime._classify_sentiment(sentiment.value)
+                    logger.debug(
+                        "sentiment_fetch_success",
+                        category=sentiment_category,
+                        value=sentiment.value,
+                    )
+                else:
+                    logger.warning(
+                        "sentiment_unavailable_for_trade_evaluation",
+                        reason="fetch_returned_none",
+                        impact="extreme_fear_override_disabled",
+                    )
+            except Exception as e:
+                logger.warning(
+                    "sentiment_fetch_failed_during_trade_evaluation",
+                    error=str(e),
+                    impact="extreme_fear_override_disabled",
+                )
+
+        # Calculate signal with HTF context and sentiment
         signal_result = self.signal_scorer.calculate_score(
             candles, current_price,
             htf_bias=htf_bias,
             htf_daily=daily_trend,
             htf_4h=four_hour_trend,
+            sentiment_category=sentiment_category,
         )
 
         # Log indicator values for debugging
@@ -1233,12 +1286,7 @@ class TradingDaemon:
                 )
 
         # Calculate market regime for strategy adaptation
-        sentiment = None
-        if self.settings.regime_sentiment_enabled:
-            try:
-                sentiment = self._run_async_with_timeout(get_cached_sentiment(), timeout=30)
-            except Exception as e:
-                logger.debug("sentiment_fetch_skipped", error=str(e))
+        # Note: sentiment already fetched above before signal calculation
         trend = get_ema_trend_from_values(ind.ema_fast, ind.ema_slow) if ind.ema_fast and ind.ema_slow else "neutral"
 
         regime = self.market_regime.calculate(
@@ -2044,6 +2092,7 @@ class TradingDaemon:
                 is_paper=is_paper,
                 signal_score=signal_score,
                 stop_loss=position.stop_loss_price,
+                take_profit=position.take_profit_price,
                 position_percent=position.position_percent,
             )
 
@@ -2192,6 +2241,11 @@ class TradingDaemon:
                 is_paper=is_paper,
             )
 
+            # Get entry price before calculating realized PnL
+            # (realized PnL calculation updates the position, reducing quantity)
+            current_position = self.db.get_current_position(self.settings.trading_pair, is_paper=is_paper)
+            entry_price = current_position.get_average_cost() if current_position else None
+
             # Calculate realized P&L based on average cost basis
             realized_pnl = self._calculate_realized_pnl(result.size, filled_price, result.fee, is_paper)
 
@@ -2235,6 +2289,7 @@ class TradingDaemon:
                 is_paper=is_paper,
                 signal_score=signal_score,
                 realized_pnl=realized_pnl,
+                entry_price=entry_price,
             )
 
             logger.info(

@@ -415,6 +415,7 @@ class TelegramNotifier:
         stop_loss: Optional[Decimal] = None,
         position_percent: Optional[float] = None,
         realized_pnl: Optional[Decimal] = None,
+        entry_price: Optional[Decimal] = None,
     ) -> None:
         """Send notification for trade execution."""
         mode = "[PAPER] " if is_paper else ""
@@ -439,7 +440,15 @@ class TelegramNotifier:
             lines.append(f"Position Size: {position_percent:.1f}% of portfolio")
         if realized_pnl is not None and side == "sell":
             pnl_emoji = "📈" if realized_pnl >= 0 else "📉"
-            lines.append(f"{pnl_emoji} Realized P&L: ¤{realized_pnl:+,.2f}")
+            # Show entry price, exit price, and P&L percentage for sells
+            if entry_price is not None and entry_price > 0:
+                pnl_pct = ((price - entry_price) / entry_price * 100)
+                lines.append(f"Entry Price: ¤{entry_price:,.2f}")
+                lines.append(f"Exit Price: ¤{price:,.2f}")
+                lines.append(f"{pnl_emoji} P&L: ¤{realized_pnl:+,.2f} ({pnl_pct:+.2f}%)")
+            else:
+                # Fallback if entry price not available
+                lines.append(f"{pnl_emoji} Realized P&L: ¤{realized_pnl:+,.2f}")
 
         lines.append(f"\nTime: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
 

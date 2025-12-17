@@ -123,7 +123,7 @@ jobs:
             2. Analyze the issue and locate relevant code
             3. Implement the fix following CLAUDE.md guidelines
             4. Do NOT modify src/version.py (version bumps happen at merge time)
-            5. Run tests: python3 -m pytest tests/ -v
+            5. Run tests: python3 -m pytest tests/ --ignore=tests/test_coinbase_integration_live.py -v
             6. Commit with message referencing issue #${{ steps.issue.outputs.number }}
             7. Push to origin/${{ steps.branch.outputs.name }}
             8. Create PR to develop with "Closes #${{ steps.issue.outputs.number }}" in body
