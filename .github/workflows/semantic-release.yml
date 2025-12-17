@@ -75,15 +75,27 @@ jobs:
           VERSION="${{ steps.version.outputs.next }}"
           BRANCH="release/v${VERSION}"
 
-          # Run semantic-release to update version files only (--no-commit prevents internal commit attempt)
-          semantic-release version --no-commit --no-tag --no-vcs-release
+          # Delete branch if it exists from a previous failed run
+          if git show-ref --verify --quiet refs/heads/"$BRANCH"; then
+            echo "::warning::Branch $BRANCH already exists, deleting and recreating"
+            git branch -D "$BRANCH"
+          fi
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "::warning::Remote branch $BRANCH exists, deleting"
+            git push origin --delete "$BRANCH"
+          fi
 
-          # Commit the version changes manually
-          git add -A
-          git commit -m "chore(release): ${VERSION}"
-
-          # Create release branch from the committed changes
+          # Create release branch
           git checkout -b "$BRANCH"
+
+          # Run semantic-release to update version files and commit
+          # --no-push: don't push yet (we'll push the branch manually)
+          # --no-tag: don't create tag yet (will be created after PR merge)
+          # --no-vcs-release: don't create GitHub release yet
+          if ! semantic-release version --no-push --no-tag --no-vcs-release; then
+            echo "::error::semantic-release failed to update version files"
+            exit 1
+          fi
 
           # Push the release branch
           git push origin "$BRANCH"
@@ -101,7 +113,7 @@ jobs:
           - Version bump to ${VERSION}
           - Updated CHANGELOG.md
 
-          This PR will be auto-merged once checks pass."); then
+          Merge this PR to complete the release."); then
             echo "::error::Failed to create PR for release $VERSION"
             # Cleanup orphaned branch
             git push origin --delete "$BRANCH" 2>/dev/null || true
@@ -109,8 +121,4 @@ jobs:
           fi
 
           echo "Created PR: $PR_URL"
-
-          # Enable auto-merge (waits for required status checks before merging)
-          if ! gh pr merge "$BRANCH" --auto --squash; then
-            echo "::warning::Failed to enable auto-merge. PR created but requires manual merge."
-          fi
+          echo "::notice::Release PR created at $PR_URL"
