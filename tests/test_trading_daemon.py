@@ -2280,8 +2280,8 @@ class TestDualExtremeBlocking:
 
                     daemon = TradingDaemon(mock_settings)
 
-                    # Mock regime detector to return dual-extreme conditions
-                    daemon.regime_detector = Mock()
+                    # Mock market_regime to return dual-extreme conditions
+                    daemon.market_regime = Mock()
                     mock_regime = Mock()
                     mock_regime.regime_name = "extreme_risk_off"
                     mock_regime.threshold_adjustment = 0
@@ -2290,7 +2290,7 @@ class TestDualExtremeBlocking:
                         "sentiment": {"category": "extreme_fear", "value": 15},
                         "volatility": {"level": "extreme"}
                     }
-                    daemon.regime_detector.calculate_regime.return_value = mock_regime
+                    daemon.market_regime.calculate.return_value = mock_regime
 
                     # Mock signal scorer to return strong buy signal
                     daemon.signal_scorer.calculate_score = Mock(return_value=SignalResult(
@@ -2330,14 +2330,33 @@ class TestDualExtremeBlocking:
     def test_allows_buy_extreme_fear_normal_volatility(self, mock_settings, mock_exchange_client, mock_database):
         """Test buy proceeds with extreme_fear but normal volatility."""
         mock_settings.block_trades_extreme_conditions = True
+        mock_settings.use_limit_orders = False  # Simplify to direct market orders
+        mock_settings.is_paper_trading = False  # Use mock client directly (avoid paper wrapper)
+        mock_settings.max_position_percent = Decimal("100")  # Allow large positions for test
 
         with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
             with patch('src.daemon.runner.Database', return_value=mock_database):
                 with patch('src.daemon.runner.TelegramNotifier'):
                     daemon = TradingDaemon(mock_settings)
 
-                    # Mock regime detector: extreme_fear but normal volatility
-                    daemon.regime_detector = Mock()
+                    # Mock position_sizer config to ensure can_buy=True
+                    daemon.position_sizer.config.min_trade_quote = Decimal("10")
+                    daemon.position_sizer.config.max_position_percent = Decimal("100")
+                    daemon.position_sizer.config.min_trade_base = Decimal("0.0001")
+
+                    # Mock position_sizer.calculate_size to return valid position
+                    from src.strategy.position_sizer import PositionSizeResult
+                    daemon.position_sizer.calculate_size = Mock(return_value=PositionSizeResult(
+                        size_base=Decimal("0.002"),
+                        size_quote=Decimal("100"),
+                        stop_loss_price=Decimal("49000"),
+                        take_profit_price=Decimal("52000"),
+                        risk_amount_quote=Decimal("2"),
+                        position_percent=1.0,
+                    ))
+
+                    # Mock market_regime: extreme_fear but normal volatility
+                    daemon.market_regime = Mock()
                     mock_regime = Mock()
                     mock_regime.regime_name = "risk_off"
                     mock_regime.threshold_adjustment = -10
@@ -2346,7 +2365,7 @@ class TestDualExtremeBlocking:
                         "sentiment": {"category": "extreme_fear", "value": 15},
                         "volatility": {"level": "normal"}  # NOT extreme
                     }
-                    daemon.regime_detector.calculate_regime.return_value = mock_regime
+                    daemon.market_regime.calculate.return_value = mock_regime
 
                     # Mock signal scorer to return strong buy signal
                     daemon.signal_scorer.calculate_score = Mock(return_value=SignalResult(
@@ -2381,14 +2400,33 @@ class TestDualExtremeBlocking:
     def test_allows_buy_fear_extreme_volatility(self, mock_settings, mock_exchange_client, mock_database):
         """Test buy proceeds with fear (not extreme) and extreme volatility."""
         mock_settings.block_trades_extreme_conditions = True
+        mock_settings.use_limit_orders = False  # Simplify to direct market orders
+        mock_settings.is_paper_trading = False  # Use mock client directly (avoid paper wrapper)
+        mock_settings.max_position_percent = Decimal("100")  # Allow large positions for test
 
         with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
             with patch('src.daemon.runner.Database', return_value=mock_database):
                 with patch('src.daemon.runner.TelegramNotifier'):
                     daemon = TradingDaemon(mock_settings)
 
-                    # Mock regime detector: fear (not extreme_fear) + extreme volatility
-                    daemon.regime_detector = Mock()
+                    # Mock position_sizer config to ensure can_buy=True
+                    daemon.position_sizer.config.min_trade_quote = Decimal("10")
+                    daemon.position_sizer.config.max_position_percent = Decimal("100")
+                    daemon.position_sizer.config.min_trade_base = Decimal("0.0001")
+
+                    # Mock position_sizer.calculate_size to return valid position
+                    from src.strategy.position_sizer import PositionSizeResult
+                    daemon.position_sizer.calculate_size = Mock(return_value=PositionSizeResult(
+                        size_base=Decimal("0.002"),
+                        size_quote=Decimal("100"),
+                        stop_loss_price=Decimal("49000"),
+                        take_profit_price=Decimal("52000"),
+                        risk_amount_quote=Decimal("2"),
+                        position_percent=1.0,
+                    ))
+
+                    # Mock market_regime: fear (not extreme_fear) + extreme volatility
+                    daemon.market_regime = Mock()
                     mock_regime = Mock()
                     mock_regime.regime_name = "cautious"
                     mock_regime.threshold_adjustment = -5
@@ -2397,7 +2435,7 @@ class TestDualExtremeBlocking:
                         "sentiment": {"category": "fear", "value": 35},  # NOT extreme_fear
                         "volatility": {"level": "extreme"}
                     }
-                    daemon.regime_detector.calculate_regime.return_value = mock_regime
+                    daemon.market_regime.calculate.return_value = mock_regime
 
                     # Mock signal scorer to return strong buy signal
                     daemon.signal_scorer.calculate_score = Mock(return_value=SignalResult(
@@ -2432,6 +2470,8 @@ class TestDualExtremeBlocking:
     def test_sell_not_blocked_by_dual_extreme(self, mock_settings, mock_database):
         """Test sell orders are NOT blocked by dual-extreme conditions."""
         mock_settings.block_trades_extreme_conditions = True
+        mock_settings.use_limit_orders = False  # Simplify to direct market orders
+        mock_settings.is_paper_trading = False  # Use mock client directly (avoid paper wrapper)
 
         mock_client = Mock()
         # Return balances with crypto position to sell
@@ -2472,8 +2512,13 @@ class TestDualExtremeBlocking:
                 with patch('src.daemon.runner.TelegramNotifier'):
                     daemon = TradingDaemon(mock_settings)
 
-                    # Mock regime detector: dual-extreme conditions
-                    daemon.regime_detector = Mock()
+                    # Mock position_sizer config to ensure can_sell=True
+                    daemon.position_sizer.config.min_trade_quote = Decimal("10")
+                    daemon.position_sizer.config.max_position_percent = Decimal("100")
+                    daemon.position_sizer.config.min_trade_base = Decimal("0.0001")
+
+                    # Mock market_regime: dual-extreme conditions
+                    daemon.market_regime = Mock()
                     mock_regime = Mock()
                     mock_regime.regime_name = "extreme_risk_off"
                     mock_regime.threshold_adjustment = 0
@@ -2482,7 +2527,7 @@ class TestDualExtremeBlocking:
                         "sentiment": {"category": "extreme_fear", "value": 15},
                         "volatility": {"level": "extreme"}
                     }
-                    daemon.regime_detector.calculate_regime.return_value = mock_regime
+                    daemon.market_regime.calculate.return_value = mock_regime
 
                     # Mock signal scorer to return strong sell signal
                     daemon.signal_scorer.calculate_score = Mock(return_value=SignalResult(
@@ -2517,14 +2562,33 @@ class TestDualExtremeBlocking:
     def test_respects_config_flag_disabled(self, mock_settings, mock_exchange_client, mock_database):
         """Test setting block_trades_extreme_conditions=False disables check."""
         mock_settings.block_trades_extreme_conditions = False  # Disabled
+        mock_settings.use_limit_orders = False  # Simplify to direct market orders
+        mock_settings.is_paper_trading = False  # Use mock client directly (avoid paper wrapper)
+        mock_settings.max_position_percent = Decimal("100")  # Allow large positions for test
 
         with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
             with patch('src.daemon.runner.Database', return_value=mock_database):
                 with patch('src.daemon.runner.TelegramNotifier'):
                     daemon = TradingDaemon(mock_settings)
 
-                    # Mock regime detector: dual-extreme conditions
-                    daemon.regime_detector = Mock()
+                    # Mock position_sizer config to ensure can_buy=True
+                    daemon.position_sizer.config.min_trade_quote = Decimal("10")
+                    daemon.position_sizer.config.max_position_percent = Decimal("100")
+                    daemon.position_sizer.config.min_trade_base = Decimal("0.0001")
+
+                    # Mock position_sizer.calculate_size to return valid position
+                    from src.strategy.position_sizer import PositionSizeResult
+                    daemon.position_sizer.calculate_size = Mock(return_value=PositionSizeResult(
+                        size_base=Decimal("0.002"),
+                        size_quote=Decimal("100"),
+                        stop_loss_price=Decimal("49000"),
+                        take_profit_price=Decimal("52000"),
+                        risk_amount_quote=Decimal("2"),
+                        position_percent=1.0,
+                    ))
+
+                    # Mock market_regime: dual-extreme conditions
+                    daemon.market_regime = Mock()
                     mock_regime = Mock()
                     mock_regime.regime_name = "extreme_risk_off"
                     mock_regime.threshold_adjustment = 0
@@ -2533,7 +2597,7 @@ class TestDualExtremeBlocking:
                         "sentiment": {"category": "extreme_fear", "value": 15},
                         "volatility": {"level": "extreme"}
                     }
-                    daemon.regime_detector.calculate_regime.return_value = mock_regime
+                    daemon.market_regime.calculate.return_value = mock_regime
 
                     # Mock signal scorer to return strong buy signal
                     daemon.signal_scorer.calculate_score = Mock(return_value=SignalResult(

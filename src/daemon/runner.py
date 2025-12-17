@@ -3080,7 +3080,7 @@ class TradingDaemon:
                 candles=candles,
                 is_paper=is_paper,
                 avg_cost=avg_cost,
-                volatility="normal",  # Emergency recovery - no indicator context available
+                volatility=self._last_volatility,  # Use last known volatility for appropriate stop width
             )
             logger.info("emergency_stop_created", avg_cost=str(avg_cost))
             self.notifier.send_alert("✅ Emergency stop protection created successfully.")
