@@ -112,10 +112,7 @@ jobs:
           DATE=$(date +%Y-%m-%d)
           REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
 
-          CHANGELOG_ENTRY="## v${VERSION} (${DATE})
-
-See [GitHub Release](${REPO_URL}/releases/tag/v${VERSION}) for details.
-"
+          CHANGELOG_ENTRY=$(printf "## v%s (%s)\n\nSee [GitHub Release](%s/releases/tag/v%s) for details.\n" "$VERSION" "$DATE" "$REPO_URL" "$VERSION")
 
           # Update CHANGELOG.md - insert before first version entry (## v)
           if [ -f CHANGELOG.md ] && [ -s CHANGELOG.md ]; then
@@ -130,14 +127,7 @@ See [GitHub Release](${REPO_URL}/releases/tag/v${VERSION}) for details.
             fi
           else
             # File doesn't exist or is empty - create with standard header
-            cat > CHANGELOG.md << 'HEADER'
-# Changelog
-
-All notable changes to this project will be documented in this file.
-
-This file is automatically updated by semantic-release.
-
-HEADER
+            printf "# Changelog\n\nAll notable changes to this project will be documented in this file.\n\nThis file is automatically updated by semantic-release.\n\n" > CHANGELOG.md
             echo "$CHANGELOG_ENTRY" >> CHANGELOG.md
           fi
 
@@ -154,19 +144,8 @@ HEADER
           git push origin "$BRANCH"
 
           # Create PR
-          if ! PR_URL=$(gh pr create \
-            --base main \
-            --head "$BRANCH" \
-            --title "chore(release): ${VERSION}" \
-            --body "## Automated Release v${VERSION}
-
-          This PR was automatically created by semantic-release.
-
-          **Changes:**
-          - Version bump to ${VERSION}
-          - Updated CHANGELOG.md
-
-          Merge this PR to complete the release."); then
+          PR_BODY=$(printf "## Automated Release v%s\n\nThis PR was automatically created by semantic-release.\n\n**Changes:**\n- Version bump to %s\n- Updated CHANGELOG.md\n\nMerge this PR to complete the release." "$VERSION" "$VERSION")
+          if ! PR_URL=$(gh pr create --base main --head "$BRANCH" --title "chore(release): ${VERSION}" --body "$PR_BODY"); then
             echo "::error::Failed to create PR for release $VERSION"
             # Cleanup orphaned branch
             git push origin --delete "$BRANCH" 2>/dev/null || true
