@@ -1061,9 +1061,8 @@ def test_ai_failure_mode_sell_proceeds_on_failure(mock_settings, mock_exchange_c
 
                 # CRITICAL: Verify sell was actually attempted (positive assertion)
                 # In OPEN mode, the sell should proceed despite AI failure
-                # Note: The trade may not fully execute due to other conditions,
-                # but we verify the code path didn't early-return due to AI failure
-                # by checking no skip notification was sent (above)
+                assert mock_exchange_client.market_sell.called, \
+                    "SELL with OPEN mode should attempt trade execution despite AI failure"
 
 
 def test_ai_failure_notification_cooldown(mock_settings, mock_exchange_client, mock_database):
