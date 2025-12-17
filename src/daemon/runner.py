@@ -1187,17 +1187,8 @@ class TradingDaemon:
             try:
                 sentiment = self._run_async_with_timeout(get_cached_sentiment(), timeout=30)
                 if sentiment and sentiment.value is not None:
-                    # Classify sentiment value into category
-                    if sentiment.value < 25:
-                        sentiment_category = "extreme_fear"
-                    elif sentiment.value < 45:
-                        sentiment_category = "fear"
-                    elif sentiment.value <= 55:
-                        sentiment_category = "neutral"
-                    elif sentiment.value <= 75:
-                        sentiment_category = "greed"
-                    else:
-                        sentiment_category = "extreme_greed"
+                    # Reuse existing classification logic from MarketRegime
+                    sentiment_category = self.market_regime._classify_sentiment(sentiment.value)
             except Exception as e:
                 logger.debug("sentiment_fetch_skipped", error=str(e))
 

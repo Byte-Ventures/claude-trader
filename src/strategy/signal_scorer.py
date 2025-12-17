@@ -713,8 +713,8 @@ class SignalScorer:
 
             # EXTREME FEAR OVERRIDE: Weight daily trend more heavily during extreme fear
             # When sentiment is extreme_fear, apply FULL counter-penalty based on daily trend
-            # even if 4H disagrees. This prevents 4H neutral signals from neutralizing bearish
-            # daily trends during extreme conditions.
+            # even if 4H disagrees. This prevents 4H neutral signals from neutralizing daily
+            # trends during extreme conditions.
             if sentiment_category == "extreme_fear" and htf_daily == "bearish" and total_score > 0:
                 # Buying into bearish daily trend during extreme fear - apply FULL penalty
                 htf_adjustment = -self.mtf_counter_penalty
@@ -723,6 +723,19 @@ class SignalScorer:
                     htf_daily=htf_daily,
                     htf_4h=htf_4h,
                     sentiment=sentiment_category,
+                    signal_direction="buy",
+                    adjustment=htf_adjustment,
+                )
+            elif sentiment_category == "extreme_fear" and htf_daily == "bullish" and total_score < 0:
+                # Selling into bullish daily trend during extreme fear - apply FULL penalty
+                # to weaken sell signal more aggressively (prevent panic selling)
+                htf_adjustment = self.mtf_counter_penalty
+                logger.info(
+                    "extreme_fear_daily_penalty_applied",
+                    htf_daily=htf_daily,
+                    htf_4h=htf_4h,
+                    sentiment=sentiment_category,
+                    signal_direction="sell",
                     adjustment=htf_adjustment,
                 )
             elif total_score > 0 and htf_daily == "bearish":
