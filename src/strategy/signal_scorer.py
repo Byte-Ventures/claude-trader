@@ -711,7 +711,10 @@ class SignalScorer:
             # Use round() to handle odd mtf_counter_penalty values correctly.
             half_penalty = round(self.mtf_counter_penalty / 2)
 
-            # EXTREME FEAR OVERRIDE: Weight daily trend more heavily during extreme fear
+            # EXTREME FEAR OVERRIDE: Only applies when daily/4H disagree (htf_bias=neutral)
+            # When both agree, the standard aligned/counter logic is already strong enough.
+            # This prevents over-penalizing and maintains trade flow during extreme conditions.
+            #
             # When sentiment is extreme_fear, apply FULL counter-penalty based on daily trend
             # even if 4H disagrees. This prevents 4H neutral signals from neutralizing daily
             # trends during extreme conditions.
