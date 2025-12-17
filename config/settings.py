@@ -414,11 +414,11 @@ class Settings(BaseSettings):
         default=AIFailureMode.OPEN,
         description="DEPRECATED: Use ai_failure_mode_buy/sell instead. Fallback if per-action not set."
     )
-    ai_failure_mode_buy: Optional[AIFailureMode] = Field(
+    ai_failure_mode_buy: AIFailureMode = Field(
         default=AIFailureMode.SAFE,
         description="Behavior when AI review fails for BUY: safe (skip) is recommended - missing opportunity < bad entry"
     )
-    ai_failure_mode_sell: Optional[AIFailureMode] = Field(
+    ai_failure_mode_sell: AIFailureMode = Field(
         default=AIFailureMode.OPEN,
         description="Behavior when AI review fails for SELL: open (proceed) is recommended - don't get trapped in crash"
     )

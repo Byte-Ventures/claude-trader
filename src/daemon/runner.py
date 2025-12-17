@@ -1668,11 +1668,11 @@ class TradingDaemon:
                     except Exception as e:
                         logger.error("claude_review_failed", error=str(e), exc_info=True)
 
-                        # Check AI failure mode setting (per-action settings take precedence)
+                        # Check AI failure mode setting (per-action)
                         if effective_action == "buy":
-                            failure_mode = self.settings.ai_failure_mode_buy or self.settings.ai_failure_mode
+                            failure_mode = self.settings.ai_failure_mode_buy
                         else:  # sell
-                            failure_mode = self.settings.ai_failure_mode_sell or self.settings.ai_failure_mode
+                            failure_mode = self.settings.ai_failure_mode_sell
 
                         if failure_mode == AIFailureMode.SAFE:
                             logger.warning(
