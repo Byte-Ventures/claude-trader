@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 This file is automatically updated by semantic-release.
 
+## v1.33.2 (2025-12-17)
+
+See [GitHub Release](https://github.com/Byte-Ventures/claude-trader/releases/tag/v1.33.2) for details.
 ## v1.33.1 (2025-12-17)
 
 See [GitHub Release](https://github.com/Byte-Ventures/claude-trader/releases/tag/v1.33.1) for details.
