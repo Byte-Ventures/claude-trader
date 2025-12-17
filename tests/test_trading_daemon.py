@@ -1065,6 +1065,93 @@ def test_ai_failure_mode_sell_proceeds_on_failure(mock_settings, mock_exchange_c
                     "SELL with OPEN mode should attempt trade execution despite AI failure"
 
 
+def test_ai_failure_mode_sell_safe_skips_trade(mock_settings, mock_exchange_client, mock_database):
+    """
+    Verify AI_FAILURE_MODE_SELL=safe skips sell when AI review fails.
+
+    This is NOT the default behavior (default is OPEN for sells), but users
+    may explicitly configure SAFE mode for sells. This test ensures symmetric
+    behavior: both buy and sell actions can be skipped in SAFE mode.
+    """
+    from config.settings import AIFailureMode, VetoAction
+
+    # Enable AI review with SAFE mode for sells (non-default config)
+    mock_settings.ai_review_enabled = True
+    mock_settings.ai_failure_mode = AIFailureMode.OPEN  # Fallback
+    mock_settings.ai_failure_mode_buy = AIFailureMode.SAFE
+    mock_settings.ai_failure_mode_sell = AIFailureMode.SAFE  # Non-default: skip sells on AI failure
+    mock_settings.openrouter_api_key = Mock()
+    mock_settings.openrouter_api_key.get_secret_value.return_value = "test_key"
+    mock_settings.reviewer_model_1 = "test/model1"
+    mock_settings.reviewer_model_2 = "test/model2"
+    mock_settings.reviewer_model_3 = "test/model3"
+    mock_settings.judge_model = "test/judge"
+    mock_settings.veto_reduce_threshold = 0.65
+    mock_settings.veto_skip_threshold = 0.80
+    mock_settings.position_reduction = 0.5
+    mock_settings.interesting_hold_margin = 15
+    mock_settings.ai_review_all = False
+    mock_settings.market_research_enabled = False
+    mock_settings.ai_web_search_enabled = False
+    mock_settings.market_research_cache_minutes = 15
+    mock_settings.trailing_stop_atr_multiplier = 1.0
+    mock_settings.is_paper_trading = False
+
+    # Create strong sell signal
+    sell_signal = SignalResult(
+        score=-70,  # Strong sell signal
+        action="sell",
+        indicators=IndicatorValues(
+            rsi=75.0,  # Overbought
+            macd_line=-100.0,
+            macd_signal=-50.0,
+            macd_histogram=-50.0,
+            bb_upper=51000.0,
+            bb_middle=50000.0,
+            bb_lower=49000.0,
+            ema_fast=49900.0,
+            ema_slow=50000.0,
+            atr=500.0,
+            volatility="normal"
+        ),
+        breakdown={"rsi": -20, "macd": -20, "bollinger": -15, "ema": -10, "volume": -5},
+        confidence=0.8
+    )
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier') as mock_notifier:
+                daemon = TradingDaemon(mock_settings)
+
+                # Ensure we have a position to sell (mock already returns 1.0 BTC)
+                mock_exchange_client.reset_mock()
+
+                # Mock signal scorer to return strong sell signal
+                daemon.signal_scorer.calculate_score = Mock(return_value=sell_signal)
+
+                # Mock trade reviewer to raise an exception (simulating AI failure)
+                daemon.trade_reviewer = Mock()
+                daemon.trade_reviewer.should_review.return_value = (True, "trade")
+                daemon.trade_reviewer.review_trade = Mock(side_effect=Exception("AI API Timeout"))
+
+                # Run trading iteration
+                daemon._trading_iteration()
+
+                # Verify sell was NOT executed (fail-safe for sells when explicitly configured)
+                assert not mock_exchange_client.market_sell.called, \
+                    "SELL with SAFE mode should skip trade on AI failure"
+
+                # Verify notification was sent about skipped trade
+                notifier_instance = mock_notifier.return_value
+                skip_notification_sent = False
+                for call in notifier_instance.send_message.call_args_list:
+                    msg = str(call)
+                    if "Trade skipped" in msg or "AI review failed" in msg:
+                        skip_notification_sent = True
+                        break
+                assert skip_notification_sent, "Should notify user when sell is skipped due to AI failure"
+
+
 def test_ai_failure_notification_cooldown(mock_settings, mock_exchange_client, mock_database):
     """
     Verify AI failure notifications are rate-limited to prevent Telegram spam.
