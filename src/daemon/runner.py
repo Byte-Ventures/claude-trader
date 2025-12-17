@@ -2890,6 +2890,10 @@ class TradingDaemon:
             )
 
             if existing_stop:
+                # DCA: Recalculate take profit based on new avg_cost (not original entry)
+                if self.settings.enable_take_profit:
+                    take_profit_price = avg_cost + (atr * Decimal(str(self.settings.take_profit_atr_multiplier)))
+
                 # DCA: Update existing stop without deactivating
                 self.db.update_trailing_stop_for_dca(
                     symbol=self.settings.trading_pair,
@@ -3002,6 +3006,16 @@ class TradingDaemon:
                     trailing_was_active=trailing_was_active,
                     loss_percent=str(loss_pct),
                 )
+
+                # Send hard stop notification with missed TP target
+                take_profit = ts.get_take_profit_price()
+                tp_info = f" | TP Target: ¤{take_profit:,.2f}" if take_profit else ""
+                self.notifier.send_message(
+                    f"🛑 Hard Stop Triggered (-{loss_pct}%)\n"
+                    f"Entry: ¤{entry_price:,.2f} | Exit: ¤{current_price:,.2f}\n"
+                    f"Stop: ¤{hard_stop:,.2f}{tp_info}"
+                )
+
                 self.db.deactivate_trailing_stop(
                     symbol=self.settings.trading_pair,
                     is_paper=is_paper,
@@ -3212,15 +3226,30 @@ class TradingDaemon:
                 self.settings.candle_interval,
                 limit=self.settings.candle_limit,
             )
+
+            # Calculate take profit price for emergency recovery
+            take_profit_price = None
+            if self.settings.enable_take_profit:
+                from src.indicators.atr import calculate_atr
+
+                high = candles["high"].astype(float)
+                low = candles["low"].astype(float)
+                close = candles["close"].astype(float)
+                atr_result = calculate_atr(high, low, close, period=self.settings.atr_period)
+                atr_value = atr_result.atr.iloc[-1]
+                if not math.isnan(atr_value) and atr_value > 0:
+                    atr = Decimal(str(atr_value))
+                    take_profit_price = avg_cost + (atr * Decimal(str(self.settings.take_profit_atr_multiplier)))
+
             self._create_trailing_stop(
                 entry_price=avg_cost,
                 candles=candles,
                 is_paper=is_paper,
                 avg_cost=avg_cost,
                 volatility=self._last_volatility,  # Use last known volatility for appropriate stop width
-                take_profit_price=None,  # Emergency recovery: no TP target available
+                take_profit_price=take_profit_price,
             )
-            logger.info("emergency_stop_created", avg_cost=str(avg_cost))
+            logger.info("emergency_stop_created", avg_cost=str(avg_cost), take_profit=str(take_profit_price) if take_profit_price else None)
             self.notifier.send_alert("✅ Emergency stop protection created successfully.")
         except Exception as e:
             logger.error("emergency_stop_creation_failed", error=str(e))
