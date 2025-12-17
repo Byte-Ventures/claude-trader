@@ -78,7 +78,11 @@ class TradingDaemon:
         self._last_daily_report: Optional[date] = None
         self._last_weekly_report: Optional[date] = None
         self._last_monthly_report: Optional[date] = None
-        self._last_volatility: str = "normal"  # For adaptive interval
+        # For adaptive interval and emergency stop creation. Default "normal" is intentionally
+        # conservative - if bot restarts during extreme volatility before first iteration,
+        # emergency stops use tighter (1.5x ATR) rather than wider (2.0x) multiplier.
+        # This is safer than no stop at all; volatility updates after first iteration.
+        self._last_volatility: str = "normal"
         self._last_regime: str = "neutral"  # For regime change notifications
         self._pending_regime: Optional[str] = None  # Flap protection: pending regime change
         self._last_hourly_analysis: Optional[datetime] = None  # For hourly market analysis
@@ -1711,6 +1715,29 @@ class TradingDaemon:
         # Get safety multiplier (including Claude veto and regime adjustments)
         safety_multiplier = self.validator.get_position_multiplier() * claude_veto_multiplier * regime.position_multiplier
 
+        # Check for dual-extreme conditions before attempting any buy
+        # Post-mortem #135: These conditions create unfavorable risk/reward for entries
+        if (
+            effective_action == "buy"
+            and self.settings.block_trades_extreme_conditions
+            and regime.components.get("sentiment", {}).get("category") == "extreme_fear"
+            and regime.components.get("volatility", {}).get("level") == "extreme"
+        ):
+            logger.warning(
+                "trade_blocked_extreme_conditions",
+                reason="extreme_fear_and_extreme_volatility",
+                sentiment=regime.components.get("sentiment", {}).get("value"),
+                volatility=regime.components.get("volatility", {}).get("level"),
+            )
+            self.notifier.notify_trade_rejected(
+                side="buy",
+                reason="extreme_fear + extreme_volatility",
+                price=current_price,
+                signal_score=signal_result.score,
+                is_paper=self.settings.is_paper_trading,
+            )
+            return
+
         if effective_action == "buy":
             if can_buy:
                 # Check trade cooldown
@@ -1744,6 +1771,7 @@ class TradingDaemon:
                     candles, current_price, quote_balance, base_balance,
                     signal_result.score, safety_multiplier,
                     rsi_value=signal_result.indicators.rsi,
+                    volatility=signal_result.indicators.volatility or "normal",
                 )
             else:
                 logger.info(
@@ -1803,6 +1831,7 @@ class TradingDaemon:
         signal_score: int,
         safety_multiplier: float,
         rsi_value: Optional[float] = None,
+        volatility: str = "normal",
     ) -> None:
         """Execute a buy order."""
         # Calculate position size
@@ -1940,7 +1969,7 @@ class TradingDaemon:
             # CRITICAL: If stop creation fails, immediately close position (fail-safe)
             try:
                 new_avg_cost = self._update_position_after_buy(result.size, filled_price, result.fee, is_paper)
-                self._create_trailing_stop(filled_price, candles, is_paper, avg_cost=new_avg_cost)
+                self._create_trailing_stop(filled_price, candles, is_paper, avg_cost=new_avg_cost, volatility=volatility)
             except Exception as stop_error:
                 # FAIL-SAFE: Cannot protect position, must close immediately
                 logger.critical(
@@ -2702,6 +2731,7 @@ class TradingDaemon:
         is_paper: bool = False,
         *,  # Force keyword-only for avg_cost
         avg_cost: Decimal,
+        volatility: str = "normal",
     ) -> None:
         """Create or update trailing stop for a position.
 
@@ -2712,6 +2742,7 @@ class TradingDaemon:
             avg_cost: REQUIRED - Weighted average cost for hard stop calculation.
                      Must be passed from caller to avoid race conditions.
                      Do NOT query DB here - caller has the authoritative value.
+            volatility: Current volatility level (low/normal/high/extreme)
         """
         from src.indicators.atr import calculate_atr
 
@@ -2741,7 +2772,18 @@ class TradingDaemon:
             #
             # Use the LARGER of ATR-based distance or minimum percentage distance
             # This ensures stop is never too tight on low-volatility timeframes
-            atr_stop_distance = atr * Decimal(str(self.settings.stop_loss_atr_multiplier))
+            #
+            # During extreme volatility, use wider stop multiplier to avoid
+            # being stopped out by normal price fluctuations
+            stop_multiplier = self.settings.stop_loss_atr_multiplier
+            if volatility == "extreme":
+                stop_multiplier = self.settings.stop_loss_atr_multiplier_extreme
+                logger.info(
+                    "using_extreme_volatility_stop",
+                    volatility=volatility,
+                    stop_multiplier=stop_multiplier,
+                )
+            atr_stop_distance = atr * Decimal(str(stop_multiplier))
             min_pct_distance = entry_price * Decimal(str(self.settings.min_stop_loss_percent)) / Decimal("100")
             stop_distance = max(atr_stop_distance, min_pct_distance)
             hard_stop = entry_price - stop_distance
@@ -3042,6 +3084,7 @@ class TradingDaemon:
                 candles=candles,
                 is_paper=is_paper,
                 avg_cost=avg_cost,
+                volatility=self._last_volatility,  # Use last known volatility for appropriate stop width
             )
             logger.info("emergency_stop_created", avg_cost=str(avg_cost))
             self.notifier.send_alert("✅ Emergency stop protection created successfully.")

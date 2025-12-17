@@ -232,6 +232,12 @@ class Settings(BaseSettings):
         le=5.0,
         description="Stop loss distance as ATR multiple"
     )
+    stop_loss_atr_multiplier_extreme: float = Field(
+        default=2.0,
+        ge=1.5,
+        le=3.0,
+        description="Stop loss ATR multiplier during extreme volatility conditions"
+    )
     min_stop_loss_percent: float = Field(
         default=2.5,
         ge=0.1,
@@ -571,6 +577,12 @@ class Settings(BaseSettings):
     postmortem_create_discussion: bool = Field(
         default=False,
         description="Create GitHub Discussion with analysis (requires gh CLI and Post-Mortems category)"
+    )
+
+    # Dual-Extreme Conditions Protection
+    block_trades_extreme_conditions: bool = Field(
+        default=True,
+        description="Block new positions when both sentiment and volatility are extreme"
     )
 
     @field_validator("ema_slow")
