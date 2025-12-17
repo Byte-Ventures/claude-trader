@@ -33,6 +33,7 @@ class PositionSizeConfig:
     risk_per_trade_percent: float = 0.5  # Risk 0.5% per trade (conservative)
     stop_loss_atr_multiplier: float = 1.5  # Stop at 1.5x ATR
     min_trade_quote: float = 100.0  # Minimum trade size in quote currency
+    max_trade_quote: Optional[float] = None  # Maximum trade size in quote currency (None = no limit)
     min_trade_base: float = 0.0001  # Minimum trade size in base currency (e.g., BTC)
     min_stop_loss_percent: float = 1.5  # Minimum stop as % of price (floor for short timeframes)
 
@@ -207,8 +208,10 @@ class PositionSizer:
             # For sells, only cap at available base currency (no position limit for exits)
             size_base = min(size_base, base_balance)
 
-        # Step 8: Ensure minimum trade size
+        # Step 8: Calculate quote size and enforce min/max limits
         size_quote = size_base * current_price
+
+        # Check minimum
         if size_quote < Decimal(str(self.config.min_trade_quote)):
             logger.info(
                 "position_size_below_minimum",
@@ -218,6 +221,18 @@ class PositionSizer:
                 safety_multiplier=safety_multiplier,
             )
             return self._zero_result(current_price, side)
+
+        # Enforce maximum order size if configured
+        if self.config.max_trade_quote is not None:
+            max_quote = Decimal(str(self.config.max_trade_quote))
+            if size_quote > max_quote:
+                logger.info(
+                    "position_size_capped_at_maximum",
+                    original_size_quote=str(size_quote),
+                    max_trade_quote=self.config.max_trade_quote,
+                )
+                size_quote = max_quote
+                size_base = size_quote / current_price
 
         # Calculate take-profit distance (ATR-based, informational only - not used for exits)
         tp_distance = atr_decimal * Decimal(str(self.take_profit_multiplier))

@@ -291,6 +291,20 @@ class Settings(BaseSettings):
         description="Maximum position size as percentage of portfolio"
     )
 
+    # Order Size Limits (absolute limits in quote currency)
+    min_trade_quote: float = Field(
+        default=10.0,
+        ge=1.0,
+        le=1000.0,
+        description="Minimum order size in quote currency (e.g., EUR/USD). Orders below this are skipped."
+    )
+    max_trade_quote: Optional[float] = Field(
+        default=None,
+        ge=1.0,
+        le=100000.0,
+        description="Maximum order size in quote currency. None = no limit (use position_size_percent only)."
+    )
+
     # Trade Cooldown - prevents rapid consecutive trades
     trade_cooldown_enabled: bool = Field(
         default=True,

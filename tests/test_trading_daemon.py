@@ -96,6 +96,8 @@ def mock_settings():
     settings.stop_loss_pct = None
     settings.trailing_stop_enabled = False
     settings.use_limit_orders = True
+    settings.min_trade_quote = 10.0  # Minimum order size in quote currency
+    settings.max_trade_quote = None  # Maximum order size (None = no limit)
 
     # Regime config
     settings.regime_adaptation_enabled = False
