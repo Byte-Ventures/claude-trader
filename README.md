@@ -152,15 +152,58 @@ Signal Score: 72/100
   ➖ Trend Filter: 0
 ```
 
-### Fear & Greed Index Integration
+### Market Protection Layers
 
-The bot fetches the [Bitcoin Fear & Greed Index](https://alternative.me/crypto/fear-and-greed-index/) and uses it for:
+The bot uses multiple complementary layers to protect against poor entries during extreme market conditions. These layers work together to provide defense-in-depth without being overly restrictive.
 
-- **Regime Adaptation**: Fear lowers buy thresholds (easier to buy dips), greed raises them
-- **Position Sizing**: Fear increases position multiplier, greed decreases it
-- **AI Context**: Index value included in AI market analysis prompts
+#### Fear & Greed Index Integration
 
-Categories: Extreme Fear (0-25), Fear (25-45), Neutral (45-55), Greed (55-75), Extreme Greed (75-100)
+The bot fetches the [Bitcoin Fear & Greed Index](https://alternative.me/crypto/fear-and-greed-index/) every 15 minutes and applies it across five protection layers:
+
+**Categories**: Extreme Fear (0-25), Fear (25-45), Neutral (45-55), Greed (55-75), Extreme Greed (75-100)
+
+#### Protection Layer 1: Regime Threshold Adjustments
+
+Modifies the score threshold required to trigger trades based on market sentiment and trend alignment:
+
+- **Extreme Fear + Bearish Trend + Buy Signal**: `threshold_mult: 0.0` - Neutralizes threshold reduction (fear justified, don't catch falling knife)
+- **Extreme Fear + Bullish Trend + Buy Signal**: `threshold_mult: 1.2` - Amplifies threshold reduction (contrarian opportunity)
+- **Extreme Greed + Bullish Trend + Sell Signal**: `threshold_mult: 1.5` - Amplifies threshold boost (sell into euphoria)
+
+Default impact at scale=1.0: threshold adjusts ±10-15 points
+
+#### Protection Layer 2: Regime Position Sizing
+
+Adjusts position size based on market conditions:
+
+- **Extreme Fear + Bearish Trend + Buy**: 30% position reduction (don't catch knife)
+- **Extreme Fear + Bullish Trend + Buy**: 15% position increase (contrarian opportunity)
+- **Extreme Greed + Bullish Trend + Sell**: 20% position increase (sell into strength)
+
+#### Protection Layer 3: Extreme Fear MTF Override
+
+When daily and 4H timeframes disagree during extreme fear, applies full counter-penalty instead of half:
+
+- **Without extreme fear**: Daily disagrees with 4H → half penalty (-10 points)
+- **With extreme fear**: Daily disagrees with 4H → full penalty (-20 points)
+
+This prevents 4H neutral signals from neutralizing bearish daily trends during panic conditions.
+
+#### Protection Layer 4: Dual-Extreme Blocking
+
+**Completely blocks** buy orders when BOTH conditions exist:
+- Sentiment = Extreme Fear (≤24/100)
+- Volatility = Extreme (ATR-based)
+
+These dual-extreme conditions create unfavorable risk/reward scenarios for new entries.
+
+#### Protection Layer 5: Extreme Volatility Stop Widening
+
+Widens stop losses during extreme volatility to prevent whipsaw exits:
+- Normal volatility: 1.5x ATR stop distance
+- Extreme volatility: 2.0x ATR stop distance
+
+Prevents being stopped out by normal price fluctuations during high volatility.
 
 ## Tuning Guide
 
@@ -287,28 +330,32 @@ Detects large volume spikes indicating institutional activity, boosting signal c
 
 ### Market Regime Adaptation
 
-Dynamically adjusts strategy based on Fear & Greed Index, volatility, and trend.
+Dynamically adjusts strategy based on Fear & Greed Index, volatility, and trend. See [Market Protection Layers](#market-protection-layers) for detailed explanation of how these work together.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REGIME_ADAPTATION_ENABLED` | `true` | Enable regime-based adjustments |
+| `REGIME_ADAPTATION_ENABLED` | `true` | Enable regime-based adjustments (Layers 1-2) |
 | `REGIME_SENTIMENT_ENABLED` | `true` | Use Fear & Greed Index |
 | `REGIME_VOLATILITY_ENABLED` | `true` | Use ATR-based volatility |
 | `REGIME_TREND_ENABLED` | `true` | Use EMA trend direction |
-| `REGIME_ADJUSTMENT_SCALE` | `1.0` | Intensity (0=off, 1=normal, 2=aggressive) |
+| `REGIME_ADJUSTMENT_SCALE` | `0.5` | Intensity (0=off, 0.5=moderate, 1.0=full, 2.0=aggressive) |
+| `REGIME_FLAP_PROTECTION` | `true` | Require 2 consecutive detections before regime change |
+| `BLOCK_TRADES_EXTREME_CONDITIONS` | `true` | Block buys during extreme fear + extreme volatility (Layer 4) |
+| `STOP_LOSS_ATR_MULTIPLIER_EXTREME` | `2.0` | Wider stops during extreme volatility (Layer 5) |
 
 ### Multi-Timeframe Confirmation (MTF)
 
-Checks Daily + 4-hour trends before trading. Both must agree for strong bias.
+Checks Daily + 4-hour trends before trading. Both must agree for strong bias. During extreme fear, applies full counter-penalty when daily/4H disagree (Layer 3).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MTF_ENABLED` | `true` | Enable higher timeframe confirmation |
+| `MTF_4H_ENABLED` | `false` | Include 4H timeframe (default: daily-only is simpler) |
 | `MTF_CANDLE_LIMIT` | `50` | Candles to fetch for HTF trend |
 | `MTF_DAILY_CACHE_MINUTES` | `60` | Cache duration for daily candles |
 | `MTF_4H_CACHE_MINUTES` | `30` | Cache duration for 4H candles |
 | `MTF_ALIGNED_BOOST` | `20` | Score boost when aligned with HTF trend |
-| `MTF_COUNTER_PENALTY` | `20` | Score penalty when against HTF trend |
+| `MTF_COUNTER_PENALTY` | `30` | Score penalty when against HTF trend (doubled during extreme fear when daily/4H disagree) |
 
 ### AI Weight Profile Selection
 
