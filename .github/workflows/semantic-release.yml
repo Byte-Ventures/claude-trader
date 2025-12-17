@@ -88,14 +88,36 @@ jobs:
           # Create release branch
           git checkout -b "$BRANCH"
 
-          # Run semantic-release to update version files and commit
-          # --no-push: don't push yet (we'll push the branch manually)
-          # --no-tag: don't create tag yet (will be created after PR merge)
-          # --no-vcs-release: don't create GitHub release yet
-          if ! semantic-release version --no-push --no-tag --no-vcs-release; then
-            echo "::error::semantic-release failed to update version files"
-            exit 1
+          # Manually update version file
+          # Note: semantic-release won't update files on non-release branches,
+          # so we do it manually. The version was already calculated above.
+          sed -i "s/__version__ = .*/__version__ = \"${VERSION}\"/" src/version.py
+
+          # Generate minimal changelog entry (full details in GitHub release)
+          DATE=$(date +%Y-%m-%d)
+          REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+
+          # Create changelog entry (no indentation to preserve markdown formatting)
+          CHANGELOG_ENTRY="## v${VERSION} (${DATE})
+
+See [GitHub Release](${REPO_URL}/releases/tag/v${VERSION}) for details.
+"
+
+          # Update CHANGELOG.md
+          if [ -f CHANGELOG.md ]; then
+            # Create temp file with new entry after header
+            head -n 1 CHANGELOG.md > CHANGELOG.tmp
+            echo "" >> CHANGELOG.tmp
+            echo "$CHANGELOG_ENTRY" >> CHANGELOG.tmp
+            tail -n +2 CHANGELOG.md >> CHANGELOG.tmp
+            mv CHANGELOG.tmp CHANGELOG.md
+          else
+            echo -e "# Changelog\n\n${CHANGELOG_ENTRY}" > CHANGELOG.md
           fi
+
+          # Commit changes
+          git add src/version.py CHANGELOG.md
+          git commit -m "chore(release): ${VERSION}"
 
           # Push the release branch
           git push origin "$BRANCH"
