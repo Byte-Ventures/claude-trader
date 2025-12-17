@@ -79,7 +79,7 @@ class TradingDaemon:
         # Check for deprecated AI_FAILURE_MODE setting
         import os
         if "AI_FAILURE_MODE" in os.environ and (
-            "AI_FAILURE_MODE_BUY" not in os.environ or "AI_FAILURE_MODE_SELL" not in os.environ
+            "AI_FAILURE_MODE_BUY" not in os.environ and "AI_FAILURE_MODE_SELL" not in os.environ
         ):
             logger.warning(
                 "deprecated_setting_detected",
