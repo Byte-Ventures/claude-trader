@@ -99,30 +99,46 @@ jobs:
           # Manually update version file
           # Note: semantic-release won't update files on non-release branches,
           # so we do it manually. The version was already calculated above.
-          # Use anchored regex to match only the actual assignment, not comments
           sed -i "s/^__version__ = .*/__version__ = \"${VERSION}\"/" src/version.py
+
+          # Validate the version was actually updated
+          if ! grep -q "^__version__ = \"${VERSION}\"" src/version.py; then
+            echo "::error::Failed to update src/version.py to version ${VERSION}"
+            cat src/version.py
+            exit 1
+          fi
 
           # Generate minimal changelog entry (full details in GitHub release)
           DATE=$(date +%Y-%m-%d)
           REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
 
-          # Create changelog entry (no indentation to preserve markdown formatting)
           CHANGELOG_ENTRY="## v${VERSION} (${DATE})
 
 See [GitHub Release](${REPO_URL}/releases/tag/v${VERSION}) for details.
 "
 
-          # Update CHANGELOG.md
+          # Update CHANGELOG.md - insert before first version entry (## v)
           if [ -f CHANGELOG.md ] && [ -s CHANGELOG.md ]; then
-            # File exists and is not empty - insert after header
-            head -n 1 CHANGELOG.md > CHANGELOG.tmp
-            echo "" >> CHANGELOG.tmp
-            echo "$CHANGELOG_ENTRY" >> CHANGELOG.tmp
-            tail -n +2 CHANGELOG.md >> CHANGELOG.tmp
-            mv CHANGELOG.tmp CHANGELOG.md
+            if grep -q '^## v' CHANGELOG.md; then
+              # Insert before first version entry
+              awk -v entry="$CHANGELOG_ENTRY" '/^## v/ && !inserted {print entry; inserted=1} {print}' CHANGELOG.md > CHANGELOG.tmp
+              mv CHANGELOG.tmp CHANGELOG.md
+            else
+              # No version entries - append to end of file
+              echo "" >> CHANGELOG.md
+              echo "$CHANGELOG_ENTRY" >> CHANGELOG.md
+            fi
           else
-            # File doesn't exist or is empty - create fresh
-            echo -e "# Changelog\n\n${CHANGELOG_ENTRY}" > CHANGELOG.md
+            # File doesn't exist or is empty - create with standard header
+            cat > CHANGELOG.md << 'HEADER'
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+This file is automatically updated by semantic-release.
+
+HEADER
+            echo "$CHANGELOG_ENTRY" >> CHANGELOG.md
           fi
 
           # Stage changes and commit only if there are actual changes

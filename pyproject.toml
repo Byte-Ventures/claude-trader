@@ -8,9 +8,6 @@ build_command = ""
 match = "main"
 
 [tool.semantic_release.changelog]
-mode = "update"
-
-[tool.semantic_release.changelog.default_templates]
 changelog_file = "CHANGELOG.md"
 
 [tool.semantic_release.remote]
