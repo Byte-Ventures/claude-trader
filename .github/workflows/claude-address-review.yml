@@ -27,15 +27,6 @@ jobs:
             const branch = pr.data.head.ref;
             const isAutofix = branch.startsWith('fix/issue-');
 
-            // Race condition guard: ensure comment is at least 10 seconds old
-            // This prevents triggering on incomplete comments while bot is still writing
-            const commentAge = (Date.now() - new Date(context.payload.comment.created_at)) / 1000;
-            if (commentAge < 10) {
-              console.log(`Comment is only ${commentAge.toFixed(1)}s old, skipping (may be incomplete)`);
-              core.setOutput('is_autofix', false);
-              return;
-            }
-
             core.setOutput('is_autofix', isAutofix);
             console.log(`Branch: ${branch}, Is auto-fix: ${isAutofix}`);
 
