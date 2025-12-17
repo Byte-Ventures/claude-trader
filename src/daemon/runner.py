@@ -300,8 +300,10 @@ class TradingDaemon:
                 max_position_percent=settings.position_size_percent,
                 stop_loss_atr_multiplier=settings.stop_loss_atr_multiplier,
                 min_stop_loss_percent=settings.min_stop_loss_percent,
+                min_take_profit_percent=settings.min_take_profit_percent,
             ),
             atr_period=settings.atr_period,
+            take_profit_atr_multiplier=settings.take_profit_atr_multiplier,
         )
 
         # Initialize market regime detector
@@ -603,8 +605,10 @@ class TradingDaemon:
             self.position_sizer.update_settings(
                 max_position_percent=new_settings.position_size_percent,
                 stop_loss_atr_multiplier=new_settings.stop_loss_atr_multiplier,
+                take_profit_atr_multiplier=new_settings.take_profit_atr_multiplier,
                 atr_period=new_settings.atr_period,
                 min_stop_loss_percent=new_settings.min_stop_loss_percent,
+                min_take_profit_percent=new_settings.min_take_profit_percent,
             )
 
             # Update OrderValidator
@@ -1682,12 +1686,11 @@ class TradingDaemon:
                             failure_mode = self.settings.ai_failure_mode_buy
                         elif effective_action == "sell":
                             failure_mode = self.settings.ai_failure_mode_sell
-                        else:
-                            # Hold - AI review was for "interesting_hold" or debug mode
-                            # AI failure only affects threshold adjustments, not trade execution
-                            # No trade to skip or proceed with, so return early
+                        else:  # hold - AI review was for "interesting_hold" or debug mode
+                            # Holds don't execute trades, so failure mode is irrelevant
+                            # Set to OPEN to skip the SAFE branch (no trade to skip anyway)
                             logger.info("ai_review_failed_for_hold", action=effective_action)
-                            return
+                            failure_mode = AIFailureMode.OPEN
 
                         if failure_mode == AIFailureMode.SAFE:
                             logger.warning(
@@ -2044,6 +2047,7 @@ class TradingDaemon:
                 is_paper=is_paper,
                 signal_score=signal_score,
                 stop_loss=position.stop_loss_price,
+                take_profit=position.take_profit_price,
                 position_percent=position.position_percent,
             )
 
