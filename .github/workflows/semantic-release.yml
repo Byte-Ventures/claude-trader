@@ -165,3 +165,38 @@ jobs:
           fi
 
           echo "::notice::Release PR merged: $PR_URL"
+
+          # Switch to main and pull the merge commit
+          # Wait for GitHub to propagate the merge
+          sleep 5
+          git checkout main
+          git pull origin main
+
+          # Validate we got the merged commit with the new version
+          if ! grep -q "^__version__ = \"${VERSION}\"" src/version.py; then
+            echo "::warning::Version mismatch, retrying pull..."
+            sleep 5
+            git pull origin main
+            if ! grep -q "^__version__ = \"${VERSION}\"" src/version.py; then
+              echo "::error::Main branch version mismatch after pull. Expected: ${VERSION}"
+              exit 1
+            fi
+          fi
+
+          # Create and push tag
+          TAG="v${VERSION}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping"
+          else
+            git tag -a "$TAG" -m "Release $TAG"
+            git push origin "$TAG"
+            echo "Created tag: $TAG"
+          fi
+
+          # Create GitHub Release
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, skipping"
+          else
+            gh release create "$TAG" --title "Release $TAG" --generate-notes
+            echo "::notice::Created GitHub Release: $TAG"
+          fi
