@@ -143,8 +143,8 @@ class TradingDaemon:
         # Initialize trading client (paper or live)
         self.client: Union[ExchangeClient, PaperTradingClient]
         if settings.is_paper_trading:
-            # Try to restore paper balance from database
-            saved_balance = self.db.get_last_paper_balance(settings.trading_pair)
+            # Try to restore paper balance from database (explicit bot_mode for clarity)
+            saved_balance = self.db.get_last_paper_balance(settings.trading_pair, bot_mode="normal")
             if saved_balance:
                 initial_quote, initial_base, _ = saved_balance
                 logger.info(
@@ -1208,6 +1208,8 @@ class TradingDaemon:
         self.validator.update_balances(base_balance, quote_balance, current_price)
 
         # Check BOTH trailing stops before executing either (avoid race condition)
+        # We must check both BEFORE executing either because normal bot may return early,
+        # which would skip Cramer Mode's trailing stop check if done sequentially.
         trailing_action = self._check_trailing_stop(current_price)
         cramer_trailing_action = None
         cramer_base_balance = Decimal("0")
@@ -1217,7 +1219,11 @@ class TradingDaemon:
             cramer_base_balance = self.cramer_client.get_balance(self._base_currency).available
 
         # Execute Cramer Mode trailing stop FIRST (before normal bot's early return)
-        # Note: Trailing stops are independent risk management, NOT mirrored entries
+        # Why Cramer executes first:
+        # 1. Normal bot returns early after its trailing stop (line 1245)
+        # 2. If we executed normal first, Cramer's stop would never run
+        # 3. Both bots have INDEPENDENT risk management - not mirrored entries
+        # 4. This ensures fair comparison: both bots can exit via their own stops
         if self.cramer_client and cramer_trailing_action == "sell" and cramer_base_balance > Decimal("0"):
             logger.info(
                 "cramer_trailing_stop_triggered",

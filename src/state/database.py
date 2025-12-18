@@ -733,6 +733,9 @@ class Database:
                     table_schema = result.scalar()
                     if table_schema and "bot_mode" not in table_schema:
                         conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN bot_mode VARCHAR(20) DEFAULT 'normal' NOT NULL"))
+                        # Explicitly update existing rows to ensure they have bot_mode='normal'
+                        # (SQLite versions may not auto-apply default to existing rows)
+                        conn.execute(text(f"UPDATE {table_name} SET bot_mode = 'normal' WHERE bot_mode IS NULL OR bot_mode = ''"))
                         logger.info(f"migrated_{table_name}_added_bot_mode")
                         conn.commit()
                 except Exception as e:
