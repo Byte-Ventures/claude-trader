@@ -120,6 +120,7 @@ def mock_settings():
     settings.loss_limiter_enabled = True
     settings.trade_cooldown_enabled = False
     settings.block_trades_extreme_conditions = True
+    settings.enable_anti_bot = False  # Anti-bot mode disabled by default
 
     # Adaptive interval
     settings.adaptive_interval_enabled = True

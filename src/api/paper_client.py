@@ -131,6 +131,7 @@ class PaperTradingClient:
         self,
         product_id: str,
         quote_size: Decimal,
+        allow_negative_quote: bool = False,
     ) -> OrderResult:
         """
         Simulate a market buy order.
@@ -138,6 +139,8 @@ class PaperTradingClient:
         Args:
             product_id: Trading pair (e.g., BTC-USD)
             quote_size: Amount to spend in quote currency
+            allow_negative_quote: If True, allow buying even with insufficient quote balance
+                                  (used by anti-bot to simulate shorting)
 
         Returns:
             OrderResult with simulated execution
@@ -157,8 +160,8 @@ class PaperTradingClient:
                 error=f"Failed to get market price: {e}",
             )
 
-        # Check balance
-        if quote_size > self._quote_balance:
+        # Check balance (skip for anti-bot which can go negative on quote)
+        if quote_size > self._quote_balance and not allow_negative_quote:
             return OrderResult(
                 order_id="",
                 side="buy",

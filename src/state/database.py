@@ -58,6 +58,7 @@ class Position(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     is_current = Column(Boolean, default=True)
     is_paper = Column(Boolean, default=False)
+    bot_mode = Column(String(20), default="normal", nullable=False)  # "normal" or "inverted"
 
     def get_quantity(self) -> Decimal:
         return Decimal(self.quantity)
@@ -107,6 +108,7 @@ class Trade(Base):
     realized_pnl = Column(String(50), default="0")
     executed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_paper = Column(Boolean, default=False)
+    bot_mode = Column(String(20), default="normal", nullable=False)  # "normal" or "inverted"
     # Balance snapshot after trade
     quote_balance_after = Column(String(50), nullable=True)
     base_balance_after = Column(String(50), nullable=True)
@@ -121,6 +123,7 @@ class DailyStats(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     date = Column(Date, nullable=False)
     is_paper = Column(Boolean, default=False, nullable=False)
+    bot_mode = Column(String(20), default="normal", nullable=False)  # "normal" or "inverted"
     starting_balance = Column(String(50), nullable=False)  # In quote currency
     ending_balance = Column(String(50), nullable=True)  # In quote currency
     starting_price = Column(String(50), nullable=True)  # BTC price at start of day
@@ -203,6 +206,7 @@ class TrailingStop(Base):
     breakeven_triggered = Column(Boolean, default=False)  # True when stop moved to break-even
     is_active = Column(Boolean, default=False)
     is_paper = Column(Boolean, default=False)
+    bot_mode = Column(String(20), default="normal", nullable=False)  # "normal" or "inverted"
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -720,6 +724,20 @@ class Database:
             except Exception as e:
                 logger.debug("trailing_stops_take_profit_migration_skipped", reason=str(e))
 
+            # Add bot_mode column to tables for anti-bot feature
+            for table_name in ["positions", "trades", "daily_stats", "trailing_stops"]:
+                try:
+                    result = conn.execute(
+                        text(f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{table_name}'")
+                    )
+                    table_schema = result.scalar()
+                    if table_schema and "bot_mode" not in table_schema:
+                        conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN bot_mode VARCHAR(20) DEFAULT 'normal' NOT NULL"))
+                        logger.info(f"migrated_{table_name}_added_bot_mode")
+                        conn.commit()
+                except Exception as e:
+                    logger.debug(f"{table_name}_bot_mode_migration_skipped", reason=str(e))
+
     @contextmanager
     def session(self) -> Generator[Session, None, None]:
         """Get a database session with automatic commit/rollback."""
@@ -735,7 +753,7 @@ class Database:
 
     # Position methods
     def get_current_position(
-        self, symbol: str = "BTC-USD", is_paper: bool = False
+        self, symbol: str = "BTC-USD", is_paper: bool = False, bot_mode: str = "normal"
     ) -> Optional[Position]:
         """Get current position for a symbol."""
         with self.session() as session:
@@ -745,6 +763,7 @@ class Database:
                     Position.symbol == symbol,
                     Position.is_current == True,
                     Position.is_paper == is_paper,
+                    Position.bot_mode == bot_mode,
                 )
                 .first()
             )
@@ -756,14 +775,16 @@ class Database:
         average_cost: Decimal,
         unrealized_pnl: Decimal = Decimal("0"),
         is_paper: bool = False,
+        bot_mode: str = "normal",
     ) -> Position:
         """Update or create current position."""
         with self.session() as session:
-            # Mark old position as not current (only for same is_paper mode)
+            # Mark old position as not current (only for same is_paper mode and bot_mode)
             session.query(Position).filter(
                 Position.symbol == symbol,
                 Position.is_current == True,
                 Position.is_paper == is_paper,
+                Position.bot_mode == bot_mode,
             ).update({"is_current": False})
 
             # Create new position
@@ -774,6 +795,7 @@ class Database:
                 unrealized_pnl=str(unrealized_pnl),
                 is_current=True,
                 is_paper=is_paper,
+                bot_mode=bot_mode,
             )
             session.add(position)
             session.flush()
@@ -861,6 +883,7 @@ class Database:
         exchange_trade_id: Optional[str] = None,
         symbol: str = "BTC-USD",
         is_paper: bool = False,
+        bot_mode: str = "normal",
         quote_balance_after: Optional[Decimal] = None,
         base_balance_after: Optional[Decimal] = None,
         spot_rate: Optional[Decimal] = None,
@@ -877,6 +900,7 @@ class Database:
                 fee=str(fee),
                 realized_pnl=str(realized_pnl),
                 is_paper=is_paper,
+                bot_mode=bot_mode,
                 quote_balance_after=str(quote_balance_after) if quote_balance_after is not None else None,
                 base_balance_after=str(base_balance_after) if base_balance_after is not None else None,
                 spot_rate=str(spot_rate) if spot_rate is not None else None,
@@ -913,20 +937,25 @@ class Database:
         limit: int = 20,
         is_paper: bool = False,
         symbol: Optional[str] = None,
+        bot_mode: str = "normal",
     ) -> list[Trade]:
         """
-        Get recent trades filtered by paper/live mode.
+        Get recent trades filtered by paper/live mode and bot_mode.
 
         Args:
             limit: Maximum number of trades to return
             is_paper: Whether to get paper trades or live trades
             symbol: Optional symbol filter (e.g., "BTC-USD")
+            bot_mode: Bot mode filter ("normal" or "inverted")
 
         Returns:
             List of Trade objects ordered by execution time (most recent first)
         """
         with self.session() as session:
-            query = session.query(Trade).filter(Trade.is_paper == is_paper)
+            query = session.query(Trade).filter(
+                Trade.is_paper == is_paper,
+                Trade.bot_mode == bot_mode,
+            )
             if symbol:
                 query = query.filter(Trade.symbol == symbol)
             return query.order_by(Trade.executed_at.desc()).limit(limit).all()
@@ -936,6 +965,7 @@ class Database:
         side: str,
         symbol: str = "BTC-USD",
         is_paper: bool = False,
+        bot_mode: str = "normal",
     ) -> Optional[Trade]:
         """
         Get the most recent trade for a specific side (buy/sell).
@@ -946,6 +976,7 @@ class Database:
             side: Trade side ("buy" or "sell")
             symbol: Trading pair symbol
             is_paper: Whether to query paper trades
+            bot_mode: Bot mode filter ("normal" or "inverted")
 
         Returns:
             Most recent Trade object for the given side, or None
@@ -957,13 +988,14 @@ class Database:
                     Trade.side == side,
                     Trade.symbol == symbol,
                     Trade.is_paper == is_paper,
+                    Trade.bot_mode == bot_mode,
                 )
                 .order_by(Trade.executed_at.desc())
                 .first()
             )
 
     def get_last_paper_balance(
-        self, symbol: str = "BTC-USD"
+        self, symbol: str = "BTC-USD", bot_mode: str = "normal"
     ) -> Optional[tuple[Decimal, Decimal, Decimal]]:
         """
         Get the last recorded paper trading balance.
@@ -977,6 +1009,7 @@ class Database:
                 .filter(
                     Trade.symbol == symbol,
                     Trade.is_paper == True,
+                    Trade.bot_mode == bot_mode,
                     Trade.quote_balance_after.isnot(None),
                 )
                 .order_by(Trade.executed_at.desc())
@@ -1003,6 +1036,7 @@ class Database:
         volume: Optional[Decimal] = None,
         max_drawdown: Optional[Decimal] = None,
         is_paper: bool = False,
+        bot_mode: str = "normal",
     ) -> None:
         """Update today's statistics (UTC)."""
         today = datetime.now(timezone.utc).date()
@@ -1010,7 +1044,11 @@ class Database:
         with self.session() as session:
             stats = (
                 session.query(DailyStats)
-                .filter(DailyStats.date == today, DailyStats.is_paper == is_paper)
+                .filter(
+                    DailyStats.date == today,
+                    DailyStats.is_paper == is_paper,
+                    DailyStats.bot_mode == bot_mode,
+                )
                 .first()
             )
 
@@ -1019,6 +1057,7 @@ class Database:
                     date=today,
                     starting_balance=str(starting_balance or Decimal("0")),
                     is_paper=is_paper,
+                    bot_mode=bot_mode,
                 )
                 session.add(stats)
 
@@ -1042,14 +1081,18 @@ class Database:
 
             session.commit()
 
-    def increment_daily_trade_count(self, is_paper: bool = False) -> None:
+    def increment_daily_trade_count(self, is_paper: bool = False, bot_mode: str = "normal") -> None:
         """Increment today's trade count by 1 (UTC)."""
         today = datetime.now(timezone.utc).date()
 
         with self.session() as session:
             stats = (
                 session.query(DailyStats)
-                .filter(DailyStats.date == today, DailyStats.is_paper == is_paper)
+                .filter(
+                    DailyStats.date == today,
+                    DailyStats.is_paper == is_paper,
+                    DailyStats.bot_mode == bot_mode,
+                )
                 .first()
             )
 
@@ -1059,6 +1102,7 @@ class Database:
                 stats = DailyStats(
                     date=today,
                     is_paper=is_paper,
+                    bot_mode=bot_mode,
                     total_trades=0,
                     starting_balance="0",  # Placeholder until daemon sets it
                 )
@@ -1067,7 +1111,7 @@ class Database:
             stats.total_trades = (stats.total_trades or 0) + 1
             session.commit()
 
-    def count_todays_trades(self, is_paper: bool = False, symbol: Optional[str] = None) -> int:
+    def count_todays_trades(self, is_paper: bool = False, symbol: Optional[str] = None, bot_mode: str = "normal") -> int:
         """Count trades executed today (UTC)."""
         today = datetime.now(timezone.utc).date()
         today_start = datetime.combine(today, datetime.min.time())
@@ -1076,6 +1120,7 @@ class Database:
         with self.session() as session:
             query = session.query(Trade).filter(
                 Trade.is_paper == is_paper,
+                Trade.bot_mode == bot_mode,
                 Trade.executed_at >= today_start,
                 Trade.executed_at <= today_end,
             )
@@ -1083,7 +1128,7 @@ class Database:
                 query = query.filter(Trade.symbol == symbol)
             return query.count()
 
-    def get_todays_realized_pnl(self, is_paper: bool = False, symbol: Optional[str] = None) -> Decimal:
+    def get_todays_realized_pnl(self, is_paper: bool = False, symbol: Optional[str] = None, bot_mode: str = "normal") -> Decimal:
         """Sum realized P&L from today's trades (UTC) using SQL aggregation."""
         today = datetime.now(timezone.utc).date()
         today_start = datetime.combine(today, datetime.min.time())
@@ -1096,6 +1141,7 @@ class Database:
                 func.coalesce(func.sum(Trade.realized_pnl), 0)
             ).filter(
                 Trade.is_paper == is_paper,
+                Trade.bot_mode == bot_mode,
                 Trade.executed_at >= today_start,
                 Trade.executed_at <= today_end,
             )
@@ -1112,7 +1158,7 @@ class Database:
                 return Decimal("0")
 
     def get_daily_stats(
-        self, target_date: Optional[date] = None, is_paper: bool = False
+        self, target_date: Optional[date] = None, is_paper: bool = False, bot_mode: str = "normal"
     ) -> Optional[DailyStats]:
         """Get statistics for a specific date (defaults to today UTC)."""
         target_date = target_date or datetime.now(timezone.utc).date()
@@ -1120,12 +1166,16 @@ class Database:
         with self.session() as session:
             return (
                 session.query(DailyStats)
-                .filter(DailyStats.date == target_date, DailyStats.is_paper == is_paper)
+                .filter(
+                    DailyStats.date == target_date,
+                    DailyStats.is_paper == is_paper,
+                    DailyStats.bot_mode == bot_mode,
+                )
                 .first()
             )
 
     def get_daily_stats_range(
-        self, start_date: date, end_date: date, is_paper: bool = False
+        self, start_date: date, end_date: date, is_paper: bool = False, bot_mode: str = "normal"
     ) -> list[DailyStats]:
         """Get statistics for a date range (inclusive)."""
         with self.session() as session:
@@ -1135,6 +1185,7 @@ class Database:
                     DailyStats.date >= start_date,
                     DailyStats.date <= end_date,
                     DailyStats.is_paper == is_paper,
+                    DailyStats.bot_mode == bot_mode,
                 )
                 .order_by(DailyStats.date.asc())
                 .all()
@@ -1208,15 +1259,17 @@ class Database:
         trailing_activation: Decimal,
         trailing_distance: Decimal,
         is_paper: bool = False,
+        bot_mode: str = "normal",
         hard_stop: Optional[Decimal] = None,
         take_profit_price: Optional[Decimal] = None,
     ) -> TrailingStop:
         """Create a new trailing stop record with optional hard stop-loss and take profit."""
         with self.session() as session:
-            # Deactivate any existing active trailing stops for this symbol/mode
+            # Deactivate any existing active trailing stops for this symbol/mode/bot_mode
             session.query(TrailingStop).filter(
                 TrailingStop.symbol == symbol,
                 TrailingStop.is_paper == is_paper,
+                TrailingStop.bot_mode == bot_mode,
                 TrailingStop.is_active == True,
             ).update({"is_active": False})
 
@@ -1230,6 +1283,7 @@ class Database:
                 take_profit_price=str(take_profit_price) if take_profit_price else None,
                 is_active=True,
                 is_paper=is_paper,
+                bot_mode=bot_mode,
             )
             session.add(trailing_stop)
             session.flush()
@@ -1243,11 +1297,12 @@ class Database:
                 distance=str(trailing_distance),
                 hard_stop=str(hard_stop) if hard_stop else None,
                 take_profit_price=str(take_profit_price) if take_profit_price else None,
+                bot_mode=bot_mode,
             )
             return trailing_stop
 
     def get_active_trailing_stop(
-        self, symbol: str = "BTC-USD", is_paper: bool = False
+        self, symbol: str = "BTC-USD", is_paper: bool = False, bot_mode: str = "normal"
     ) -> Optional[TrailingStop]:
         """Get the active trailing stop for a symbol."""
         with self.session() as session:
@@ -1256,6 +1311,7 @@ class Database:
                 .filter(
                     TrailingStop.symbol == symbol,
                     TrailingStop.is_paper == is_paper,
+                    TrailingStop.bot_mode == bot_mode,
                     TrailingStop.is_active == True,
                 )
                 .first()
@@ -1312,6 +1368,7 @@ class Database:
         hard_stop: Optional[Decimal] = None,
         take_profit_price: Optional[Decimal] = None,
         is_paper: bool = False,
+        bot_mode: str = "normal",
     ) -> Optional[TrailingStop]:
         """
         Update existing trailing stop for DCA (position averaging).
@@ -1328,6 +1385,7 @@ class Database:
                 .filter(
                     TrailingStop.symbol == symbol,
                     TrailingStop.is_paper == is_paper,
+                    TrailingStop.bot_mode == bot_mode,
                     TrailingStop.is_active == True,
                 )
                 .first()
@@ -1359,13 +1417,14 @@ class Database:
             return ts
 
     def deactivate_trailing_stop(
-        self, symbol: str = "BTC-USD", is_paper: bool = False
+        self, symbol: str = "BTC-USD", is_paper: bool = False, bot_mode: str = "normal"
     ) -> bool:
         """Deactivate all trailing stops for a symbol."""
         with self.session() as session:
             result = session.query(TrailingStop).filter(
                 TrailingStop.symbol == symbol,
                 TrailingStop.is_paper == is_paper,
+                TrailingStop.bot_mode == bot_mode,
                 TrailingStop.is_active == True,
             ).update({"is_active": False})
             return result > 0

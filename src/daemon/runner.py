@@ -163,8 +163,39 @@ class TradingDaemon:
                 trading_pair=settings.trading_pair,
             )
             logger.info("using_paper_trading_client")
+
+            # Initialize anti-bot client if enabled (paper mode only)
+            self.anti_bot_client: Optional[PaperTradingClient] = None
+            if settings.enable_anti_bot:
+                # Try to restore anti-bot balance from database
+                anti_bot_balance = self.db.get_last_paper_balance(settings.trading_pair, bot_mode="inverted")
+                if anti_bot_balance:
+                    anti_quote, anti_base, _ = anti_bot_balance
+                    logger.info(
+                        "anti_bot_balance_restored_from_db",
+                        quote=str(anti_quote),
+                        base=str(anti_base),
+                    )
+                else:
+                    # On first startup, copy balance from normal bot
+                    anti_quote = initial_quote
+                    anti_base = initial_base
+                    logger.info(
+                        "anti_bot_balance_copied_from_normal",
+                        quote=str(anti_quote),
+                        base=str(anti_base),
+                    )
+
+                self.anti_bot_client = PaperTradingClient(
+                    real_client=self.real_client,
+                    initial_quote=float(anti_quote),
+                    initial_base=float(anti_base),
+                    trading_pair=settings.trading_pair,
+                )
+                logger.info("anti_bot_enabled", mode="inverted")
         else:
             self.client = self.real_client
+            self.anti_bot_client = None
             logger.info("using_live_trading_client")
 
         # Initialize Telegram notifier
@@ -1129,7 +1160,8 @@ class TradingDaemon:
         try:
             position = self.db.get_current_position(
                 self.settings.trading_pair,
-                is_paper=self.settings.is_paper_trading
+                is_paper=self.settings.is_paper_trading,
+                bot_mode="normal"
             )
             if position and position.get_quantity() > 0:
                 avg_cost = position.get_average_cost()
@@ -1171,6 +1203,15 @@ class TradingDaemon:
                 signal_score=80,  # Treat as strong sell signal
                 safety_multiplier=1.0,  # No safety reduction for stops
             )
+            # Mirror to anti-bot: when normal bot sells, anti-bot buys
+            if self.anti_bot_client:
+                self._execute_anti_bot_trade(
+                    side="buy",
+                    candles=candles,
+                    current_price=current_price,
+                    signal_score=80,
+                    safety_multiplier=1.0,
+                )
             return  # Exit iteration after trailing stop execution
 
         # Calculate portfolio value for logging
@@ -1842,6 +1883,15 @@ class TradingDaemon:
                     rsi_value=signal_result.indicators.rsi,
                     volatility=signal_result.indicators.volatility or "normal",
                 )
+                # Execute opposite trade for anti-bot (if enabled)
+                if self.anti_bot_client:
+                    self._execute_anti_bot_trade(
+                        side="sell",  # Opposite of buy
+                        candles=candles,
+                        current_price=current_price,
+                        signal_score=signal_result.score,
+                        safety_multiplier=safety_multiplier,
+                    )
             else:
                 logger.info(
                     "decision",
@@ -1883,6 +1933,15 @@ class TradingDaemon:
                     candles, current_price, base_balance,
                     signal_result.score, safety_multiplier
                 )
+                # Execute opposite trade for anti-bot (if enabled)
+                if self.anti_bot_client:
+                    self._execute_anti_bot_trade(
+                        side="buy",  # Opposite of sell
+                        candles=candles,
+                        current_price=current_price,
+                        signal_score=signal_result.score,
+                        safety_multiplier=safety_multiplier,
+                    )
             else:
                 logger.info(
                     "decision",
@@ -2248,11 +2307,12 @@ class TradingDaemon:
             self.db.deactivate_trailing_stop(
                 symbol=self.settings.trading_pair,
                 is_paper=is_paper,
+                bot_mode="normal",
             )
 
             # Get entry price before calculating realized PnL
             # (realized PnL calculation updates the position, reducing quantity)
-            current_position = self.db.get_current_position(self.settings.trading_pair, is_paper=is_paper)
+            current_position = self.db.get_current_position(self.settings.trading_pair, is_paper=is_paper, bot_mode="normal")
             entry_price = current_position.get_average_cost() if current_position else None
 
             # Calculate realized P&L based on average cost basis
@@ -2321,8 +2381,188 @@ class TradingDaemon:
             self.circuit_breaker.record_order_failure()
             self.notifier.notify_order_failed("sell", size_base, result.error or "Unknown error")
 
+    def _execute_anti_bot_trade(
+        self,
+        side: str,
+        candles,
+        current_price: Decimal,
+        signal_score: int,
+        safety_multiplier: float,
+    ) -> None:
+        """
+        Execute a trade for the anti-bot (inverted mode).
+
+        This executes the OPPOSITE trade of what the normal bot just did,
+        using the anti-bot's separate virtual balance.
+        """
+        if not self.anti_bot_client:
+            return
+
+        # Get anti-bot balances
+        anti_quote_balance = self.anti_bot_client.get_balance(self._quote_currency).available
+        anti_base_balance = self.anti_bot_client.get_balance(self._base_currency).available
+
+        logger.info(
+            "anti_bot_trade_attempt",
+            side=side,
+            quote_balance=str(anti_quote_balance),
+            base_balance=str(anti_base_balance),
+        )
+
+        if side == "buy":
+            # Anti-bot can go negative on quote currency (simulates shorting)
+            # No balance check here - allow_negative_quote=True handles it
+
+            # Calculate position size for anti-bot buy
+            position = self.position_sizer.calculate_size(
+                df=candles,
+                current_price=current_price,
+                quote_balance=anti_quote_balance,
+                base_balance=anti_base_balance,
+                signal_strength=abs(signal_score),
+                side="buy",
+                safety_multiplier=safety_multiplier,
+            )
+
+            if position.size_quote < Decimal("10"):
+                logger.info("anti_bot_skip_buy", reason="position_too_small")
+                return
+
+            # Execute buy on anti-bot client (allow negative quote for shorting simulation)
+            result = self.anti_bot_client.market_buy(
+                self.settings.trading_pair,
+                position.size_quote,
+                allow_negative_quote=True,
+            )
+
+            if result.success:
+                filled_price = result.filled_price or current_price
+
+                # Get new balances
+                new_quote = self.anti_bot_client.get_balance(self._quote_currency).available
+                new_base = self.anti_bot_client.get_balance(self._base_currency).available
+
+                # Update anti-bot position
+                new_avg_cost = self._update_position_after_buy(
+                    result.size, filled_price, result.fee,
+                    is_paper=True, bot_mode="inverted"
+                )
+
+                # Record trade
+                self.db.record_trade(
+                    side="buy",
+                    size=result.size,
+                    price=filled_price,
+                    fee=result.fee,
+                    symbol=self.settings.trading_pair,
+                    is_paper=True,
+                    bot_mode="inverted",
+                    quote_balance_after=new_quote,
+                    base_balance_after=new_base,
+                    spot_rate=current_price,
+                )
+                self.db.increment_daily_trade_count(is_paper=True, bot_mode="inverted")
+
+                # Create trailing stop for anti-bot
+                self.db.create_trailing_stop(
+                    symbol=self.settings.trading_pair,
+                    side="buy",
+                    entry_price=filled_price,
+                    trailing_activation=position.trailing_activation,
+                    trailing_distance=position.trailing_distance,
+                    is_paper=True,
+                    bot_mode="inverted",
+                    hard_stop=position.stop_loss_price,
+                    take_profit_price=position.take_profit_price,
+                )
+
+                logger.info(
+                    "anti_bot_buy_executed",
+                    size=str(result.size),
+                    price=str(filled_price),
+                    fee=str(result.fee),
+                )
+            else:
+                logger.warning("anti_bot_buy_failed", error=result.error)
+
+        elif side == "sell":
+            # Check if anti-bot can sell
+            min_base = Decimal(str(self.position_sizer.config.min_trade_base))
+            if anti_base_balance < min_base:
+                logger.info("anti_bot_skip_sell", reason="insufficient_base_balance")
+                return
+
+            # For aggressive selling, sell entire position on strong signal
+            if abs(signal_score) >= 80:
+                size_base = anti_base_balance
+            else:
+                position = self.position_sizer.calculate_size(
+                    df=candles,
+                    current_price=current_price,
+                    quote_balance=Decimal("0"),
+                    base_balance=anti_base_balance,
+                    signal_strength=abs(signal_score),
+                    side="sell",
+                    safety_multiplier=safety_multiplier,
+                )
+                size_base = position.size_base
+
+            if size_base < min_base:
+                logger.info("anti_bot_skip_sell", reason="position_too_small")
+                return
+
+            # Execute sell on anti-bot client
+            result = self.anti_bot_client.market_sell(
+                self.settings.trading_pair,
+                size_base,
+            )
+
+            if result.success:
+                filled_price = result.filled_price or current_price
+
+                # Get new balances
+                new_quote = self.anti_bot_client.get_balance(self._quote_currency).available
+                new_base = self.anti_bot_client.get_balance(self._base_currency).available
+
+                # Calculate realized P&L for anti-bot
+                realized_pnl = self._calculate_realized_pnl(
+                    result.size, filled_price, result.fee,
+                    is_paper=True, bot_mode="inverted"
+                )
+
+                # Deactivate trailing stop
+                self.db.deactivate_trailing_stop(
+                    self.settings.trading_pair, is_paper=True, bot_mode="inverted"
+                )
+
+                # Record trade
+                self.db.record_trade(
+                    side="sell",
+                    size=result.size,
+                    price=filled_price,
+                    fee=result.fee,
+                    realized_pnl=realized_pnl,
+                    symbol=self.settings.trading_pair,
+                    is_paper=True,
+                    bot_mode="inverted",
+                    quote_balance_after=new_quote,
+                    base_balance_after=new_base,
+                    spot_rate=current_price,
+                )
+                self.db.increment_daily_trade_count(is_paper=True, bot_mode="inverted")
+
+                logger.info(
+                    "anti_bot_sell_executed",
+                    size=str(result.size),
+                    price=str(filled_price),
+                    fee=str(result.fee),
+                    realized_pnl=str(realized_pnl),
+                )
+            else:
+                logger.warning("anti_bot_sell_failed", error=result.error)
+
     def _update_position_after_buy(
-        self, size: Decimal, price: Decimal, fee: Decimal, is_paper: bool = False
+        self, size: Decimal, price: Decimal, fee: Decimal, is_paper: bool = False, bot_mode: str = "normal"
     ) -> Decimal:
         """
         Update position with new buy, recalculating weighted average cost.
@@ -2334,11 +2574,12 @@ class TradingDaemon:
             price: Price paid per unit
             fee: Trading fee paid (in quote currency)
             is_paper: Whether this is a paper trade
+            bot_mode: Bot mode ("normal" or "inverted")
 
         Returns:
             The new weighted average cost for the position
         """
-        current = self.db.get_current_position(self.settings.trading_pair, is_paper=is_paper)
+        current = self.db.get_current_position(self.settings.trading_pair, is_paper=is_paper, bot_mode=bot_mode)
 
         if current:
             old_qty = current.get_quantity()
@@ -2358,6 +2599,7 @@ class TradingDaemon:
             quantity=new_qty,
             average_cost=new_avg_cost,
             is_paper=is_paper,
+            bot_mode=bot_mode,
         )
 
         logger.debug(
@@ -2370,7 +2612,7 @@ class TradingDaemon:
         return new_avg_cost
 
     def _calculate_realized_pnl(
-        self, size: Decimal, sell_price: Decimal, fee: Decimal, is_paper: bool = False
+        self, size: Decimal, sell_price: Decimal, fee: Decimal, is_paper: bool = False, bot_mode: str = "normal"
     ) -> Decimal:
         """
         Calculate realized PnL for a sell based on average cost.
@@ -2382,11 +2624,12 @@ class TradingDaemon:
             sell_price: Price received per unit
             fee: Trading fee paid on sell (in quote currency)
             is_paper: Whether this is a paper trade
+            bot_mode: Bot mode ("normal" or "inverted")
 
         Returns:
             Realized profit/loss (positive = profit, negative = loss)
         """
-        current = self.db.get_current_position(self.settings.trading_pair, is_paper=is_paper)
+        current = self.db.get_current_position(self.settings.trading_pair, is_paper=is_paper, bot_mode=bot_mode)
 
         if not current or current.get_quantity() <= 0:
             return Decimal("0") - fee  # Still deduct fee even without position
@@ -2405,6 +2648,7 @@ class TradingDaemon:
             quantity=new_qty,
             average_cost=avg_cost,
             is_paper=is_paper,
+            bot_mode=bot_mode,
         )
 
         logger.info(
@@ -2414,6 +2658,7 @@ class TradingDaemon:
             avg_cost=str(avg_cost),
             pnl=str(pnl),
             remaining_qty=str(new_qty),
+            bot_mode=bot_mode,
         )
 
         return pnl
@@ -2961,6 +3206,7 @@ class TradingDaemon:
         ts = self.db.get_active_trailing_stop(
             symbol=self.settings.trading_pair,
             is_paper=is_paper,
+            bot_mode="normal",
         )
 
         if not ts:
@@ -3019,6 +3265,7 @@ class TradingDaemon:
                 self.db.deactivate_trailing_stop(
                     symbol=self.settings.trading_pair,
                     is_paper=is_paper,
+                    bot_mode="normal",
                 )
                 return "sell"
 
@@ -3061,6 +3308,7 @@ class TradingDaemon:
                     self.db.deactivate_trailing_stop(
                         symbol=self.settings.trading_pair,
                         is_paper=is_paper,
+                        bot_mode="normal",
                     )
 
                     return "sell"
@@ -3165,6 +3413,7 @@ class TradingDaemon:
                 self.db.deactivate_trailing_stop(
                     symbol=self.settings.trading_pair,
                     is_paper=is_paper,
+                    bot_mode="normal",
                 )
                 return "sell"
 
@@ -3188,7 +3437,7 @@ class TradingDaemon:
 
         # Get current position
         position = self.db.get_current_position(
-            self.settings.trading_pair, is_paper=is_paper
+            self.settings.trading_pair, is_paper=is_paper, bot_mode="normal"
         )
 
         if not position or position.get_quantity() <= Decimal("0"):
@@ -3196,7 +3445,7 @@ class TradingDaemon:
 
         # Check if there's an active trailing stop
         ts = self.db.get_active_trailing_stop(
-            symbol=self.settings.trading_pair, is_paper=is_paper
+            symbol=self.settings.trading_pair, is_paper=is_paper, bot_mode="normal"
         )
 
         if ts is not None:
