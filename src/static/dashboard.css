@@ -579,10 +579,6 @@ footer {
 }
 
 /* Cramer Mode Styles */
-.cramer-card {
-    border-color: var(--accent-red);
-}
-
 .cramer-card h3 {
     color: var(--accent-red);
 }
