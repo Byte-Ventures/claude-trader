@@ -3316,6 +3316,7 @@ class TradingDaemon:
                     is_paper=is_paper,
                     hard_stop=hard_stop,
                     take_profit_price=take_profit_price,
+                    bot_mode="normal",
                 )
                 logger.info(
                     "trailing_stop_created",
