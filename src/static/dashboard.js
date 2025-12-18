@@ -248,20 +248,20 @@ async function loadInitialData() {
             updateDailyStats(stats);
         }
 
-        // Load current state
+        // Load config FIRST - must be before state loading so candleIntervalSeconds is correct
+        const configResponse = await fetch('/api/config');
+        if (configResponse.ok) {
+            const config = await configResponse.json();
+            updateConfig(config);
+        }
+
+        // Load current state (uses candleIntervalSeconds set above)
         const stateResponse = await fetch('/api/state');
         if (stateResponse.ok) {
             const state = await stateResponse.json();
             if (state) {
                 updateDashboard(state);
             }
-        }
-
-        // Load config
-        const configResponse = await fetch('/api/config');
-        if (configResponse.ok) {
-            const config = await configResponse.json();
-            updateConfig(config);
         }
 
         // Load notifications
