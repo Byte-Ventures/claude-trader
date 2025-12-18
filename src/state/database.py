@@ -1640,9 +1640,10 @@ class Database:
         is_paper: bool = False,
     ) -> Optional[RateHistory]:
         """
-        Record a single OHLCV candle.
+        Record a single OHLCV candle (upsert - insert or update).
 
-        Uses INSERT OR IGNORE to skip duplicates (same symbol/exchange/interval/timestamp/is_paper).
+        If candle exists for the same symbol/exchange/interval/timestamp/is_paper,
+        updates it with new OHLCV data. Otherwise inserts a new candle.
         """
         with self.session() as session:
             # Check if candle already exists
@@ -1659,7 +1660,13 @@ class Database:
             )
 
             if existing:
-                return None  # Skip duplicate
+                # Update existing candle with new OHLCV data
+                existing.open_price = str(open_price)
+                existing.high_price = str(high_price)
+                existing.low_price = str(low_price)
+                existing.close_price = str(close_price)
+                existing.volume = str(volume)
+                return existing
 
             rate = RateHistory(
                 symbol=symbol,
