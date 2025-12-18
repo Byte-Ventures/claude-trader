@@ -164,15 +164,15 @@ class TradingDaemon:
             )
             logger.info("using_paper_trading_client")
 
-            # Initialize anti-bot client if enabled (paper mode only)
-            self.anti_bot_client: Optional[PaperTradingClient] = None
-            if settings.enable_anti_bot:
-                # Try to restore anti-bot balance from database
-                anti_bot_balance = self.db.get_last_paper_balance(settings.trading_pair, bot_mode="inverted")
-                if anti_bot_balance:
-                    anti_quote, anti_base, _ = anti_bot_balance
+            # Initialize Cramer Mode client if enabled (paper mode only)
+            self.cramer_client: Optional[PaperTradingClient] = None
+            if settings.enable_cramer_mode:
+                # Try to restore Cramer Mode balance from database
+                cramer_balance = self.db.get_last_paper_balance(settings.trading_pair, bot_mode="inverted")
+                if cramer_balance:
+                    anti_quote, anti_base, _ = cramer_balance
                     logger.info(
-                        "anti_bot_balance_restored_from_db",
+                        "cramer_balance_restored_from_db",
                         quote=str(anti_quote),
                         base=str(anti_base),
                     )
@@ -181,12 +181,12 @@ class TradingDaemon:
                     anti_quote = initial_quote
                     anti_base = initial_base
                     logger.info(
-                        "anti_bot_balance_copied_from_normal",
+                        "cramer_balance_copied_from_normal",
                         quote=str(anti_quote),
                         base=str(anti_base),
                     )
 
-                self.anti_bot_client = PaperTradingClient(
+                self.cramer_client = PaperTradingClient(
                     real_client=self.real_client,
                     initial_quote=float(anti_quote),
                     initial_base=float(anti_base),
@@ -195,7 +195,7 @@ class TradingDaemon:
                 logger.info("anti_bot_enabled", mode="inverted")
         else:
             self.client = self.real_client
-            self.anti_bot_client = None
+            self.cramer_client = None
             logger.info("using_live_trading_client")
 
         # Initialize Telegram notifier
@@ -1203,9 +1203,9 @@ class TradingDaemon:
                 signal_score=80,  # Treat as strong sell signal
                 safety_multiplier=1.0,  # No safety reduction for stops
             )
-            # Mirror to anti-bot: when normal bot sells, anti-bot buys
-            if self.anti_bot_client:
-                self._execute_anti_bot_trade(
+            # Mirror to Cramer Mode: when normal bot sells, Cramer Mode buys
+            if self.cramer_client:
+                self._execute_cramer_trade(
                     side="buy",
                     candles=candles,
                     current_price=current_price,
@@ -1883,9 +1883,9 @@ class TradingDaemon:
                     rsi_value=signal_result.indicators.rsi,
                     volatility=signal_result.indicators.volatility or "normal",
                 )
-                # Execute opposite trade for anti-bot (if enabled)
-                if self.anti_bot_client:
-                    self._execute_anti_bot_trade(
+                # Execute opposite trade for Cramer Mode (if enabled)
+                if self.cramer_client:
+                    self._execute_cramer_trade(
                         side="sell",  # Opposite of buy
                         candles=candles,
                         current_price=current_price,
@@ -1933,9 +1933,9 @@ class TradingDaemon:
                     candles, current_price, base_balance,
                     signal_result.score, safety_multiplier
                 )
-                # Execute opposite trade for anti-bot (if enabled)
-                if self.anti_bot_client:
-                    self._execute_anti_bot_trade(
+                # Execute opposite trade for Cramer Mode (if enabled)
+                if self.cramer_client:
+                    self._execute_cramer_trade(
                         side="buy",  # Opposite of sell
                         candles=candles,
                         current_price=current_price,
@@ -2381,7 +2381,7 @@ class TradingDaemon:
             self.circuit_breaker.record_order_failure()
             self.notifier.notify_order_failed("sell", size_base, result.error or "Unknown error")
 
-    def _execute_anti_bot_trade(
+    def _execute_cramer_trade(
         self,
         side: str,
         candles,
@@ -2390,30 +2390,30 @@ class TradingDaemon:
         safety_multiplier: float,
     ) -> None:
         """
-        Execute a trade for the anti-bot (inverted mode).
+        Execute a trade for the Cramer Mode (inverted mode).
 
         This executes the OPPOSITE trade of what the normal bot just did,
-        using the anti-bot's separate virtual balance.
+        using the Cramer Mode's separate virtual balance.
         """
-        if not self.anti_bot_client:
+        if not self.cramer_client:
             return
 
-        # Get anti-bot balances
-        anti_quote_balance = self.anti_bot_client.get_balance(self._quote_currency).available
-        anti_base_balance = self.anti_bot_client.get_balance(self._base_currency).available
+        # Get Cramer Mode balances
+        anti_quote_balance = self.cramer_client.get_balance(self._quote_currency).available
+        anti_base_balance = self.cramer_client.get_balance(self._base_currency).available
 
         logger.info(
-            "anti_bot_trade_attempt",
+            "cramer_trade_attempt",
             side=side,
             quote_balance=str(anti_quote_balance),
             base_balance=str(anti_base_balance),
         )
 
         if side == "buy":
-            # Anti-bot can go negative on quote currency (simulates shorting)
+            # Cramer Mode can go negative on quote currency (simulates shorting)
             # No balance check here - allow_negative_quote=True handles it
 
-            # Calculate position size for anti-bot buy
+            # Calculate position size for Cramer Mode buy
             position = self.position_sizer.calculate_size(
                 df=candles,
                 current_price=current_price,
@@ -2425,11 +2425,11 @@ class TradingDaemon:
             )
 
             if position.size_quote < Decimal("10"):
-                logger.info("anti_bot_skip_buy", reason="position_too_small")
+                logger.info("cramer_skip_buy", reason="position_too_small")
                 return
 
-            # Execute buy on anti-bot client (allow negative quote for shorting simulation)
-            result = self.anti_bot_client.market_buy(
+            # Execute buy on Cramer Mode client (allow negative quote for shorting simulation)
+            result = self.cramer_client.market_buy(
                 self.settings.trading_pair,
                 position.size_quote,
                 allow_negative_quote=True,
@@ -2439,10 +2439,10 @@ class TradingDaemon:
                 filled_price = result.filled_price or current_price
 
                 # Get new balances
-                new_quote = self.anti_bot_client.get_balance(self._quote_currency).available
-                new_base = self.anti_bot_client.get_balance(self._base_currency).available
+                new_quote = self.cramer_client.get_balance(self._quote_currency).available
+                new_base = self.cramer_client.get_balance(self._base_currency).available
 
-                # Update anti-bot position
+                # Update Cramer Mode position
                 new_avg_cost = self._update_position_after_buy(
                     result.size, filled_price, result.fee,
                     is_paper=True, bot_mode="inverted"
@@ -2463,7 +2463,7 @@ class TradingDaemon:
                 )
                 self.db.increment_daily_trade_count(is_paper=True, bot_mode="inverted")
 
-                # Create trailing stop for anti-bot
+                # Create trailing stop for Cramer Mode
                 self.db.create_trailing_stop(
                     symbol=self.settings.trading_pair,
                     side="buy",
@@ -2486,10 +2486,10 @@ class TradingDaemon:
                 logger.warning("anti_bot_buy_failed", error=result.error)
 
         elif side == "sell":
-            # Check if anti-bot can sell
+            # Check if Cramer Mode can sell
             min_base = Decimal(str(self.position_sizer.config.min_trade_base))
             if anti_base_balance < min_base:
-                logger.info("anti_bot_skip_sell", reason="insufficient_base_balance")
+                logger.info("cramer_skip_sell", reason="insufficient_base_balance")
                 return
 
             # For aggressive selling, sell entire position on strong signal
@@ -2508,11 +2508,11 @@ class TradingDaemon:
                 size_base = position.size_base
 
             if size_base < min_base:
-                logger.info("anti_bot_skip_sell", reason="position_too_small")
+                logger.info("cramer_skip_sell", reason="position_too_small")
                 return
 
-            # Execute sell on anti-bot client
-            result = self.anti_bot_client.market_sell(
+            # Execute sell on Cramer Mode client
+            result = self.cramer_client.market_sell(
                 self.settings.trading_pair,
                 size_base,
             )
@@ -2521,10 +2521,10 @@ class TradingDaemon:
                 filled_price = result.filled_price or current_price
 
                 # Get new balances
-                new_quote = self.anti_bot_client.get_balance(self._quote_currency).available
-                new_base = self.anti_bot_client.get_balance(self._base_currency).available
+                new_quote = self.cramer_client.get_balance(self._quote_currency).available
+                new_base = self.cramer_client.get_balance(self._base_currency).available
 
-                # Calculate realized P&L for anti-bot
+                # Calculate realized P&L for Cramer Mode
                 realized_pnl = self._calculate_realized_pnl(
                     result.size, filled_price, result.fee,
                     is_paper=True, bot_mode="inverted"

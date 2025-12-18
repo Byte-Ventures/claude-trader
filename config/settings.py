@@ -699,10 +699,10 @@ class Settings(BaseSettings):
         description="Block new positions when both sentiment and volatility are extreme"
     )
 
-    # Anti-Bot Mode (paper trading only)
-    enable_anti_bot: bool = Field(
+    # Cramer Mode Mode (paper trading only)
+    enable_cramer_mode: bool = Field(
         default=False,
-        description="Enable anti-bot: execute opposite trade alongside each normal trade for comparison (paper mode only)"
+        description="Enable Cramer Mode: execute opposite trade alongside each normal trade for comparison (paper mode only)"
     )
 
     @field_validator("ema_slow")

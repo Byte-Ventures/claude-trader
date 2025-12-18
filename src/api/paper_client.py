@@ -140,7 +140,7 @@ class PaperTradingClient:
             product_id: Trading pair (e.g., BTC-USD)
             quote_size: Amount to spend in quote currency
             allow_negative_quote: If True, allow buying even with insufficient quote balance
-                                  (used by anti-bot to simulate shorting)
+                                  (used by Cramer Mode to simulate shorting)
 
         Returns:
             OrderResult with simulated execution
@@ -160,7 +160,7 @@ class PaperTradingClient:
                 error=f"Failed to get market price: {e}",
             )
 
-        # Check balance (skip for anti-bot which can go negative on quote)
+        # Check balance (skip for Cramer Mode which can go negative on quote)
         if quote_size > self._quote_balance and not allow_negative_quote:
             return OrderResult(
                 order_id="",

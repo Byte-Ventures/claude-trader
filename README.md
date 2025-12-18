@@ -19,7 +19,7 @@ Works with any trading pair (BTC-USD, BTC-EUR, ETH-USD, etc.).
 - **Live Dashboard**: Real-time web dashboard with charts, signals, and trade history
 - **Safety Systems**: Kill switch, circuit breaker, loss limits, order validation
 - **Paper Trading**: Test strategies with virtual money using real market data
-- **Anti-Bot Mode**: Run inverse strategy alongside normal trading for performance comparison
+- **Cramer Mode**: Run inverse strategy alongside normal trading for performance comparison
 - **Telegram Notifications**: Real-time alerts for trades, errors, and daily summaries
 - **State Persistence**: SQLite database for trade history and recovery
 
@@ -279,27 +279,27 @@ All settings below are documented in `.env.example` with detailed comments. Most
 | `PAPER_INITIAL_QUOTE` | `5000` | Starting quote currency (USD/EUR) |
 | `PAPER_INITIAL_BASE` | `0.05` | Starting base currency (BTC) |
 
-### Anti-Bot Mode (Paper Trading Only)
+### Cramer Mode (Paper Trading Only)
 
-Run an inverse strategy alongside your normal trading to compare performance. When enabled, every trade the normal bot makes is mirrored with the opposite action by an "anti-bot":
+Run an inverse strategy alongside your normal trading to compare performance. When enabled, every trade the normal bot makes is mirrored with the opposite action:
 
-- Normal bot **buys** → Anti-bot **sells**
-- Normal bot **sells** (signal or trailing stop) → Anti-bot **buys**
+- Normal bot **buys** → Cramer Mode **sells**
+- Normal bot **sells** (signal or trailing stop) → Cramer Mode **buys**
 
 Both bots see identical signals and market conditions, making it a fair comparison. Each maintains separate virtual balances tracked independently in the database.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ENABLE_ANTI_BOT` | `false` | Enable anti-bot inverse trading |
+| `ENABLE_CRAMER_MODE` | `false` | Enable Cramer Mode inverse trading |
 
 **How it works:**
-- On first enable, anti-bot copies balance from normal bot's current state
-- Anti-bot can go negative on quote currency (USD/EUR) to simulate shorting
-- Anti-bot cannot go negative on base currency (BTC) - can't sell what it doesn't have
+- On first enable, Cramer Mode copies balance from normal bot's current state
+- Cramer Mode can go negative on quote currency (USD/EUR) to simulate shorting
+- Cramer Mode cannot go negative on base currency (BTC) - can't sell what it doesn't have
 - Both positions are tracked separately with `bot_mode` column in database
-- Compare performance: if anti-bot consistently wins, consider inverting your strategy
+- Compare performance: if Cramer Mode consistently wins, consider inverting your strategy
 
-**Use case:** Validate whether your trading signals have predictive value. If the anti-bot performs better over time, your signals may be systematically wrong.
+**Use case:** Validate whether your trading signals have predictive value. If Cramer Mode performs better over time, your signals may be systematically wrong.
 
 ### Indicator Parameters
 

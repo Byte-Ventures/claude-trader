@@ -724,7 +724,7 @@ class Database:
             except Exception as e:
                 logger.debug("trailing_stops_take_profit_migration_skipped", reason=str(e))
 
-            # Add bot_mode column to tables for anti-bot feature
+            # Add bot_mode column to tables for Cramer Mode feature
             for table_name in ["positions", "trades", "daily_stats", "trailing_stops"]:
                 try:
                     result = conn.execute(
