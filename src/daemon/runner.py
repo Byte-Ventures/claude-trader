@@ -101,6 +101,8 @@ class TradingDaemon:
         self._pending_post_volatility_analysis: bool = False  # Trigger analysis when volatility calms
         self._last_stop_check: Optional[datetime] = None  # For periodic stop protection checks
         self._last_ai_failure_notification: Optional[datetime] = None  # Cooldown for AI failure notifications
+        self._last_interesting_hold_review: Optional[datetime] = None  # Cooldown for interesting_hold reviews
+        self._last_interesting_hold_score: Optional[int] = None  # Track signal changes
 
         # Multi-Timeframe state (for HTF bias caching)
         self._daily_trend: str = "neutral"
@@ -1610,6 +1612,25 @@ class TradingDaemon:
                     signal_result, self.settings.signal_threshold
                 )
 
+                # Cooldown for interesting_hold reviews (informational only, save tokens)
+                # Skip if: signal unchanged OR cooldown not expired (15 min)
+                if should_review and review_type == "interesting_hold":
+                    now = datetime.now(timezone.utc)
+                    score_unchanged = self._last_interesting_hold_score == signal_result.score
+                    cooldown_active = (
+                        self._last_interesting_hold_review is not None
+                        and (now - self._last_interesting_hold_review).total_seconds() < 900  # 15 min
+                    )
+                    if score_unchanged or cooldown_active:
+                        skip_reason = "signal_unchanged" if score_unchanged else "cooldown_active"
+                        logger.debug(
+                            "interesting_hold_review_skipped",
+                            reason=skip_reason,
+                            score=signal_result.score,
+                            last_score=self._last_interesting_hold_score,
+                        )
+                        should_review = False
+
                 if should_review:
                     try:
                         # Estimate trade size for context (before AI veto adjustments)
@@ -1720,6 +1741,9 @@ class TradingDaemon:
                                     confidence=f"{review.judge_confidence:.2f}",
                                     ttl_minutes=self._ai_recommendation_ttl_minutes,
                                 )
+                            # Update cooldown tracking for interesting_hold
+                            self._last_interesting_hold_review = datetime.now(timezone.utc)
+                            self._last_interesting_hold_score = signal_result.score
                             return
 
                     except Exception as e:
