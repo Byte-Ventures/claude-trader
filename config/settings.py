@@ -699,6 +699,12 @@ class Settings(BaseSettings):
         description="Block new positions when both sentiment and volatility are extreme"
     )
 
+    # Sentiment-Trend Modifiers for Market Regime Adaptation
+    sentiment_trend_modifiers: Optional[dict] = Field(
+        default=None,
+        description="Custom sentiment-trend interaction modifiers. If None, uses hardcoded defaults in regime.py. Format: JSON object with keys like 'extreme_fear_bearish_buy' containing threshold_mult and position_mult values."
+    )
+
     # Cramer Mode Mode (paper trading only)
     enable_cramer_mode: bool = Field(
         default=False,
@@ -873,6 +879,67 @@ class Settings(BaseSettings):
                 f"(current gap: {gap}). Narrow gaps create false crash/pump signals."
             )
         return self
+
+    @field_validator("sentiment_trend_modifiers")
+    @classmethod
+    def validate_sentiment_trend_modifiers(cls, v: Optional[dict]) -> Optional[dict]:
+        """Validate sentiment-trend modifiers configuration."""
+        if v is None:
+            return None
+
+        # Expected keys (24 combinations)
+        sentiments = ["extreme_fear", "fear", "greed", "extreme_greed"]
+        trends = ["bullish", "bearish", "neutral"]
+        signals = ["buy", "sell"]
+
+        expected_keys = [
+            f"{sentiment}_{trend}_{signal}"
+            for sentiment in sentiments
+            for trend in trends
+            for signal in signals
+        ]
+
+        # Validate all required keys present
+        missing_keys = set(expected_keys) - set(v.keys())
+        if missing_keys:
+            raise ValueError(
+                f"sentiment_trend_modifiers missing required keys: {sorted(missing_keys)}. "
+                f"All 24 combinations must be present."
+            )
+
+        # Validate each entry has correct structure and valid ranges
+        for key, modifiers in v.items():
+            if key not in expected_keys:
+                raise ValueError(
+                    f"sentiment_trend_modifiers has invalid key: {key}. "
+                    f"Valid keys are combinations like 'extreme_fear_bearish_buy'."
+                )
+
+            if not isinstance(modifiers, dict):
+                raise ValueError(
+                    f"sentiment_trend_modifiers[{key}] must be a dict, got {type(modifiers)}"
+                )
+
+            if "threshold_mult" not in modifiers or "position_mult" not in modifiers:
+                raise ValueError(
+                    f"sentiment_trend_modifiers[{key}] must have 'threshold_mult' and 'position_mult' keys"
+                )
+
+            threshold_mult = modifiers["threshold_mult"]
+            position_mult = modifiers["position_mult"]
+
+            # Validate ranges
+            if not (0.0 <= threshold_mult <= 2.0):
+                raise ValueError(
+                    f"sentiment_trend_modifiers[{key}].threshold_mult must be 0.0-2.0, got {threshold_mult}"
+                )
+
+            if not (0.5 <= position_mult <= 1.5):
+                raise ValueError(
+                    f"sentiment_trend_modifiers[{key}].position_mult must be 0.5-1.5, got {position_mult}"
+                )
+
+        return v
 
     @model_validator(mode="before")
     @classmethod

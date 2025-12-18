@@ -137,9 +137,66 @@ class MarketRegime:
         "bearish": {"buy_threshold": 5, "sell_threshold": -5},
     }
 
-    def __init__(self, config: Optional[RegimeConfig] = None):
-        """Initialize with optional configuration."""
+    def __init__(self, config: Optional[RegimeConfig] = None, custom_modifiers: Optional[dict] = None):
+        """
+        Initialize with optional configuration.
+
+        Args:
+            config: Regime adaptation configuration
+            custom_modifiers: Custom sentiment-trend modifiers (overrides hardcoded defaults)
+                Format: {"sentiment_trend_signal": {"threshold_mult": float, "position_mult": float}}
+                Example: {"extreme_fear_bearish_buy": {"threshold_mult": 0.0, "position_mult": 0.7}}
+        """
         self.config = config or RegimeConfig()
+        self._load_modifiers(custom_modifiers)
+
+    def _load_modifiers(self, custom_modifiers: Optional[dict] = None) -> None:
+        """
+        Load sentiment-trend modifiers from custom config or use defaults.
+
+        Args:
+            custom_modifiers: Custom modifiers dict with flattened keys
+        """
+        if custom_modifiers is None:
+            # Use hardcoded defaults
+            self.sentiment_trend_modifiers = self.SENTIMENT_TREND_MODIFIERS
+            return
+
+        # Convert flattened keys to tuple format used internally
+        # Example: "extreme_fear_bearish_buy" -> ("extreme_fear", "bearish", "buy")
+        converted_modifiers = {}
+        for key, value in custom_modifiers.items():
+            parts = key.rsplit("_", 1)  # Split from right: "extreme_fear_bearish" and "buy"
+            if len(parts) != 2:
+                logger.warning(
+                    "invalid_sentiment_modifier_key",
+                    key=key,
+                    reason="Expected format: sentiment_trend_signal"
+                )
+                continue
+
+            signal = parts[1]
+            sentiment_trend = parts[0].rsplit("_", 1)  # Split again: "extreme_fear" and "bearish"
+
+            if len(sentiment_trend) != 2:
+                logger.warning(
+                    "invalid_sentiment_modifier_key",
+                    key=key,
+                    reason="Expected format: sentiment_trend_signal"
+                )
+                continue
+
+            sentiment = sentiment_trend[0]
+            trend = sentiment_trend[1]
+
+            converted_modifiers[(sentiment, trend, signal)] = value
+
+        self.sentiment_trend_modifiers = converted_modifiers
+        logger.info(
+            "loaded_custom_sentiment_modifiers",
+            count=len(converted_modifiers),
+            keys=sorted(custom_modifiers.keys())[:5]  # Log first 5 keys as sample
+        )
 
     def _classify_sentiment(self, value: int) -> str:
         """Classify Fear & Greed value into category."""
@@ -201,7 +258,7 @@ class MarketRegime:
             # Key principle: fear in downtrend is justified (not opportunity),
             # greed in uptrend is momentum (not necessarily overbought)
             modifier_key = (sentiment_category, trend, signal_action)
-            modifier = self.SENTIMENT_TREND_MODIFIERS.get(
+            modifier = self.sentiment_trend_modifiers.get(
                 modifier_key,
                 {"threshold_mult": 1.0, "position_mult": 1.0}  # Default: no modification
             )

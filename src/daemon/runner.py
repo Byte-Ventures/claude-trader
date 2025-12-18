@@ -404,7 +404,8 @@ class TradingDaemon:
                 volatility_enabled=settings.regime_volatility_enabled,
                 trend_enabled=settings.regime_trend_enabled,
                 adjustment_scale=settings.regime_adjustment_scale,
-            )
+            ),
+            custom_modifiers=settings.sentiment_trend_modifiers,
         )
         if settings.regime_adaptation_enabled:
             # Restore last regime from database
