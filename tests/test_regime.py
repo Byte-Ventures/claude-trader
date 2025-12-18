@@ -1197,7 +1197,7 @@ class TestCustomModifiers:
 
     def test_custom_modifiers_override_defaults(self):
         """Test custom modifiers override hardcoded defaults."""
-        # Create custom modifiers with all 24 required entries
+        # Create custom modifiers with all 30 required entries (5 sentiments × 3 trends × 2 signals)
         custom = {
             "extreme_fear_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
             "extreme_fear_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
@@ -1211,6 +1211,12 @@ class TestCustomModifiers:
             "fear_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
             "fear_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
             "fear_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
             "greed_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
             "greed_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
             "greed_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
@@ -1250,6 +1256,12 @@ class TestCustomModifiers:
             "fear_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
             "fear_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
             "fear_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
             "greed_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
             "greed_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
             "greed_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
@@ -1290,7 +1302,7 @@ class TestCustomModifiers:
 
     def test_incomplete_custom_modifiers_falls_back(self):
         """Test incomplete custom modifiers fall back to defaults."""
-        # Only provide 5 entries instead of 24
+        # Only provide 5 entries instead of 30
         incomplete = {
             "extreme_fear_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
             "extreme_fear_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
@@ -1325,6 +1337,12 @@ class TestCustomModifiers:
             "fear_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
             "fear_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
             "fear_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
             "greed_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
             "greed_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
             "greed_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
@@ -1341,8 +1359,8 @@ class TestCustomModifiers:
 
         regime = MarketRegime(custom_modifiers=mixed)
 
-        # Invalid keys should be skipped, but we only have 24 valid ones so it should work
-        assert len(regime.sentiment_trend_modifiers) == 24
+        # Invalid keys should be skipped, but we only have 30 valid ones so it should work
+        assert len(regime.sentiment_trend_modifiers) == 30
 
     def test_string_parsing_handles_underscores_in_sentiment(self):
         """Test robust parsing handles sentiment names with underscores."""
@@ -1360,6 +1378,12 @@ class TestCustomModifiers:
             "fear_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
             "fear_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
             "fear_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "neutral_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
             "greed_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
             "greed_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
             "greed_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},

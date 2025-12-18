@@ -99,6 +99,17 @@ class MarketRegime:
         ("fear", "bearish", "sell"): {"threshold_mult": 0.85, "position_mult": 0.9},  # Cautious selling
         ("fear", "neutral", "sell"): {"threshold_mult": 0.7, "position_mult": 0.95},  # Reduce fear-driven selling
         # ====================================================================
+        # NEUTRAL SENTIMENT
+        # ====================================================================
+        # BUY signals
+        ("neutral", "bullish", "buy"): {"threshold_mult": 1.0, "position_mult": 1.0},  # Standard conditions
+        ("neutral", "bearish", "buy"): {"threshold_mult": 1.0, "position_mult": 1.0},  # Standard conditions
+        ("neutral", "neutral", "buy"): {"threshold_mult": 1.0, "position_mult": 1.0},  # Standard conditions
+        # SELL signals
+        ("neutral", "bullish", "sell"): {"threshold_mult": 1.0, "position_mult": 1.0},  # Standard conditions
+        ("neutral", "bearish", "sell"): {"threshold_mult": 1.0, "position_mult": 1.0},  # Standard conditions
+        ("neutral", "neutral", "sell"): {"threshold_mult": 1.0, "position_mult": 1.0},  # Standard conditions
+        # ====================================================================
         # GREED (non-extreme)
         # ====================================================================
         # BUY signals
@@ -191,8 +202,8 @@ class MarketRegime:
                 )
                 continue
 
-        # Validate that exactly 24 keys were successfully converted
-        expected_count = 24
+        # Validate that exactly 30 keys were successfully converted
+        expected_count = 30
         if len(converted_modifiers) != expected_count:
             logger.error(
                 "custom_modifiers_incomplete",

@@ -107,6 +107,7 @@ def mock_settings():
     settings.regime_trend_enabled = False
     settings.regime_adjustment_scale = 0.5
     settings.regime_flap_protection = True
+    settings.sentiment_trend_modifiers = None  # Use default hardcoded modifiers
 
     # AI Weight Profile config
     settings.ai_weight_profile_enabled = False

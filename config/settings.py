@@ -887,8 +887,8 @@ class Settings(BaseSettings):
         if v is None:
             return None
 
-        # Expected keys (24 combinations)
-        sentiments = ["extreme_fear", "fear", "greed", "extreme_greed"]
+        # Expected keys (30 combinations: 5 sentiments × 3 trends × 2 signals)
+        sentiments = ["extreme_fear", "fear", "neutral", "greed", "extreme_greed"]
         trends = ["bullish", "bearish", "neutral"]
         signals = ["buy", "sell"]
 
@@ -904,7 +904,15 @@ class Settings(BaseSettings):
         if missing_keys:
             raise ValueError(
                 f"sentiment_trend_modifiers missing required keys: {sorted(missing_keys)}. "
-                f"All 24 combinations must be present."
+                f"All 30 combinations must be present."
+            )
+
+        # Validate no extra keys present
+        extra_keys = set(v.keys()) - set(expected_keys)
+        if extra_keys:
+            raise ValueError(
+                f"sentiment_trend_modifiers has unexpected keys: {sorted(extra_keys)}. "
+                f"Remove any extra keys."
             )
 
         # Validate each entry has correct structure and valid ranges
