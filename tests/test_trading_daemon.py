@@ -3365,6 +3365,7 @@ def test_cramer_mode_initializes_in_paper_trading(mock_settings):
     mock_database = Mock()
     mock_database.get_last_paper_balance.return_value = None
     mock_database.get_last_regime.return_value = None
+    mock_database.get_current_position.return_value = None
 
     with patch('src.daemon.runner.create_exchange_client'):
         with patch('src.daemon.runner.Database', return_value=mock_database):
@@ -3392,6 +3393,7 @@ def test_cramer_mode_trailing_stop_uses_inverted_bot_mode(mock_settings):
     mock_database.get_last_paper_balance.return_value = None
     mock_database.get_last_regime.return_value = None
     mock_database.get_active_trailing_stop.return_value = None
+    mock_database.get_current_position.return_value = None
 
     with patch('src.daemon.runner.create_exchange_client'):
         with patch('src.daemon.runner.Database', return_value=mock_database):
@@ -3488,7 +3490,7 @@ def test_cramer_mode_warns_when_normal_has_position(mock_settings):
     mock_database.get_last_regime.return_value = None
     # Normal bot has an open position
     mock_position = Mock()
-    mock_position.size = Decimal("0.5")
+    mock_position.get_quantity.return_value = Decimal("0.5")
     mock_database.get_current_position.return_value = mock_position
 
     with patch('src.daemon.runner.create_exchange_client'):

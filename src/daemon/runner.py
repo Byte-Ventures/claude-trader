@@ -201,11 +201,11 @@ class TradingDaemon:
                     normal_position = self.db.get_current_position(
                         settings.trading_pair, is_paper=True, bot_mode=BotMode.NORMAL
                     )
-                    if normal_position:
+                    if normal_position and normal_position.get_quantity() > Decimal("0"):
                         logger.warning(
                             "cramer_mode_starting_without_position",
                             msg="Normal bot has open position but Cramer Mode starts fresh. Consider disabling until position is closed for fair comparison.",
-                            normal_position_size=str(normal_position.size),
+                            normal_position_size=str(normal_position.get_quantity()),
                         )
 
                 self.cramer_client = PaperTradingClient(
