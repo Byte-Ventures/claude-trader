@@ -81,6 +81,7 @@ class TradingDaemon:
         self.shutdown_event = Event()
         self._running = False
         self._cramer_mode_disabled = False  # Disables Cramer Mode for session on balance mismatch
+        self.cramer_trade_cooldown: Optional[TradeCooldown] = None  # Independent cooldown for Cramer Mode
 
         # Check for deprecated AI_FAILURE_MODE setting
         import os
@@ -214,6 +215,20 @@ class TradingDaemon:
                     initial_base=float(cramer_base),
                     trading_pair=settings.trading_pair,
                 )
+                # Initialize independent cooldown for Cramer Mode (uses same config as normal bot)
+                if settings.trade_cooldown_enabled:
+                    self.cramer_trade_cooldown = TradeCooldown(
+                        config=TradeCooldownConfig(
+                            buy_cooldown_minutes=settings.buy_cooldown_minutes,
+                            sell_cooldown_minutes=settings.sell_cooldown_minutes,
+                            buy_price_change_percent=settings.buy_price_change_percent,
+                            sell_price_change_percent=settings.sell_price_change_percent,
+                        ),
+                        db=self.db,
+                        is_paper=True,  # Cramer Mode is always paper trading
+                        symbol=settings.trading_pair,
+                        bot_mode="inverted",  # Track separately from normal bot
+                    )
                 logger.info("cramer_mode_enabled", mode="inverted")
         else:
             self.client = self.real_client
@@ -1305,6 +1320,15 @@ class TradingDaemon:
         can_buy = quote_balance > min_quote and has_room
         can_sell = base_balance > min_base
 
+        # Cramer Mode balance checks (independent of normal bot)
+        cramer_can_buy = False
+        cramer_can_sell = False
+        if self.cramer_client and not self._cramer_mode_disabled:
+            cramer_quote = self.cramer_client.get_balance(self._quote_currency).available
+            cramer_base = self.cramer_client.get_balance(self._base_currency).available
+            cramer_can_buy = cramer_quote > min_quote
+            cramer_can_sell = cramer_base > min_base
+
         if not has_room and quote_balance > min_quote:
             logger.info(
                 "buy_blocked_insufficient_room",
@@ -1705,10 +1729,19 @@ class TradingDaemon:
             # Determine signal direction from score
             signal_direction = "buy" if signal_result.score > 0 else "sell" if signal_result.score < 0 else None
 
-            # Check if this direction is tradeable
-            direction_is_tradeable = (
+            # Check if this direction is tradeable (by normal bot OR Cramer inverse)
+            normal_can_trade = (
                 (signal_direction == "buy" and can_buy) or
-                (signal_direction == "sell" and can_sell) or
+                (signal_direction == "sell" and can_sell)
+            )
+            # Cramer trades inverse: sell signal -> Cramer buys, buy signal -> Cramer sells
+            cramer_can_trade_inverse = (
+                (signal_direction == "sell" and cramer_can_buy) or
+                (signal_direction == "buy" and cramer_can_sell)
+            )
+            direction_is_tradeable = (
+                normal_can_trade or
+                cramer_can_trade_inverse or
                 signal_direction is None  # Neutral score, no direction
             )
 
@@ -1717,6 +1750,8 @@ class TradingDaemon:
                     "ai_review_skipped",
                     signal_direction=signal_direction,
                     reason="no_position" if signal_direction == "sell" else "fully_allocated",
+                    normal_can_trade=normal_can_trade,
+                    cramer_can_trade_inverse=cramer_can_trade_inverse,
                 )
             else:
                 should_review, review_type = self.trade_reviewer.should_review(
@@ -1921,6 +1956,7 @@ class TradingDaemon:
             return
 
         if effective_action == "buy":
+            normal_bot_blocked_by_cooldown = False
             if can_buy:
                 # Check trade cooldown
                 if self.trade_cooldown:
@@ -1939,8 +1975,9 @@ class TradingDaemon:
                             signal_score=signal_result.score,
                             is_paper=self.settings.is_paper_trading,
                         )
-                        return
+                        normal_bot_blocked_by_cooldown = True
 
+            if can_buy and not normal_bot_blocked_by_cooldown:
                 logger.info(
                     "decision",
                     action="buy",
@@ -1964,15 +2001,32 @@ class TradingDaemon:
                         signal_score=signal_result.score,
                         safety_multiplier=safety_multiplier,
                     )
-            else:
-                logger.info(
-                    "decision",
-                    action="skip_buy",
-                    reason=f"insufficient_balance_or_position_limit (quote={quote_balance}, position={position_percent:.1f}%)",
-                    signal_score=signal_result.score,
-                )
+            # Handle cases where normal bot skips but Cramer can still act
+            if not can_buy or normal_bot_blocked_by_cooldown:
+                if not can_buy:
+                    logger.info(
+                        "decision",
+                        action="skip_buy",
+                        reason=f"insufficient_balance_or_position_limit (quote={quote_balance}, position={position_percent:.1f}%)",
+                        signal_score=signal_result.score,
+                    )
+                # Cramer Mode can still act even if normal bot can't buy
+                if cramer_can_sell:
+                    logger.info(
+                        "cramer_independent_trade",
+                        action="sell",
+                        reason="normal_bot_skipped_buy" if not can_buy else "normal_bot_cooldown",
+                    )
+                    self._execute_cramer_trade(
+                        side="sell",  # Opposite of buy signal
+                        candles=candles,
+                        current_price=current_price,
+                        signal_score=signal_result.score,
+                        safety_multiplier=safety_multiplier,
+                    )
 
         elif effective_action == "sell":
+            normal_bot_blocked_by_cooldown = False
             if can_sell:
                 # Check trade cooldown (disabled by default for sells, but here for completeness)
                 if self.trade_cooldown:
@@ -1991,8 +2045,9 @@ class TradingDaemon:
                             signal_score=signal_result.score,
                             is_paper=self.settings.is_paper_trading,
                         )
-                        return
+                        normal_bot_blocked_by_cooldown = True
 
+            if can_sell and not normal_bot_blocked_by_cooldown:
                 logger.info(
                     "decision",
                     action="sell",
@@ -2014,13 +2069,30 @@ class TradingDaemon:
                         signal_score=signal_result.score,
                         safety_multiplier=safety_multiplier,
                     )
-            else:
-                logger.info(
-                    "decision",
-                    action="skip_sell",
-                    reason=f"insufficient_base_balance ({base_balance})",
-                    signal_score=signal_result.score,
-                )
+
+            # Handle cases where normal bot skips but Cramer can still act
+            if not can_sell or normal_bot_blocked_by_cooldown:
+                if not can_sell:
+                    logger.info(
+                        "decision",
+                        action="skip_sell",
+                        reason=f"insufficient_base_balance ({base_balance})",
+                        signal_score=signal_result.score,
+                    )
+                # Cramer Mode can still act even if normal bot can't sell
+                if cramer_can_buy:
+                    logger.info(
+                        "cramer_independent_trade",
+                        action="buy",
+                        reason="normal_bot_skipped_sell" if not can_sell else "normal_bot_cooldown",
+                    )
+                    self._execute_cramer_trade(
+                        side="buy",  # Opposite of sell signal
+                        candles=candles,
+                        current_price=current_price,
+                        signal_score=signal_result.score,
+                        safety_multiplier=safety_multiplier,
+                    )
 
     def _execute_buy(
         self,
@@ -2493,6 +2565,13 @@ class TradingDaemon:
                 logger.info("cramer_skip_buy", reason="insufficient_quote_balance")
                 return
 
+            # Check Cramer Mode independent cooldown
+            if self.cramer_trade_cooldown:
+                cooldown_ok, cooldown_reason = self.cramer_trade_cooldown.can_execute("buy", current_price)
+                if not cooldown_ok:
+                    logger.info("cramer_skip_buy", reason=f"cooldown: {cooldown_reason}")
+                    return
+
             # Calculate position size for Cramer Mode buy
             position = self.position_sizer.calculate_size(
                 df=candles,
@@ -2577,6 +2656,10 @@ class TradingDaemon:
                     price=str(filled_price),
                     fee=str(result.fee),
                 )
+
+                # Update Cramer cooldown
+                if self.cramer_trade_cooldown:
+                    self.cramer_trade_cooldown.record_trade("buy", filled_price)
             else:
                 logger.warning("cramer_buy_failed", error=result.error)
 
@@ -2586,6 +2669,13 @@ class TradingDaemon:
             if cramer_base_balance < min_base:
                 logger.info("cramer_skip_sell", reason="insufficient_base_balance")
                 return
+
+            # Check Cramer Mode independent cooldown
+            if self.cramer_trade_cooldown:
+                cooldown_ok, cooldown_reason = self.cramer_trade_cooldown.can_execute("sell", current_price)
+                if not cooldown_ok:
+                    logger.info("cramer_skip_sell", reason=f"cooldown: {cooldown_reason}")
+                    return
 
             # For aggressive selling, sell entire position on strong signal
             if abs(signal_score) >= 80:
@@ -2669,6 +2759,10 @@ class TradingDaemon:
                     fee=str(result.fee),
                     realized_pnl=str(realized_pnl),
                 )
+
+                # Update Cramer cooldown
+                if self.cramer_trade_cooldown:
+                    self.cramer_trade_cooldown.record_trade("sell", filled_price)
             else:
                 logger.warning("cramer_sell_failed", error=result.error)
 
