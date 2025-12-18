@@ -10,7 +10,7 @@ Trade execution requires score magnitude >= threshold (default: 60).
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 import pandas as pd
 import structlog
@@ -110,7 +110,7 @@ class SignalResult:
     score: int  # -100 to +100
     action: str  # "buy", "sell", or "hold"
     indicators: IndicatorValues
-    breakdown: dict[str, int]  # Score contribution by indicator
+    breakdown: dict[str, Any]  # Score contributions (int) + metadata (float/str/bool with _ prefix)
     confidence: float  # 0.0 to 1.0
 
 
