@@ -1207,8 +1207,29 @@ class TradingDaemon:
         # Update validator with current state
         self.validator.update_balances(base_balance, quote_balance, current_price)
 
-        # Check trailing stop before normal signal processing
+        # Check BOTH trailing stops before executing either (avoid race condition)
         trailing_action = self._check_trailing_stop(current_price)
+        cramer_trailing_action = None
+        cramer_base_balance = Decimal("0")
+
+        if self.cramer_client:
+            cramer_trailing_action = self._check_trailing_stop(current_price, bot_mode="inverted")
+            cramer_base_balance = self.cramer_client.get_balance(self._base_currency).available
+
+        # Execute Cramer Mode trailing stop FIRST (before normal bot's early return)
+        # Note: Trailing stops are independent risk management, NOT mirrored entries
+        if self.cramer_client and cramer_trailing_action == "sell" and cramer_base_balance > Decimal("0"):
+            logger.info(
+                "cramer_trailing_stop_triggered",
+                base_balance=str(cramer_base_balance),
+            )
+            self._execute_cramer_trailing_stop_sell(
+                candles=candles,
+                current_price=current_price,
+                base_balance=cramer_base_balance,
+            )
+
+        # Execute normal bot trailing stop (may return early)
         if trailing_action == "sell" and base_balance > Decimal("0"):
             logger.info("trailing_stop_sell_triggered", base_balance=str(base_balance))
             # Execute sell for trailing stop (use full position, high priority)
@@ -1219,33 +1240,9 @@ class TradingDaemon:
                 signal_score=80,  # Treat as strong sell signal
                 safety_multiplier=1.0,  # No safety reduction for stops
             )
-            # Mirror to Cramer Mode: when normal bot sells, Cramer Mode buys
-            if self.cramer_client:
-                self._execute_cramer_trade(
-                    side="buy",
-                    candles=candles,
-                    current_price=current_price,
-                    signal_score=80,
-                    safety_multiplier=1.0,
-                )
+            # Note: Trailing stops are NOT mirrored to Cramer Mode as entries.
+            # Cramer Mode has independent trailing stops checked above.
             return  # Exit iteration after trailing stop execution
-
-        # Check Cramer Mode trailing stop independently (fair comparison)
-        if self.cramer_client:
-            cramer_trailing_action = self._check_trailing_stop(current_price, bot_mode="inverted")
-            if cramer_trailing_action == "sell":
-                cramer_base_balance = self.cramer_client.get_balance(self._base_currency).available
-                if cramer_base_balance > Decimal("0"):
-                    logger.info(
-                        "cramer_trailing_stop_triggered",
-                        base_balance=str(cramer_base_balance),
-                    )
-                    self._execute_cramer_trailing_stop_sell(
-                        candles=candles,
-                        current_price=current_price,
-                        base_balance=cramer_base_balance,
-                    )
-                    # Don't return - normal bot continues processing signals
 
         # Calculate portfolio value for logging
         base_value = base_balance * current_price
@@ -2516,6 +2513,18 @@ class TradingDaemon:
                     price=str(filled_price),
                     fee=str(result.fee),
                 )
+
+                # Verify balance consistency (defensive check)
+                actual_quote = self.cramer_client.get_balance(self._quote_currency).available
+                actual_base = self.cramer_client.get_balance(self._base_currency).available
+                if actual_quote != new_quote or actual_base != new_base:
+                    logger.error(
+                        "cramer_balance_mismatch",
+                        expected_quote=str(new_quote),
+                        actual_quote=str(actual_quote),
+                        expected_base=str(new_base),
+                        actual_base=str(actual_base),
+                    )
             else:
                 logger.warning("cramer_buy_failed", error=result.error)
 
@@ -2592,6 +2601,18 @@ class TradingDaemon:
                     fee=str(result.fee),
                     realized_pnl=str(realized_pnl),
                 )
+
+                # Verify balance consistency (defensive check)
+                actual_quote = self.cramer_client.get_balance(self._quote_currency).available
+                actual_base = self.cramer_client.get_balance(self._base_currency).available
+                if actual_quote != new_quote or actual_base != new_base:
+                    logger.error(
+                        "cramer_balance_mismatch",
+                        expected_quote=str(new_quote),
+                        actual_quote=str(actual_quote),
+                        expected_base=str(new_base),
+                        actual_base=str(actual_base),
+                    )
             else:
                 logger.warning("cramer_sell_failed", error=result.error)
 
@@ -2659,6 +2680,18 @@ class TradingDaemon:
                 fee=str(result.fee),
                 realized_pnl=str(realized_pnl),
             )
+
+            # Verify balance consistency (defensive check)
+            actual_quote = self.cramer_client.get_balance(self._quote_currency).available
+            actual_base = self.cramer_client.get_balance(self._base_currency).available
+            if actual_quote != new_quote or actual_base != new_base:
+                logger.error(
+                    "cramer_balance_mismatch",
+                    expected_quote=str(new_quote),
+                    actual_quote=str(actual_quote),
+                    expected_base=str(new_base),
+                    actual_base=str(actual_base),
+                )
         else:
             logger.warning("cramer_trailing_stop_sell_failed", error=result.error)
 
