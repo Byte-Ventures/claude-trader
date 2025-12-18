@@ -16,6 +16,7 @@ import json
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+from enum import Enum
 from pathlib import Path
 from typing import Any, Generator, Optional
 
@@ -42,6 +43,17 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 Base = declarative_base()
+
+
+class BotMode(str, Enum):
+    """Bot trading mode for Cramer Mode feature.
+
+    NORMAL: Standard trading bot
+    INVERTED: Cramer Mode - executes opposite trades for comparison
+    """
+
+    NORMAL = "normal"
+    INVERTED = "inverted"
 
 
 class Position(Base):
@@ -756,7 +768,7 @@ class Database:
 
     # Position methods
     def get_current_position(
-        self, symbol: str = "BTC-USD", is_paper: bool = False, bot_mode: str = "normal"
+        self, symbol: str = "BTC-USD", is_paper: bool = False, bot_mode: BotMode = BotMode.NORMAL
     ) -> Optional[Position]:
         """Get current position for a symbol."""
         with self.session() as session:
@@ -778,7 +790,7 @@ class Database:
         average_cost: Decimal,
         unrealized_pnl: Decimal = Decimal("0"),
         is_paper: bool = False,
-        bot_mode: str = "normal",
+        bot_mode: BotMode = BotMode.NORMAL,
     ) -> Position:
         """Update or create current position."""
         with self.session() as session:
@@ -886,7 +898,7 @@ class Database:
         exchange_trade_id: Optional[str] = None,
         symbol: str = "BTC-USD",
         is_paper: bool = False,
-        bot_mode: str = "normal",
+        bot_mode: BotMode = BotMode.NORMAL,
         quote_balance_after: Optional[Decimal] = None,
         base_balance_after: Optional[Decimal] = None,
         spot_rate: Optional[Decimal] = None,
@@ -940,7 +952,7 @@ class Database:
         limit: int = 20,
         is_paper: bool = False,
         symbol: Optional[str] = None,
-        bot_mode: str = "normal",
+        bot_mode: BotMode = BotMode.NORMAL,
     ) -> list[Trade]:
         """
         Get recent trades filtered by paper/live mode and bot_mode.
@@ -968,7 +980,7 @@ class Database:
         side: str,
         symbol: str = "BTC-USD",
         is_paper: bool = False,
-        bot_mode: str = "normal",
+        bot_mode: BotMode = BotMode.NORMAL,
     ) -> Optional[Trade]:
         """
         Get the most recent trade for a specific side (buy/sell).
@@ -998,7 +1010,7 @@ class Database:
             )
 
     def get_last_paper_balance(
-        self, symbol: str = "BTC-USD", bot_mode: str = "normal"
+        self, symbol: str = "BTC-USD", bot_mode: BotMode = BotMode.NORMAL
     ) -> Optional[tuple[Decimal, Decimal, Optional[Decimal]]]:
         """
         Get the last recorded paper trading balance.
@@ -1039,7 +1051,7 @@ class Database:
         volume: Optional[Decimal] = None,
         max_drawdown: Optional[Decimal] = None,
         is_paper: bool = False,
-        bot_mode: str = "normal",
+        bot_mode: BotMode = BotMode.NORMAL,
     ) -> None:
         """Update today's statistics (UTC)."""
         today = datetime.now(timezone.utc).date()
@@ -1084,7 +1096,7 @@ class Database:
 
             session.commit()
 
-    def increment_daily_trade_count(self, is_paper: bool = False, bot_mode: str = "normal") -> None:
+    def increment_daily_trade_count(self, is_paper: bool = False, bot_mode: BotMode = BotMode.NORMAL) -> None:
         """Increment today's trade count by 1 (UTC)."""
         today = datetime.now(timezone.utc).date()
 
@@ -1114,7 +1126,7 @@ class Database:
             stats.total_trades = (stats.total_trades or 0) + 1
             session.commit()
 
-    def count_todays_trades(self, is_paper: bool = False, symbol: Optional[str] = None, bot_mode: str = "normal") -> int:
+    def count_todays_trades(self, is_paper: bool = False, symbol: Optional[str] = None, bot_mode: BotMode = BotMode.NORMAL) -> int:
         """Count trades executed today (UTC)."""
         today = datetime.now(timezone.utc).date()
         today_start = datetime.combine(today, datetime.min.time())
@@ -1131,7 +1143,7 @@ class Database:
                 query = query.filter(Trade.symbol == symbol)
             return query.count()
 
-    def get_todays_realized_pnl(self, is_paper: bool = False, symbol: Optional[str] = None, bot_mode: str = "normal") -> Decimal:
+    def get_todays_realized_pnl(self, is_paper: bool = False, symbol: Optional[str] = None, bot_mode: BotMode = BotMode.NORMAL) -> Decimal:
         """Sum realized P&L from today's trades (UTC) using SQL aggregation."""
         today = datetime.now(timezone.utc).date()
         today_start = datetime.combine(today, datetime.min.time())
@@ -1161,7 +1173,7 @@ class Database:
                 return Decimal("0")
 
     def get_daily_stats(
-        self, target_date: Optional[date] = None, is_paper: bool = False, bot_mode: str = "normal"
+        self, target_date: Optional[date] = None, is_paper: bool = False, bot_mode: BotMode = BotMode.NORMAL
     ) -> Optional[DailyStats]:
         """Get statistics for a specific date (defaults to today UTC)."""
         target_date = target_date or datetime.now(timezone.utc).date()
@@ -1178,7 +1190,7 @@ class Database:
             )
 
     def get_daily_stats_range(
-        self, start_date: date, end_date: date, is_paper: bool = False, bot_mode: str = "normal"
+        self, start_date: date, end_date: date, is_paper: bool = False, bot_mode: BotMode = BotMode.NORMAL
     ) -> list[DailyStats]:
         """Get statistics for a date range (inclusive)."""
         with self.session() as session:
@@ -1262,7 +1274,7 @@ class Database:
         trailing_activation: Decimal,
         trailing_distance: Decimal,
         is_paper: bool = False,
-        bot_mode: str = "normal",
+        bot_mode: BotMode = BotMode.NORMAL,
         hard_stop: Optional[Decimal] = None,
         take_profit_price: Optional[Decimal] = None,
     ) -> TrailingStop:
@@ -1305,7 +1317,7 @@ class Database:
             return trailing_stop
 
     def get_active_trailing_stop(
-        self, symbol: str = "BTC-USD", is_paper: bool = False, bot_mode: str = "normal"
+        self, symbol: str = "BTC-USD", is_paper: bool = False, bot_mode: BotMode = BotMode.NORMAL
     ) -> Optional[TrailingStop]:
         """Get the active trailing stop for a symbol."""
         with self.session() as session:
@@ -1371,7 +1383,7 @@ class Database:
         hard_stop: Optional[Decimal] = None,
         take_profit_price: Optional[Decimal] = None,
         is_paper: bool = False,
-        bot_mode: str = "normal",
+        bot_mode: BotMode = BotMode.NORMAL,
     ) -> Optional[TrailingStop]:
         """
         Update existing trailing stop for DCA (position averaging).
@@ -1420,7 +1432,7 @@ class Database:
             return ts
 
     def deactivate_trailing_stop(
-        self, symbol: str = "BTC-USD", is_paper: bool = False, bot_mode: str = "normal"
+        self, symbol: str = "BTC-USD", is_paper: bool = False, bot_mode: BotMode = BotMode.NORMAL
     ) -> bool:
         """Deactivate all trailing stops for a symbol."""
         with self.session() as session:
