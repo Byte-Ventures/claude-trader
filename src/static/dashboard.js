@@ -400,7 +400,7 @@ function updateDashboard(state) {
             const candleTime = Math.floor(time / candleIntervalSeconds) * candleIntervalSeconds;
 
             if (currentCandle && currentCandle.time === candleTime) {
-                // Same candle period - update OHLC
+                // Same candle period - update high/low/close (open is preserved as first price)
                 currentCandle.high = Math.max(currentCandle.high, price);
                 currentCandle.low = Math.min(currentCandle.low, price);
                 currentCandle.close = price;

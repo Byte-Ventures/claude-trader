@@ -819,8 +819,8 @@ def test_rate_history_paper_live_separation(db):
     assert live_rate.id != paper_rate.id
 
 
-def test_rate_history_duplicate_skipped(db):
-    """Test that duplicate rates are skipped."""
+def test_rate_history_upsert(db):
+    """Test that record_rate performs upsert with correct OHLC semantics."""
     timestamp = datetime(2024, 1, 1, 12, 0, 0)
 
     # Record first time
@@ -834,19 +834,59 @@ def test_rate_history_duplicate_skipped(db):
         is_paper=False
     )
 
-    # Try to record duplicate
+    # Record again with different OHLCV - should update, not skip
     rate2 = db.record_rate(
         timestamp=timestamp,
-        open_price=Decimal("50000"),
-        high_price=Decimal("50500"),
-        low_price=Decimal("49500"),
-        close_price=Decimal("50200"),
-        volume=Decimal("100"),
+        open_price=Decimal("49900"),   # Different open - should be IGNORED
+        high_price=Decimal("51000"),   # Higher high - should use max
+        low_price=Decimal("49000"),    # Lower low - should use min
+        close_price=Decimal("50800"),  # Different close - should update
+        volume=Decimal("150"),
         is_paper=False
     )
 
     assert rate1 is not None
-    assert rate2 is None  # Duplicate skipped
+    assert rate2 is not None  # Updated, not skipped
+
+    # Verify OHLC semantics
+    assert rate2.get_open() == Decimal("50000")   # Original open preserved
+    assert rate2.get_high() == Decimal("51000")   # max(50500, 51000)
+    assert rate2.get_low() == Decimal("49000")    # min(49500, 49000)
+    assert rate2.get_close() == Decimal("50800")  # Latest close
+    assert rate2.get_volume() == Decimal("150")
+
+
+def test_record_rate_preserves_boundaries(db):
+    """Test record_rate preserves high/low boundaries when update has narrower range."""
+    timestamp = datetime(2024, 1, 1, 12, 0, 0)
+
+    # Insert initial candle with established high/low
+    db.record_rate(
+        timestamp=timestamp,
+        open_price=Decimal("50000"),
+        high_price=Decimal("51000"),  # Already seen 51000
+        low_price=Decimal("49000"),   # Already seen 49000
+        close_price=Decimal("50500"),
+        volume=Decimal("100"),
+        is_paper=False
+    )
+
+    # Update with narrower range - boundaries should NOT shrink
+    rate = db.record_rate(
+        timestamp=timestamp,
+        open_price=Decimal("50100"),   # Different open - ignored
+        high_price=Decimal("50800"),   # Lower than existing high - ignored
+        low_price=Decimal("49200"),    # Higher than existing low - ignored
+        close_price=Decimal("50600"),  # New close
+        volume=Decimal("120"),
+        is_paper=False
+    )
+
+    # Verify boundaries are preserved
+    assert rate.get_open() == Decimal("50000")   # Original open preserved
+    assert rate.get_high() == Decimal("51000")   # Original high preserved (51000 > 50800)
+    assert rate.get_low() == Decimal("49000")    # Original low preserved (49000 < 49200)
+    assert rate.get_close() == Decimal("50600")  # Close updated
 
 
 def test_record_rates_bulk(db):
@@ -892,30 +932,76 @@ def test_record_rates_bulk_updates_duplicates(db):
     # Verify initial values
     rates = db.get_rates(is_paper=False)
     assert len(rates) == 1
+    assert rates[0].get_open() == Decimal("50000")
     assert rates[0].get_high() == Decimal("50500")
+    assert rates[0].get_low() == Decimal("49500")
     assert rates[0].get_close() == Decimal("50200")
 
     # Update with new OHLCV data (simulating candle completion)
     updated_candles = [
         {
             "timestamp": datetime(2024, 1, 1, 12, 0, 0),
-            "open": Decimal("50000"),
-            "high": Decimal("51000"),  # Higher high
-            "low": Decimal("49000"),   # Lower low
-            "close": Decimal("50800"),  # Different close
-            "volume": Decimal("150")    # Higher volume
+            "open": Decimal("49900"),   # Different open - should be IGNORED
+            "high": Decimal("51000"),   # Higher high - should use max
+            "low": Decimal("49000"),    # Lower low - should use min
+            "close": Decimal("50800"),  # Different close - should update
+            "volume": Decimal("150")    # Higher volume - should update
         }
     ]
     count2 = db.record_rates_bulk(updated_candles, is_paper=False)
     assert count2 == 1  # Updated (not skipped)
 
-    # Verify updated values
+    # Verify updated values - open should be preserved!
     rates = db.get_rates(is_paper=False)
     assert len(rates) == 1  # Still only one candle
-    assert rates[0].get_high() == Decimal("51000")
-    assert rates[0].get_low() == Decimal("49000")
+    assert rates[0].get_open() == Decimal("50000")  # Original open preserved
+    assert rates[0].get_high() == Decimal("51000")  # max(50500, 51000)
+    assert rates[0].get_low() == Decimal("49000")   # min(49500, 49000)
     assert rates[0].get_close() == Decimal("50800")
     assert rates[0].get_volume() == Decimal("150")
+
+
+def test_record_rates_bulk_preserves_boundaries(db):
+    """Test that bulk upsert preserves high/low boundaries correctly.
+
+    When updating a candle:
+    - Open: NEVER changes (first price of period)
+    - High: Uses max(existing, new) - only increases
+    - Low: Uses min(existing, new) - only decreases
+    - Close: Always updates (latest price)
+    """
+    # Insert initial candle with established high/low
+    initial = [
+        {
+            "timestamp": datetime(2024, 1, 1, 12, 0, 0),
+            "open": Decimal("50000"),
+            "high": Decimal("51000"),  # Already seen 51000
+            "low": Decimal("49000"),   # Already seen 49000
+            "close": Decimal("50500"),
+            "volume": Decimal("100")
+        }
+    ]
+    db.record_rates_bulk(initial, is_paper=False)
+
+    # Update with new data that has NARROWER range - boundaries should NOT shrink
+    narrower_update = [
+        {
+            "timestamp": datetime(2024, 1, 1, 12, 0, 0),
+            "open": Decimal("50100"),   # Different open - ignored
+            "high": Decimal("50800"),   # Lower than existing high - ignored
+            "low": Decimal("49200"),    # Higher than existing low - ignored
+            "close": Decimal("50600"),  # New close
+            "volume": Decimal("120")
+        }
+    ]
+    db.record_rates_bulk(narrower_update, is_paper=False)
+
+    # Verify boundaries are preserved
+    rates = db.get_rates(is_paper=False)
+    assert rates[0].get_open() == Decimal("50000")   # Original open preserved
+    assert rates[0].get_high() == Decimal("51000")   # Original high preserved (51000 > 50800)
+    assert rates[0].get_low() == Decimal("49000")    # Original low preserved (49000 < 49200)
+    assert rates[0].get_close() == Decimal("50600")  # Close updated
 
 
 def test_record_rates_bulk_partial_duplicates(db):

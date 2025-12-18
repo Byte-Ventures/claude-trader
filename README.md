@@ -653,9 +653,17 @@ This is an experimental project. If you choose to use it with real money, you do
 
 ## FAQ
 
-**Q: HuRr dUrr now you just gotta program it to do the opposite you'll be rich**
+**Q: Should I start with paper trading or live trading?**
 
-A: Way ahead of you. The Cramer portfolio does exactly that - sells when paper bot buys, and vice versa.
+A: Always start with paper trading (`PAPER_MODE=true`). Run for at least a few weeks to understand how the bot behaves before considering live trading.
+
+**Q: What happens if the bot crashes?**
+
+A: State is saved to a database - the bot resumes from where it left off. Open positions remain on the exchange and can be manually closed if needed.
+
+**Q: How do I validate my strategy?**
+
+A: Enable Cramer Mode (`ENABLE_CRAMER_MODE=true`) to run an inverse strategy alongside normal trading. If it consistently outperforms, your signals may need adjustment.
 
 ## Contributing
 

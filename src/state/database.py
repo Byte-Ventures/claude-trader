@@ -1643,7 +1643,15 @@ class Database:
         Record a single OHLCV candle (upsert - insert or update).
 
         If candle exists for the same symbol/exchange/interval/timestamp/is_paper,
-        updates it with new OHLCV data. Otherwise inserts a new candle.
+        updates high/low/close/volume while preserving the original open price.
+        Otherwise inserts a new candle.
+
+        OHLC semantics:
+        - Open: First price of period (immutable once set)
+        - High: Highest price seen (use max of existing and new)
+        - Low: Lowest price seen (use min of existing and new)
+        - Close: Latest price (always update)
+        - Volume: Cumulative for period (exchange provides total, safe to replace)
         """
         with self.session() as session:
             # Check if candle already exists
@@ -1660,12 +1668,12 @@ class Database:
             )
 
             if existing:
-                # Update existing candle with new OHLCV data
-                existing.open_price = str(open_price)
-                existing.high_price = str(high_price)
-                existing.low_price = str(low_price)
+                # Update existing candle - preserve open, use max/min for high/low
+                # open_price is NOT updated - it's the first price of the period
+                existing.high_price = str(max(Decimal(existing.high_price), high_price))
+                existing.low_price = str(min(Decimal(existing.low_price), low_price))
                 existing.close_price = str(close_price)
-                existing.volume = str(volume)
+                existing.volume = str(volume)  # Exchange provides cumulative volume
                 return existing
 
             rate = RateHistory(
@@ -1693,6 +1701,16 @@ class Database:
     ) -> int:
         """
         Record multiple OHLCV candles efficiently (upsert - insert or update).
+
+        For existing candles, updates high/low/close/volume while preserving
+        the original open price.
+
+        OHLC semantics:
+        - Open: First price of period (immutable once set)
+        - High: Highest price seen (use max of existing and new)
+        - Low: Lowest price seen (use min of existing and new)
+        - Close: Latest price (always update)
+        - Volume: Cumulative for period (exchange provides total, safe to replace)
 
         Args:
             candles: List of dicts with keys: timestamp, open, high, low, close, volume
@@ -1746,13 +1764,13 @@ class Database:
                 # Upsert candles (insert new, update existing)
                 for candle, normalized_ts in zip(candles, candle_timestamps):
                     if normalized_ts in existing_candles:
-                        # Update existing candle with new OHLCV data
+                        # Update existing candle - preserve open, use max/min for high/low
                         existing = existing_candles[normalized_ts]
-                        existing.open_price = str(candle["open"])
-                        existing.high_price = str(candle["high"])
-                        existing.low_price = str(candle["low"])
+                        # open_price is NOT updated - it's the first price of the period
+                        existing.high_price = str(max(Decimal(existing.high_price), Decimal(str(candle["high"]))))
+                        existing.low_price = str(min(Decimal(existing.low_price), Decimal(str(candle["low"]))))
                         existing.close_price = str(candle["close"])
-                        existing.volume = str(candle["volume"])
+                        existing.volume = str(candle["volume"])  # Exchange provides cumulative volume
                         updated += 1
                     else:
                         # Insert new candle
