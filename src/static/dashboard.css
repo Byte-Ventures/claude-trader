@@ -579,10 +579,6 @@ footer {
 }
 
 /* Cramer Mode Styles */
-.cramer-card h3 {
-    color: var(--accent-red);
-}
-
 .trade-mode {
     display: inline-block;
     font-size: 0.625rem;
