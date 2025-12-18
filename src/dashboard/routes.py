@@ -320,13 +320,13 @@ async def get_performance(
             for s in cramer_stats
         ]
 
-        # Warn if date ranges don't align (Cramer Mode may have started mid-period)
+        # Log if date ranges don't align (expected when Cramer Mode started mid-period)
         if cramer_stats and normal_stats:
             normal_dates = {str(s.date) for s in normal_stats}
             cramer_dates = {str(s.date) for s in cramer_stats}
             if normal_dates != cramer_dates:
-                logger.warning(
-                    "performance_date_mismatch",
+                logger.info(
+                    "cramer_partial_history",
                     normal_days=len(normal_dates),
                     cramer_days=len(cramer_dates),
                     days_requested=days,
