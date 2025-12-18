@@ -286,7 +286,7 @@ Run an inverse strategy alongside your normal trading to compare performance. Wh
 - Normal bot **buys** → Cramer Mode **sells**
 - Normal bot **sells** (signal or trailing stop) → Cramer Mode **buys**
 
-Both bots see identical signals and market conditions, making it a fair comparison. Each maintains separate virtual balances tracked independently in the database.
+Both bots have identical risk management: same balance constraints and independent trailing stops for fair comparison.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -294,9 +294,9 @@ Both bots see identical signals and market conditions, making it a fair comparis
 
 **How it works:**
 - On first enable, Cramer Mode copies balance from normal bot's current state
-- Cramer Mode can go negative on quote currency (USD/EUR) to simulate shorting
-- Cramer Mode cannot go negative on base currency (BTC) - can't sell what it doesn't have
-- Both positions are tracked separately with `bot_mode` column in database
+- Both bots have independent trailing stops (same risk management)
+- Same balance constraints apply to both (no negative balances)
+- Both positions tracked separately with `bot_mode` column in database
 - Compare performance: if Cramer Mode consistently wins, consider inverting your strategy
 
 **Use case:** Validate whether your trading signals have predictive value. If Cramer Mode performs better over time, your signals may be systematically wrong.

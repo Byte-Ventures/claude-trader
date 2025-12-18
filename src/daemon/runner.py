@@ -167,6 +167,9 @@ class TradingDaemon:
             # Initialize Cramer Mode client if enabled (paper mode only)
             self.cramer_client: Optional[PaperTradingClient] = None
             if settings.enable_cramer_mode:
+                if not settings.is_paper_trading:
+                    logger.error("cramer_mode_requires_paper_trading")
+                    raise ValueError("Cramer Mode can only be enabled in paper trading mode")
                 # Try to restore Cramer Mode balance from database
                 cramer_balance = self.db.get_last_paper_balance(settings.trading_pair, bot_mode="inverted")
                 if cramer_balance:
@@ -1213,6 +1216,23 @@ class TradingDaemon:
                     safety_multiplier=1.0,
                 )
             return  # Exit iteration after trailing stop execution
+
+        # Check Cramer Mode trailing stop independently (fair comparison)
+        if self.cramer_client:
+            cramer_trailing_action = self._check_trailing_stop(current_price, bot_mode="inverted")
+            if cramer_trailing_action == "sell":
+                cramer_base_balance = self.cramer_client.get_balance(self._base_currency).available
+                if cramer_base_balance > Decimal("0"):
+                    logger.info(
+                        "cramer_trailing_stop_triggered",
+                        base_balance=str(cramer_base_balance),
+                    )
+                    self._execute_cramer_trailing_stop_sell(
+                        candles=candles,
+                        current_price=current_price,
+                        base_balance=cramer_base_balance,
+                    )
+                    # Don't return - normal bot continues processing signals
 
         # Calculate portfolio value for logging
         base_value = base_balance * current_price
@@ -2410,8 +2430,10 @@ class TradingDaemon:
         )
 
         if side == "buy":
-            # Cramer Mode can go negative on quote currency (simulates shorting)
-            # No balance check here - allow_negative_quote=True handles it
+            # Check if Cramer Mode can buy (same constraints as normal bot)
+            if anti_quote_balance < Decimal("10"):
+                logger.info("cramer_skip_buy", reason="insufficient_quote_balance")
+                return
 
             # Calculate position size for Cramer Mode buy
             position = self.position_sizer.calculate_size(
@@ -2428,11 +2450,10 @@ class TradingDaemon:
                 logger.info("cramer_skip_buy", reason="position_too_small")
                 return
 
-            # Execute buy on Cramer Mode client (allow negative quote for shorting simulation)
+            # Execute buy on Cramer Mode client
             result = self.cramer_client.market_buy(
                 self.settings.trading_pair,
                 position.size_quote,
-                allow_negative_quote=True,
             )
 
             if result.success:
@@ -2560,6 +2581,66 @@ class TradingDaemon:
                 )
             else:
                 logger.warning("anti_bot_sell_failed", error=result.error)
+
+    def _execute_cramer_trailing_stop_sell(
+        self,
+        candles,
+        current_price: Decimal,
+        base_balance: Decimal,
+    ) -> None:
+        """
+        Execute Cramer Mode sell from independent trailing stop trigger.
+
+        This is NOT a mirror of normal bot action - it's Cramer Mode's own
+        risk management exiting its position.
+        """
+        if not self.cramer_client:
+            return
+
+        # Sell entire position (trailing stop = full exit)
+        result = self.cramer_client.market_sell(
+            self.settings.trading_pair,
+            base_balance,
+        )
+
+        if result.success:
+            filled_price = result.filled_price or current_price
+
+            # Get new balances
+            new_quote = self.cramer_client.get_balance(self._quote_currency).available
+            new_base = self.cramer_client.get_balance(self._base_currency).available
+
+            # Calculate realized P&L
+            realized_pnl = self._calculate_realized_pnl(
+                result.size, filled_price, result.fee,
+                is_paper=True, bot_mode="inverted"
+            )
+
+            # Record trade
+            self.db.record_trade(
+                side="sell",
+                size=result.size,
+                price=filled_price,
+                fee=result.fee,
+                realized_pnl=realized_pnl,
+                symbol=self.settings.trading_pair,
+                is_paper=True,
+                bot_mode="inverted",
+                quote_balance_after=new_quote,
+                base_balance_after=new_base,
+                spot_rate=current_price,
+            )
+            self.db.increment_daily_trade_count(is_paper=True, bot_mode="inverted")
+
+            logger.info(
+                "cramer_trailing_stop_sell_executed",
+                size=str(result.size),
+                price=str(filled_price),
+                fee=str(result.fee),
+                realized_pnl=str(realized_pnl),
+            )
+        else:
+            logger.warning("cramer_trailing_stop_sell_failed", error=result.error)
 
     def _update_position_after_buy(
         self, size: Decimal, price: Decimal, fee: Decimal, is_paper: bool = False, bot_mode: str = "normal"
@@ -3184,7 +3265,7 @@ class TradingDaemon:
             logger.error("trailing_stop_creation_failed", error=str(e))
             raise
 
-    def _check_trailing_stop(self, current_price: Decimal) -> Optional[str]:
+    def _check_trailing_stop(self, current_price: Decimal, bot_mode: str = "normal") -> Optional[str]:
         """
         Check and update trailing stop, return action if stop triggered.
 
@@ -3199,6 +3280,10 @@ class TradingDaemon:
         The entry_price stored in trailing_stops is the weighted average cost,
         not the individual entry price, ensuring correct calculations for DCA.
 
+        Args:
+            current_price: Current market price
+            bot_mode: "normal" or "inverted" (Cramer Mode)
+
         Returns:
             "sell" if trailing stop or hard stop triggered, None otherwise
         """
@@ -3206,7 +3291,7 @@ class TradingDaemon:
         ts = self.db.get_active_trailing_stop(
             symbol=self.settings.trading_pair,
             is_paper=is_paper,
-            bot_mode="normal",
+            bot_mode=bot_mode,
         )
 
         if not ts:
@@ -3265,7 +3350,7 @@ class TradingDaemon:
                 self.db.deactivate_trailing_stop(
                     symbol=self.settings.trading_pair,
                     is_paper=is_paper,
-                    bot_mode="normal",
+                    bot_mode=bot_mode,
                 )
                 return "sell"
 
@@ -3308,7 +3393,7 @@ class TradingDaemon:
                     self.db.deactivate_trailing_stop(
                         symbol=self.settings.trading_pair,
                         is_paper=is_paper,
-                        bot_mode="normal",
+                        bot_mode=bot_mode,
                     )
 
                     return "sell"
@@ -3413,7 +3498,7 @@ class TradingDaemon:
                 self.db.deactivate_trailing_stop(
                     symbol=self.settings.trading_pair,
                     is_paper=is_paper,
-                    bot_mode="normal",
+                    bot_mode=bot_mode,
                 )
                 return "sell"
 
