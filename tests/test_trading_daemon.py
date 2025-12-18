@@ -120,6 +120,7 @@ def mock_settings():
     settings.loss_limiter_enabled = True
     settings.trade_cooldown_enabled = False
     settings.block_trades_extreme_conditions = True
+    settings.enable_cramer_mode = False  # Cramer Mode disabled by default
 
     # Adaptive interval
     settings.adaptive_interval_enabled = True
@@ -3328,3 +3329,214 @@ def test_take_profit_priority_over_trailing_in_gap(mock_settings):
                 # Verify it was TP notification (checked first due to priority)
                 call_args = mock_notifier.send_message.call_args[0][0]
                 assert "Take Profit" in call_args, "Should be TP notification, not trailing stop"
+
+
+# ============================================================================
+# Cramer Mode Tests
+# ============================================================================
+
+def test_cramer_mode_cannot_be_enabled_in_live_trading(mock_settings):
+    """
+    Test that Cramer Mode cannot be enabled in live trading mode.
+
+    This is a critical safety check - Cramer Mode should only work in paper trading.
+    """
+    mock_settings.enable_cramer_mode = True
+    mock_settings.is_paper_trading = False  # Live trading
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None
+    mock_database.get_last_regime.return_value = None
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                with pytest.raises(ValueError, match="Cramer Mode can only be enabled in paper trading mode"):
+                    TradingDaemon(mock_settings)
+
+
+def test_cramer_mode_initializes_in_paper_trading(mock_settings):
+    """
+    Test that Cramer Mode initializes correctly in paper trading mode.
+    """
+    mock_settings.enable_cramer_mode = True
+    mock_settings.is_paper_trading = True
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None
+    mock_database.get_last_regime.return_value = None
+    mock_database.get_current_position.return_value = None
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                with patch('src.daemon.runner.PaperTradingClient') as mock_paper_client:
+                    daemon = TradingDaemon(mock_settings)
+
+                    # PaperTradingClient should be called twice:
+                    # Once for normal bot, once for Cramer Mode
+                    assert mock_paper_client.call_count == 2, \
+                        "Should create two PaperTradingClient instances (normal + Cramer)"
+
+                    assert daemon.cramer_client is not None, \
+                        "Cramer client should be initialized"
+
+
+def test_cramer_mode_trailing_stop_uses_inverted_bot_mode(mock_settings):
+    """
+    Test that Cramer Mode trailing stop check uses bot_mode='inverted'.
+    """
+    mock_settings.enable_cramer_mode = True
+    mock_settings.is_paper_trading = True
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None
+    mock_database.get_last_regime.return_value = None
+    mock_database.get_active_trailing_stop.return_value = None
+    mock_database.get_current_position.return_value = None
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                with patch('src.daemon.runner.PaperTradingClient'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    # Check trailing stop for Cramer Mode
+                    result = daemon._check_trailing_stop(Decimal("50000"), bot_mode="inverted")
+
+                    # Verify database was called with correct bot_mode
+                    mock_database.get_active_trailing_stop.assert_called_with(
+                        symbol=mock_settings.trading_pair,
+                        is_paper=True,
+                        bot_mode="inverted",
+                    )
+
+
+def test_cramer_mode_balance_restoration_from_database(mock_settings):
+    """
+    Test that Cramer Mode restores balance from database on restart.
+    """
+    mock_settings.enable_cramer_mode = True
+    mock_settings.is_paper_trading = True
+
+    mock_database = Mock()
+    # Normal bot has no prior trades
+    mock_database.get_last_paper_balance.side_effect = [
+        None,  # First call for normal bot
+        (Decimal("8000"), Decimal("0.5"), Decimal("50000")),  # Second call for Cramer Mode
+    ]
+    mock_database.get_last_regime.return_value = None
+    mock_database.get_current_position.return_value = None
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                with patch('src.daemon.runner.PaperTradingClient') as mock_paper_client:
+                    TradingDaemon(mock_settings)
+
+                    # Second call should use restored Cramer Mode balance
+                    calls = mock_paper_client.call_args_list
+                    assert len(calls) == 2, "Should create two PaperTradingClient instances"
+
+                    # Cramer Mode should be initialized with restored balance
+                    cramer_call = calls[1]
+                    assert cramer_call.kwargs['initial_quote'] == 8000.0, \
+                        "Cramer Mode should use restored quote balance"
+                    assert cramer_call.kwargs['initial_base'] == 0.5, \
+                        "Cramer Mode should use restored base balance"
+
+
+def test_cramer_mode_copies_normal_balance_on_first_enable(mock_settings):
+    """
+    Test that Cramer Mode copies normal bot's balance on first enable.
+    """
+    mock_settings.enable_cramer_mode = True
+    mock_settings.is_paper_trading = True
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None  # No prior trades for either
+    mock_database.get_last_regime.return_value = None
+    mock_database.get_current_position.return_value = None
+
+    mock_normal_client = Mock()
+    mock_normal_client.get_balance.side_effect = [
+        Mock(available=Decimal("10000")),  # Quote for Cramer copy
+        Mock(available=Decimal("0.1")),    # Base for Cramer copy
+    ]
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                with patch('src.daemon.runner.PaperTradingClient') as mock_paper_client:
+                    # First instance is normal client, set it up to return balances
+                    mock_paper_client.return_value = mock_normal_client
+
+                    TradingDaemon(mock_settings)
+
+                    # Second call (Cramer Mode) should copy from normal bot's balance
+                    calls = mock_paper_client.call_args_list
+                    assert len(calls) == 2, "Should create two PaperTradingClient instances"
+
+
+def test_cramer_mode_warns_when_normal_has_position(mock_settings):
+    """
+    Test that Cramer Mode checks for normal bot position on first enable.
+    """
+    mock_settings.enable_cramer_mode = True
+    mock_settings.is_paper_trading = True
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None  # First enable
+    mock_database.get_last_regime.return_value = None
+    # Normal bot has an open position
+    mock_position = Mock()
+    mock_position.get_quantity.return_value = Decimal("0.5")
+    mock_database.get_current_position.return_value = mock_position
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                with patch('src.daemon.runner.PaperTradingClient'):
+                    TradingDaemon(mock_settings)
+
+                    # Verify get_current_position was called for position check
+                    mock_database.get_current_position.assert_called_with(
+                        mock_settings.trading_pair,
+                        is_paper=True,
+                        bot_mode="normal"
+                    )
+
+
+def test_cramer_mode_database_separation(mock_settings):
+    """
+    Test that Cramer Mode uses 'inverted' bot_mode for database operations.
+
+    This ensures normal bot and Cramer Mode data are properly separated
+    in the database using the bot_mode column.
+    """
+    mock_settings.enable_cramer_mode = True
+    mock_settings.is_paper_trading = True
+
+    mock_database = Mock()
+    mock_database.get_last_paper_balance.return_value = None
+    mock_database.get_last_regime.return_value = None
+    mock_database.get_current_position.return_value = None
+
+    with patch('src.daemon.runner.create_exchange_client'):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                with patch('src.daemon.runner.PaperTradingClient'):
+                    TradingDaemon(mock_settings)
+
+                    # Verify get_last_paper_balance was called twice:
+                    # Once for normal bot, once for Cramer Mode
+                    calls = mock_database.get_last_paper_balance.call_args_list
+                    assert len(calls) >= 2, "Should query balance for both normal and Cramer"
+
+                    # First call should be for normal bot
+                    assert calls[0][1].get('bot_mode', 'normal') == 'normal', \
+                        "First balance query should be for normal bot"
+
+                    # Second call should be for Cramer Mode (inverted)
+                    assert calls[1][1].get('bot_mode') == 'inverted', \
+                        "Second balance query should be for Cramer Mode (inverted)"

@@ -699,6 +699,12 @@ class Settings(BaseSettings):
         description="Block new positions when both sentiment and volatility are extreme"
     )
 
+    # Cramer Mode Mode (paper trading only)
+    enable_cramer_mode: bool = Field(
+        default=False,
+        description="Enable Cramer Mode: execute opposite trade alongside each normal trade for comparison (paper mode only)"
+    )
+
     @field_validator("ema_slow")
     @classmethod
     def validate_ema_slow(cls, v: int, info) -> int:

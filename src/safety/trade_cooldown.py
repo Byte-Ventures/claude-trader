@@ -73,6 +73,7 @@ class TradeCooldown:
         db: Optional["Database"] = None,
         is_paper: bool = False,
         symbol: str = "BTC-USD",
+        bot_mode: str = "normal",
     ):
         """
         Initialize trade cooldown.
@@ -82,11 +83,13 @@ class TradeCooldown:
             db: Database for querying last trades
             is_paper: Whether this is paper trading
             symbol: Trading pair symbol
+            bot_mode: Bot mode ("normal" or "inverted") for separate tracking
         """
         self.config = config or TradeCooldownConfig()
         self.db = db
         self.is_paper = is_paper
         self.symbol = symbol
+        self.bot_mode = bot_mode
 
         # In-memory cache of last trades (populated on first check)
         self._last_buy_time: Optional[datetime] = None
@@ -108,17 +111,17 @@ class TradeCooldown:
         if self._cache_initialized or not self.db:
             return
 
-        # Load last buy
+        # Load last buy (filtered by bot_mode for separate tracking)
         last_buy = self.db.get_last_trade_by_side(
-            side="buy", symbol=self.symbol, is_paper=self.is_paper
+            side="buy", symbol=self.symbol, is_paper=self.is_paper, bot_mode=self.bot_mode
         )
         if last_buy:
             self._last_buy_time = last_buy.executed_at
             self._last_buy_price = Decimal(last_buy.price)
 
-        # Load last sell
+        # Load last sell (filtered by bot_mode for separate tracking)
         last_sell = self.db.get_last_trade_by_side(
-            side="sell", symbol=self.symbol, is_paper=self.is_paper
+            side="sell", symbol=self.symbol, is_paper=self.is_paper, bot_mode=self.bot_mode
         )
         if last_sell:
             self._last_sell_time = last_sell.executed_at

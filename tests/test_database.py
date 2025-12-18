@@ -1692,3 +1692,205 @@ def test_signal_history_null_htf_values(db):
         assert retrieved.htf_bias is None
         assert retrieved.htf_daily_trend is None
         assert retrieved.htf_4h_trend is None
+
+
+# ============================================================================
+# Migration Tests
+# ============================================================================
+
+
+class TestBotModeMigration:
+    """Tests for the bot_mode column migration."""
+
+    def test_bot_mode_column_exists_on_all_tables(self, db):
+        """Verify bot_mode column is created on all required tables."""
+        with db.session() as session:
+            # Check positions table (uses quantity/average_cost stored as strings)
+            position = Position(
+                symbol="BTC-USD",
+                quantity="0.1",
+                average_cost="50000",
+                is_paper=True,
+                bot_mode="normal",
+            )
+            session.add(position)
+            session.commit()
+            assert position.bot_mode == "normal"
+
+            # Check trailing_stops table (uses string for Decimal fields)
+            stop = TrailingStop(
+                symbol="BTC-USD",
+                side="buy",
+                entry_price="50000",
+                trailing_distance="0.03",
+                trailing_activation="0.02",
+                is_paper=True,
+                bot_mode="inverted",
+            )
+            session.add(stop)
+            session.commit()
+            assert stop.bot_mode == "inverted"
+
+    def test_bot_mode_defaults_to_normal(self, db):
+        """Verify bot_mode defaults to 'normal' when not specified."""
+        with db.session() as session:
+            # Create position without specifying bot_mode
+            position = Position(
+                symbol="BTC-USD",
+                quantity="0.1",
+                average_cost="50000",
+                is_paper=True,
+            )
+            session.add(position)
+            session.commit()
+
+            # Default should be "normal"
+            assert position.bot_mode == "normal"
+
+    def test_bot_mode_separation_in_queries(self, db):
+        """Verify bot_mode properly separates normal and Cramer Mode data."""
+        # Use the database method to record trades (handles types correctly)
+        db.record_trade(
+            side="buy",
+            size=Decimal("0.1"),
+            price=Decimal("50000"),
+            fee=Decimal("1.0"),
+            symbol="BTC-USD",
+            is_paper=True,
+            bot_mode="normal",
+        )
+
+        db.record_trade(
+            side="sell",  # Opposite of normal
+            size=Decimal("0.1"),
+            price=Decimal("50000"),
+            fee=Decimal("1.0"),
+            symbol="BTC-USD",
+            is_paper=True,
+            bot_mode="inverted",
+        )
+
+        with db.session() as session:
+            # Query normal bot trades only
+            normal_trades = session.query(Trade).filter(
+                Trade.bot_mode == "normal",
+                Trade.is_paper == True,
+            ).all()
+            assert len(normal_trades) == 1
+            assert normal_trades[0].side == "buy"
+
+            # Query Cramer Mode trades only
+            cramer_trades = session.query(Trade).filter(
+                Trade.bot_mode == "inverted",
+                Trade.is_paper == True,
+            ).all()
+            assert len(cramer_trades) == 1
+            assert cramer_trades[0].side == "sell"
+
+    def test_get_last_paper_balance_respects_bot_mode(self, db):
+        """Verify get_last_paper_balance filters by bot_mode."""
+        # Record normal bot trade
+        db.record_trade(
+            side="buy",
+            size=Decimal("0.1"),
+            price=Decimal("50000"),
+            fee=Decimal("1.0"),
+            symbol="BTC-USD",
+            is_paper=True,
+            bot_mode="normal",
+            quote_balance_after=Decimal("5000"),
+            base_balance_after=Decimal("0.1"),
+            spot_rate=Decimal("50000"),
+        )
+
+        # Record Cramer Mode trade with different balance
+        db.record_trade(
+            side="sell",
+            size=Decimal("0.05"),
+            price=Decimal("50000"),
+            fee=Decimal("1.0"),
+            symbol="BTC-USD",
+            is_paper=True,
+            bot_mode="inverted",
+            quote_balance_after=Decimal("7500"),
+            base_balance_after=Decimal("0.05"),
+            spot_rate=Decimal("50000"),
+        )
+
+        # Get normal bot balance
+        normal_balance = db.get_last_paper_balance("BTC-USD", bot_mode="normal")
+        assert normal_balance is not None
+        quote, base, _ = normal_balance
+        assert quote == Decimal("5000")
+        assert base == Decimal("0.1")
+
+        # Get Cramer Mode balance
+        cramer_balance = db.get_last_paper_balance("BTC-USD", bot_mode="inverted")
+        assert cramer_balance is not None
+        quote, base, _ = cramer_balance
+        assert quote == Decimal("7500")
+        assert base == Decimal("0.05")
+
+    def test_bot_mode_migration_handles_existing_data(self, db, tmp_path):
+        """Test that bot_mode migration correctly updates existing data."""
+        import sqlite3
+        from sqlalchemy import text
+
+        # Create a fresh database without bot_mode column to simulate old schema
+        test_db_path = tmp_path / "migration_test.db"
+        conn = sqlite3.connect(str(test_db_path))
+        cursor = conn.cursor()
+
+        # Create trades table WITHOUT bot_mode column (simulating old schema)
+        cursor.execute("""
+            CREATE TABLE trades (
+                id INTEGER PRIMARY KEY,
+                symbol TEXT,
+                side TEXT,
+                size TEXT,
+                price TEXT,
+                fee TEXT,
+                is_paper INTEGER DEFAULT 1,
+                executed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Insert some "old" data without bot_mode
+        cursor.execute("""
+            INSERT INTO trades (symbol, side, size, price, fee, is_paper)
+            VALUES ('BTC-USD', 'buy', '0.1', '50000', '1.0', 1)
+        """)
+        cursor.execute("""
+            INSERT INTO trades (symbol, side, size, price, fee, is_paper)
+            VALUES ('BTC-USD', 'sell', '0.05', '51000', '1.0', 1)
+        """)
+        conn.commit()
+
+        # Verify data exists but no bot_mode column
+        cursor.execute("SELECT * FROM trades")
+        rows = cursor.fetchall()
+        assert len(rows) == 2
+
+        # Now add bot_mode column with migration logic (simulating Database._run_migrations)
+        cursor.execute("ALTER TABLE trades ADD COLUMN bot_mode VARCHAR(20) DEFAULT 'normal' NOT NULL")
+        cursor.execute("UPDATE trades SET bot_mode = 'normal' WHERE bot_mode IS NULL OR bot_mode = ''")
+        conn.commit()
+
+        # Verify all existing rows have bot_mode='normal'
+        cursor.execute("SELECT id, bot_mode FROM trades")
+        rows = cursor.fetchall()
+        assert len(rows) == 2
+        for row in rows:
+            assert row[1] == "normal", f"Row {row[0]} should have bot_mode='normal', got '{row[1]}'"
+
+        # Verify new rows can use 'inverted' mode
+        cursor.execute("""
+            INSERT INTO trades (symbol, side, size, price, fee, is_paper, bot_mode)
+            VALUES ('BTC-USD', 'buy', '0.1', '52000', '1.0', 1, 'inverted')
+        """)
+        conn.commit()
+
+        cursor.execute("SELECT bot_mode FROM trades WHERE id = 3")
+        assert cursor.fetchone()[0] == "inverted"
+
+        conn.close()
