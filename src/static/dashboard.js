@@ -10,10 +10,27 @@ let cramerSeries = null;
 let ws = null;
 let reconnectAttempts = 0;
 let seenNotificationIds = new Set();
+let currentCandle = null;  // Track current candle's OHLC state
+let candleIntervalSeconds = 60;  // Default 1 minute, updated from config
 const MAX_RECONNECT_ATTEMPTS = 10;
 const BASE_RECONNECT_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 30000;
 const MAX_SEEN_NOTIFICATIONS = 100;  // Prevent memory leak from unbounded Set
+
+// Convert candle interval string (e.g., "1m", "5m", "1h") to seconds
+function parseIntervalToSeconds(interval) {
+    if (!interval) return 60;
+    const match = interval.match(/^(\d+)([mhd])$/i);
+    if (!match) return 60;
+    const value = parseInt(match[1], 10);
+    const unit = match[2].toLowerCase();
+    switch (unit) {
+        case 'm': return value * 60;
+        case 'h': return value * 3600;
+        case 'd': return value * 86400;
+        default: return 60;
+    }
+}
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
@@ -194,6 +211,10 @@ async function loadInitialData() {
             if (chartData.length > 0) {
                 candleSeries.setData(chartData);
 
+                // Initialize currentCandle from the last loaded candle
+                const lastCandle = chartData[chartData.length - 1];
+                currentCandle = { ...lastCandle };
+
                 // Set price line data and color based on price direction
                 const lineData = chartData.map(c => ({ time: c.time, value: c.close }));
                 priceLine.setData(lineData);
@@ -372,17 +393,30 @@ function updateDashboard(state) {
         // Don't add 'Z' - state timestamps already have timezone info (+00:00)
         const time = Math.floor(new Date(state.timestamp).getTime() / 1000);
         if (!isNaN(time) && time > 0) {
-            candleSeries.update({
-                time: time,
-                open: price,
-                high: price,
-                low: price,
-                close: price,
-            });
+            // Align timestamp to candle interval bucket
+            const candleTime = Math.floor(time / candleIntervalSeconds) * candleIntervalSeconds;
 
-            // Update price line with same data point
+            if (currentCandle && currentCandle.time === candleTime) {
+                // Same candle period - update OHLC
+                currentCandle.high = Math.max(currentCandle.high, price);
+                currentCandle.low = Math.min(currentCandle.low, price);
+                currentCandle.close = price;
+            } else {
+                // New candle period - start fresh
+                currentCandle = {
+                    time: candleTime,
+                    open: price,
+                    high: price,
+                    low: price,
+                    close: price,
+                };
+            }
+
+            candleSeries.update(currentCandle);
+
+            // Update price line
             if (priceLine) {
-                priceLine.update({ time: time, value: price });
+                priceLine.update({ time: candleTime, value: price });
             }
         }
     }
@@ -418,6 +452,9 @@ function updateBreakdownBar(id, value) {
 function updateConfig(config) {
     document.getElementById('trading-pair').textContent = config.trading_pair;
     document.getElementById('signal-threshold').textContent = `Threshold: |${config.signal_threshold}|`;
+    if (config.candle_interval) {
+        candleIntervalSeconds = parseIntervalToSeconds(config.candle_interval);
+    }
 }
 
 // Update trades table
