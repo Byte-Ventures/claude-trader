@@ -2117,11 +2117,12 @@ class TradingDaemon:
             safety_multiplier=safety_multiplier,
         )
 
-        if position.size_quote < Decimal("10"):
+        min_trade_quote = Decimal(str(self.position_sizer.config.min_trade_quote))
+        if position.size_quote < min_trade_quote:
             logger.info("buy_skipped", reason="position_too_small", size_quote=str(position.size_quote))
             self.notifier.notify_trade_rejected(
                 side="buy",
-                reason="Position too small (< $10)",
+                reason=f"Position too small (< ${min_trade_quote})",
                 price=current_price,
                 signal_score=signal_score,
                 size_quote=position.size_quote,
@@ -2841,6 +2842,10 @@ class TradingDaemon:
                 is_paper=True,
                 bot_mode=BotMode.INVERTED,
             )
+
+            # Record to Cramer Mode cooldown
+            if self.cramer_trade_cooldown:
+                self.cramer_trade_cooldown.record_trade("sell", filled_price)
 
             logger.info(
                 "cramer_trailing_stop_sell_executed",
