@@ -1685,17 +1685,17 @@ class Database:
         is_paper: bool = False,
     ) -> int:
         """
-        Record multiple OHLCV candles efficiently.
+        Record multiple OHLCV candles efficiently (upsert - insert or update).
 
         Args:
             candles: List of dicts with keys: timestamp, open, high, low, close, volume
             is_paper: Whether this is paper trading data
 
         Returns:
-            Number of new candles inserted (skips duplicates)
+            Number of candles inserted or updated
 
         Raises:
-            Exception: Re-raised if batch insert fails. The session context manager
+            Exception: Re-raised if batch operation fails. The session context manager
                       automatically handles rollback on exception, so if an error
                       occurs, NO candles from this batch will be committed.
                       This ensures atomic operation - all or nothing.
@@ -1704,6 +1704,7 @@ class Database:
             return 0
 
         inserted = 0
+        updated = 0
         try:
             with self.session() as session:
                 # Normalize timestamps to naive UTC datetime (pandas Timestamp -> datetime)
@@ -1722,9 +1723,9 @@ class Database:
 
                 candle_timestamps = [to_datetime(c["timestamp"]) for c in candles]
 
-                # Batch fetch existing timestamps in one query for performance
-                existing_timestamps = set(
-                    row[0] for row in session.query(RateHistory.timestamp)
+                # Batch fetch existing candles in one query for performance
+                existing_candles = {
+                    row.timestamp: row for row in session.query(RateHistory)
                     .filter(
                         RateHistory.symbol == symbol,
                         RateHistory.exchange == exchange,
@@ -1733,11 +1734,21 @@ class Database:
                         RateHistory.timestamp.in_(candle_timestamps),
                     )
                     .all()
-                )
+                }
 
-                # Insert only new candles (batch - flush happens at context exit)
+                # Upsert candles (insert new, update existing)
                 for candle, normalized_ts in zip(candles, candle_timestamps):
-                    if normalized_ts not in existing_timestamps:
+                    if normalized_ts in existing_candles:
+                        # Update existing candle with new OHLCV data
+                        existing = existing_candles[normalized_ts]
+                        existing.open_price = str(candle["open"])
+                        existing.high_price = str(candle["high"])
+                        existing.low_price = str(candle["low"])
+                        existing.close_price = str(candle["close"])
+                        existing.volume = str(candle["volume"])
+                        updated += 1
+                    else:
+                        # Insert new candle
                         rate = RateHistory(
                             symbol=symbol,
                             exchange=exchange,
@@ -1753,21 +1764,23 @@ class Database:
                         session.add(rate)
                         inserted += 1
 
-            if inserted > 0:
+            if inserted > 0 or updated > 0:
                 logger.info(
                     "rates_recorded",
-                    count=inserted,
+                    inserted=inserted,
+                    updated=updated,
                     symbol=symbol,
                     exchange=exchange,
                     interval=interval,
                 )
-            return inserted
+            return inserted + updated
         except Exception as e:
             logger.error(
-                "rate_bulk_insert_failed",
+                "rate_bulk_upsert_failed",
                 error=str(e),
                 count=len(candles),
                 inserted_before_error=inserted,
+                updated_before_error=updated,
             )
             raise  # Re-raise to signal failure to caller
 

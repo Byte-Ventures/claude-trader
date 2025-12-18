@@ -872,8 +872,8 @@ def test_record_rates_bulk(db):
     assert count == 5
 
 
-def test_record_rates_bulk_skip_duplicates(db):
-    """Test bulk insert skips duplicates."""
+def test_record_rates_bulk_updates_duplicates(db):
+    """Test bulk upsert updates existing candles with new OHLCV data."""
     candles = [
         {
             "timestamp": datetime(2024, 1, 1, 12, 0, 0),
@@ -886,16 +886,40 @@ def test_record_rates_bulk_skip_duplicates(db):
     ]
 
     # Insert first time
-    inserted1 = db.record_rates_bulk(candles, is_paper=False)
-    assert inserted1 == 1
+    count1 = db.record_rates_bulk(candles, is_paper=False)
+    assert count1 == 1
 
-    # Try to insert duplicate
-    inserted2 = db.record_rates_bulk(candles, is_paper=False)
-    assert inserted2 == 0  # Duplicate skipped
+    # Verify initial values
+    rates = db.get_rates(is_paper=False)
+    assert len(rates) == 1
+    assert rates[0].get_high() == Decimal("50500")
+    assert rates[0].get_close() == Decimal("50200")
+
+    # Update with new OHLCV data (simulating candle completion)
+    updated_candles = [
+        {
+            "timestamp": datetime(2024, 1, 1, 12, 0, 0),
+            "open": Decimal("50000"),
+            "high": Decimal("51000"),  # Higher high
+            "low": Decimal("49000"),   # Lower low
+            "close": Decimal("50800"),  # Different close
+            "volume": Decimal("150")    # Higher volume
+        }
+    ]
+    count2 = db.record_rates_bulk(updated_candles, is_paper=False)
+    assert count2 == 1  # Updated (not skipped)
+
+    # Verify updated values
+    rates = db.get_rates(is_paper=False)
+    assert len(rates) == 1  # Still only one candle
+    assert rates[0].get_high() == Decimal("51000")
+    assert rates[0].get_low() == Decimal("49000")
+    assert rates[0].get_close() == Decimal("50800")
+    assert rates[0].get_volume() == Decimal("150")
 
 
 def test_record_rates_bulk_partial_duplicates(db):
-    """Test bulk insert with mix of new and duplicate candles."""
+    """Test bulk upsert with mix of new and existing candles."""
     # Insert initial candles
     initial = [
         {
@@ -909,11 +933,18 @@ def test_record_rates_bulk_partial_duplicates(db):
     ]
     db.record_rates_bulk(initial, is_paper=False)
 
-    # Try to insert mix of duplicate and new
+    # Upsert mix of existing (updated) and new candles
     mixed = [
-        initial[0],  # Duplicate
         {
-            "timestamp": datetime(2024, 1, 1, 12, 1, 0),
+            "timestamp": datetime(2024, 1, 1, 12, 0, 0),  # Existing - will be updated
+            "open": Decimal("50000"),
+            "high": Decimal("50600"),  # Updated high
+            "low": Decimal("49500"),
+            "close": Decimal("50300"),  # Updated close
+            "volume": Decimal("120")
+        },
+        {
+            "timestamp": datetime(2024, 1, 1, 12, 1, 0),  # New
             "open": Decimal("50200"),
             "high": Decimal("50700"),
             "low": Decimal("50000"),
@@ -922,8 +953,16 @@ def test_record_rates_bulk_partial_duplicates(db):
         }
     ]
 
-    inserted = db.record_rates_bulk(mixed, is_paper=False)
-    assert inserted == 1  # Only new one inserted
+    count = db.record_rates_bulk(mixed, is_paper=False)
+    assert count == 2  # 1 updated + 1 inserted
+
+    # Verify we have 2 candles total
+    rates = db.get_rates(is_paper=False)
+    assert len(rates) == 2
+
+    # Verify first candle was updated
+    assert rates[0].get_high() == Decimal("50600")
+    assert rates[0].get_close() == Decimal("50300")
 
 
 def test_get_rates_with_time_filter(db):
