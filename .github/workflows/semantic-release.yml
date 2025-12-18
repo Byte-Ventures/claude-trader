@@ -157,11 +157,59 @@ jobs:
           # Wait for GitHub to process the PR
           sleep 5
 
-          # Merge the release PR directly
-          if ! gh pr merge "$BRANCH" --squash --delete-branch; then
+          # Merge the release PR directly (don't delete branch yet - cleanup at end)
+          if ! gh pr merge "$BRANCH" --squash; then
             echo "::error::Failed to merge release PR"
             echo "::notice::Manual merge required: $PR_URL"
             exit 1
           fi
 
           echo "::notice::Release PR merged: $PR_URL"
+
+          # Switch to main and poll for merge propagation
+          git checkout main
+
+          # Poll with backoff until we get the merged commit
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            git pull origin main
+            if grep -q "^__version__ = \"${VERSION}\"" src/version.py; then
+              echo "Merge propagated after $i attempt(s)"
+              break
+            fi
+            if [ "$i" -eq 10 ]; then
+              echo "::error::Main branch version mismatch after 10 attempts. Expected: ${VERSION}"
+              exit 1
+            fi
+            echo "::warning::Version mismatch, retrying in 3s... (attempt $i/10)"
+            sleep 3
+          done
+
+          # Create and push tag
+          TAG="v${VERSION}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping"
+          else
+            if ! git tag -a "$TAG" -m "Release $TAG"; then
+              echo "::error::Failed to create tag $TAG"
+              exit 1
+            fi
+            if ! git push origin "$TAG"; then
+              echo "::error::Failed to push tag $TAG"
+              exit 1
+            fi
+            echo "Created tag: $TAG"
+          fi
+
+          # Create GitHub Release
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, skipping"
+          else
+            if ! gh release create "$TAG" --title "Release $TAG" --generate-notes; then
+              echo "::error::Failed to create GitHub release $TAG"
+              exit 1
+            fi
+            echo "::notice::Created GitHub Release: $TAG"
+          fi
+
+          # Cleanup: delete the release branch
+          git push origin --delete "$BRANCH" 2>/dev/null || echo "::warning::Failed to delete branch $BRANCH"
