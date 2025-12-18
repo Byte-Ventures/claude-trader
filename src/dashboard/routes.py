@@ -8,7 +8,10 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 
 from config.settings import get_settings
-from src.version import __version__
+try:
+    from src.version import __version__
+except ImportError:
+    __version__ = "unknown"
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from src.state.database import BotMode, Database
