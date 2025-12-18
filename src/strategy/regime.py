@@ -162,34 +162,51 @@ class MarketRegime:
             self.sentiment_trend_modifiers = self.SENTIMENT_TREND_MODIFIERS
             return
 
+        # Define expected suffixes for robust parsing
+        VALID_TRENDS = ["bullish", "bearish", "neutral"]
+        VALID_SIGNALS = ["buy", "sell"]
+
         # Convert flattened keys to tuple format used internally
         # Example: "extreme_fear_bearish_buy" -> ("extreme_fear", "bearish", "buy")
         converted_modifiers = {}
         for key, value in custom_modifiers.items():
-            parts = key.rsplit("_", 1)  # Split from right: "extreme_fear_bearish" and "buy"
-            if len(parts) != 2:
+            # Parse from right to left with known suffixes
+            parsed = False
+            for signal in VALID_SIGNALS:
+                if key.endswith(f"_{signal}"):
+                    remaining = key[:-len(signal)-1]  # Remove "_signal" suffix
+                    for trend in VALID_TRENDS:
+                        if remaining.endswith(f"_{trend}"):
+                            sentiment = remaining[:-len(trend)-1]  # Remove "_trend" suffix
+                            converted_modifiers[(sentiment, trend, signal)] = value
+                            parsed = True
+                            break
+                    break
+
+            if not parsed:
                 logger.warning(
                     "invalid_sentiment_modifier_key",
                     key=key,
-                    reason="Expected format: sentiment_trend_signal"
+                    reason="Expected format: sentiment_trend_signal (e.g., 'extreme_fear_bearish_buy')"
                 )
                 continue
 
-            signal = parts[1]
-            sentiment_trend = parts[0].rsplit("_", 1)  # Split again: "extreme_fear" and "bearish"
-
-            if len(sentiment_trend) != 2:
-                logger.warning(
-                    "invalid_sentiment_modifier_key",
-                    key=key,
-                    reason="Expected format: sentiment_trend_signal"
-                )
-                continue
-
-            sentiment = sentiment_trend[0]
-            trend = sentiment_trend[1]
-
-            converted_modifiers[(sentiment, trend, signal)] = value
+        # Validate that exactly 24 keys were successfully converted
+        expected_count = 24
+        if len(converted_modifiers) != expected_count:
+            logger.error(
+                "custom_modifiers_incomplete",
+                expected=expected_count,
+                received=len(converted_modifiers),
+                missing=len(custom_modifiers) - len(converted_modifiers),
+            )
+            # Fall back to defaults on incomplete configuration
+            logger.warning(
+                "falling_back_to_default_modifiers",
+                reason="Incomplete custom modifiers configuration"
+            )
+            self.sentiment_trend_modifiers = self.SENTIMENT_TREND_MODIFIERS
+            return
 
         self.sentiment_trend_modifiers = converted_modifiers
         logger.info(

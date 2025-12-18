@@ -928,6 +928,16 @@ class Settings(BaseSettings):
             threshold_mult = modifiers["threshold_mult"]
             position_mult = modifiers["position_mult"]
 
+            # Validate types
+            if not isinstance(threshold_mult, (int, float)):
+                raise ValueError(
+                    f"sentiment_trend_modifiers[{key}].threshold_mult must be numeric, got {type(threshold_mult).__name__}"
+                )
+            if not isinstance(position_mult, (int, float)):
+                raise ValueError(
+                    f"sentiment_trend_modifiers[{key}].position_mult must be numeric, got {type(position_mult).__name__}"
+                )
+
             # Validate ranges
             if not (0.0 <= threshold_mult <= 2.0):
                 raise ValueError(

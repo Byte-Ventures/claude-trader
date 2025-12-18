@@ -1186,3 +1186,212 @@ class TestTrendAwareSentimentModifiers:
         # Bullish trend should amplify the greed effect for sells
         assert result_bullish_trend.components["sentiment"]["threshold_adj"] >= \
                result_neutral_trend.components["sentiment"]["threshold_adj"]
+
+
+# ============================================================================
+# Custom Modifiers Tests
+# ============================================================================
+
+class TestCustomModifiers:
+    """Test custom sentiment-trend modifiers configuration."""
+
+    def test_custom_modifiers_override_defaults(self):
+        """Test custom modifiers override hardcoded defaults."""
+        # Create custom modifiers with all 24 required entries
+        custom = {
+            "extreme_fear_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+        }
+
+        regime = MarketRegime(custom_modifiers=custom)
+
+        # Verify the custom value is used (all should be 1.0, 1.0)
+        assert regime.sentiment_trend_modifiers[("extreme_fear", "bearish", "buy")] == {
+            "threshold_mult": 1.0, "position_mult": 1.0
+        }
+        # Verify defaults would have been different
+        assert MarketRegime.SENTIMENT_TREND_MODIFIERS[("extreme_fear", "bearish", "buy")]["threshold_mult"] == 0.0
+
+    def test_custom_modifiers_actually_applied(self):
+        """Test custom modifiers are actually used in calculations."""
+        # Create custom modifiers that neutralize extreme_fear in bearish trends
+        custom = {
+            "extreme_fear_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},  # Full discount applied
+            "extreme_fear_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+        }
+
+        regime = MarketRegime(custom_modifiers=custom)
+
+        # Calculate with extreme fear in bearish trend
+        result = regime.calculate(
+            sentiment=FearGreedResult(value=15, classification="Extreme Fear", timestamp=None),
+            volatility="normal",
+            trend="bearish",
+            signal_action="buy",
+        )
+
+        # With threshold_mult=1.0, the full -10 discount should apply
+        assert result.components["sentiment"]["threshold_adj"] == -10
+
+        # Compare to default regime which should nullify the discount
+        default_regime = MarketRegime()
+        default_result = default_regime.calculate(
+            sentiment=FearGreedResult(value=15, classification="Extreme Fear", timestamp=None),
+            volatility="normal",
+            trend="bearish",
+            signal_action="buy",
+        )
+        # Default should nullify (threshold_mult=0.0)
+        assert default_result.components["sentiment"]["threshold_adj"] == 0
+
+    def test_incomplete_custom_modifiers_falls_back(self):
+        """Test incomplete custom modifiers fall back to defaults."""
+        # Only provide 5 entries instead of 24
+        incomplete = {
+            "extreme_fear_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+        }
+
+        regime = MarketRegime(custom_modifiers=incomplete)
+
+        # Should fall back to defaults
+        assert regime.sentiment_trend_modifiers == MarketRegime.SENTIMENT_TREND_MODIFIERS
+
+    def test_invalid_key_format_skipped(self):
+        """Test invalid key formats are skipped during parsing."""
+        # Mix valid and invalid keys
+        mixed = {
+            # Valid
+            "extreme_fear_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            # Invalid format
+            "invalid_key": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "another_bad_one": {"threshold_mult": 1.0, "position_mult": 1.0},
+            # More valid
+            "fear_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+        }
+
+        regime = MarketRegime(custom_modifiers=mixed)
+
+        # Invalid keys should be skipped, but we only have 24 valid ones so it should work
+        assert len(regime.sentiment_trend_modifiers) == 24
+
+    def test_string_parsing_handles_underscores_in_sentiment(self):
+        """Test robust parsing handles sentiment names with underscores."""
+        # Use a sentiment name with underscores
+        custom = {
+            "extreme_fear_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_fear_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "fear_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "greed_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_bearish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_bearish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_bullish_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_bullish_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_neutral_buy": {"threshold_mult": 1.0, "position_mult": 1.0},
+            "extreme_greed_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
+        }
+
+        regime = MarketRegime(custom_modifiers=custom)
+
+        # Should correctly parse extreme_fear as sentiment
+        assert ("extreme_fear", "bearish", "buy") in regime.sentiment_trend_modifiers
+        assert regime.sentiment_trend_modifiers[("extreme_fear", "bearish", "buy")] == {
+            "threshold_mult": 1.0, "position_mult": 1.0
+        }
+
+    def test_no_custom_modifiers_uses_defaults(self):
+        """Test MarketRegime without custom_modifiers uses defaults."""
+        regime = MarketRegime()
+
+        # Should use hardcoded defaults
+        assert regime.sentiment_trend_modifiers == MarketRegime.SENTIMENT_TREND_MODIFIERS
+
+    def test_none_custom_modifiers_uses_defaults(self):
+        """Test MarketRegime with custom_modifiers=None uses defaults."""
+        regime = MarketRegime(custom_modifiers=None)
+
+        # Should use hardcoded defaults
+        assert regime.sentiment_trend_modifiers == MarketRegime.SENTIMENT_TREND_MODIFIERS
