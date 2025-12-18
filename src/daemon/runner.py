@@ -2663,16 +2663,15 @@ class TradingDaemon:
                 self.db.increment_daily_trade_count(is_paper=True, bot_mode=BotMode.INVERTED)
 
                 # Create trailing stop for Cramer Mode
-                self.db.create_trailing_stop(
-                    symbol=self.settings.trading_pair,
-                    side="buy",
-                    entry_price=filled_price,
-                    trailing_activation=position.trailing_activation,
-                    trailing_distance=position.trailing_distance,
+                take_profit_price = position.take_profit_price if (self.settings.enable_take_profit and position.take_profit_price) else None
+                self._create_trailing_stop(
+                    filled_price,
+                    candles,
                     is_paper=True,
+                    avg_cost=new_avg_cost,
+                    volatility=self._last_volatility,
+                    take_profit_price=take_profit_price,
                     bot_mode=BotMode.INVERTED,
-                    hard_stop=position.stop_loss_price,
-                    take_profit_price=position.take_profit_price,
                 )
 
                 logger.info(
@@ -3381,6 +3380,7 @@ class TradingDaemon:
         avg_cost: Decimal,
         volatility: str = "normal",
         take_profit_price: Optional[Decimal] = None,
+        bot_mode: BotMode = BotMode.NORMAL,
     ) -> None:
         """Create or update trailing stop for a position.
 
@@ -3451,7 +3451,7 @@ class TradingDaemon:
             # If so, UPDATE the existing stop in-place to avoid any window
             # where the position is unprotected during the transition
             existing_stop = self.db.get_active_trailing_stop(
-                symbol=self.settings.trading_pair, is_paper=is_paper, bot_mode=BotMode.NORMAL
+                symbol=self.settings.trading_pair, is_paper=is_paper, bot_mode=bot_mode
             )
 
             if existing_stop:
@@ -3468,7 +3468,7 @@ class TradingDaemon:
                     hard_stop=hard_stop,
                     take_profit_price=take_profit_price,
                     is_paper=is_paper,
-                    bot_mode=BotMode.NORMAL,
+                    bot_mode=bot_mode,
                 )
                 logger.info(
                     "trailing_stop_updated_dca",
@@ -3490,7 +3490,7 @@ class TradingDaemon:
                     is_paper=is_paper,
                     hard_stop=hard_stop,
                     take_profit_price=take_profit_price,
-                    bot_mode=BotMode.NORMAL,
+                    bot_mode=bot_mode,
                 )
                 logger.info(
                     "trailing_stop_created",

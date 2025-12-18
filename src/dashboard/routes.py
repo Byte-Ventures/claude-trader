@@ -307,9 +307,25 @@ async def get_performance(
                 "date": str(s.date),
                 "starting_balance": s.starting_balance or "0",
                 "ending_balance": s.ending_balance or "0",
+                "starting_price": s.starting_price or "0",
+                "ending_price": s.ending_price or "0",
                 "realized_pnl": s.realized_pnl or "0",
             }
             for s in cramer_stats
         ]
+
+        # Warn if date ranges don't align (Cramer Mode may have started mid-period)
+        if cramer_stats and normal_stats:
+            normal_dates = {str(s.date) for s in normal_stats}
+            cramer_dates = {str(s.date) for s in cramer_stats}
+            if normal_dates != cramer_dates:
+                import structlog
+                logger = structlog.get_logger(__name__)
+                logger.warning(
+                    "performance_date_mismatch",
+                    normal_days=len(normal_dates),
+                    cramer_days=len(cramer_dates),
+                    days_requested=days,
+                )
 
     return result
