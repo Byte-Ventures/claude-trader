@@ -99,6 +99,17 @@ class MarketRegime:
         ("fear", "bearish", "sell"): {"threshold_mult": 0.85, "position_mult": 0.9},  # Cautious selling
         ("fear", "neutral", "sell"): {"threshold_mult": 0.7, "position_mult": 0.95},  # Reduce fear-driven selling
         # ====================================================================
+        # NEUTRAL SENTIMENT
+        # ====================================================================
+        # BUY signals
+        ("neutral", "bullish", "buy"): {"threshold_mult": 1.0, "position_mult": 1.0},  # Standard conditions
+        ("neutral", "bearish", "buy"): {"threshold_mult": 1.0, "position_mult": 1.0},  # Standard conditions
+        ("neutral", "neutral", "buy"): {"threshold_mult": 1.0, "position_mult": 1.0},  # Standard conditions
+        # SELL signals
+        ("neutral", "bullish", "sell"): {"threshold_mult": 1.0, "position_mult": 1.0},  # Standard conditions
+        ("neutral", "bearish", "sell"): {"threshold_mult": 1.0, "position_mult": 1.0},  # Standard conditions
+        ("neutral", "neutral", "sell"): {"threshold_mult": 1.0, "position_mult": 1.0},  # Standard conditions
+        # ====================================================================
         # GREED (non-extreme)
         # ====================================================================
         # BUY signals
@@ -137,9 +148,83 @@ class MarketRegime:
         "bearish": {"buy_threshold": 5, "sell_threshold": -5},
     }
 
-    def __init__(self, config: Optional[RegimeConfig] = None):
-        """Initialize with optional configuration."""
+    def __init__(self, config: Optional[RegimeConfig] = None, custom_modifiers: Optional[dict] = None):
+        """
+        Initialize with optional configuration.
+
+        Args:
+            config: Regime adaptation configuration
+            custom_modifiers: Custom sentiment-trend modifiers (overrides hardcoded defaults)
+                Format: {"sentiment_trend_signal": {"threshold_mult": float, "position_mult": float}}
+                Example: {"extreme_fear_bearish_buy": {"threshold_mult": 0.0, "position_mult": 0.7}}
+        """
         self.config = config or RegimeConfig()
+        self._load_modifiers(custom_modifiers)
+
+    def _load_modifiers(self, custom_modifiers: Optional[dict] = None) -> None:
+        """
+        Load sentiment-trend modifiers from custom config or use defaults.
+
+        Args:
+            custom_modifiers: Custom modifiers dict with flattened keys
+        """
+        if custom_modifiers is None:
+            # Use hardcoded defaults
+            self.sentiment_trend_modifiers = self.SENTIMENT_TREND_MODIFIERS
+            return
+
+        # Define expected suffixes for robust parsing
+        VALID_TRENDS = ["bullish", "bearish", "neutral"]
+        VALID_SIGNALS = ["buy", "sell"]
+
+        # Convert flattened keys to tuple format used internally
+        # Example: "extreme_fear_bearish_buy" -> ("extreme_fear", "bearish", "buy")
+        converted_modifiers = {}
+        for key, value in custom_modifiers.items():
+            # Parse from right to left with known suffixes
+            parsed = False
+            for signal in VALID_SIGNALS:
+                if key.endswith(f"_{signal}"):
+                    remaining = key[:-len(signal)-1]  # Remove "_signal" suffix
+                    for trend in VALID_TRENDS:
+                        if remaining.endswith(f"_{trend}"):
+                            sentiment = remaining[:-len(trend)-1]  # Remove "_trend" suffix
+                            converted_modifiers[(sentiment, trend, signal)] = value
+                            parsed = True
+                            break
+                    break
+
+            if not parsed:
+                logger.warning(
+                    "invalid_sentiment_modifier_key",
+                    key=key,
+                    reason="Expected format: sentiment_trend_signal (e.g., 'extreme_fear_bearish_buy')"
+                )
+                continue
+
+        # Validate that exactly 30 keys were successfully converted
+        expected_count = 30
+        if len(converted_modifiers) != expected_count:
+            logger.error(
+                "custom_modifiers_incomplete",
+                expected=expected_count,
+                received=len(converted_modifiers),
+                missing=len(custom_modifiers) - len(converted_modifiers),
+            )
+            # Fall back to defaults on incomplete configuration
+            logger.warning(
+                "falling_back_to_default_modifiers",
+                reason="Incomplete custom modifiers configuration"
+            )
+            self.sentiment_trend_modifiers = self.SENTIMENT_TREND_MODIFIERS
+            return
+
+        self.sentiment_trend_modifiers = converted_modifiers
+        logger.info(
+            "loaded_custom_sentiment_modifiers",
+            count=len(converted_modifiers),
+            keys=sorted(custom_modifiers.keys())[:5]  # Log first 5 keys as sample
+        )
 
     def _classify_sentiment(self, value: int) -> str:
         """Classify Fear & Greed value into category."""
@@ -201,7 +286,7 @@ class MarketRegime:
             # Key principle: fear in downtrend is justified (not opportunity),
             # greed in uptrend is momentum (not necessarily overbought)
             modifier_key = (sentiment_category, trend, signal_action)
-            modifier = self.SENTIMENT_TREND_MODIFIERS.get(
+            modifier = self.sentiment_trend_modifiers.get(
                 modifier_key,
                 {"threshold_mult": 1.0, "position_mult": 1.0}  # Default: no modification
             )
