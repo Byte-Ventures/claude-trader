@@ -635,11 +635,16 @@ function updatePerformanceChart(data) {
             if (cramerDataPoints.length > 0) {
                 cramerSeries.setData(cramerDataPoints);
                 cramerSeries.applyOptions({ visible: true });
+                // Show Cramer legend
+                const cramerLegend = document.getElementById('cramer-legend');
+                if (cramerLegend) cramerLegend.style.display = 'flex';
             }
         }
     } else if (cramerSeries) {
-        // Hide Cramer series if no data
+        // Hide Cramer series and legend if no data
         cramerSeries.applyOptions({ visible: false });
+        const cramerLegend = document.getElementById('cramer-legend');
+        if (cramerLegend) cramerLegend.style.display = 'none';
     }
 
     // Fit chart to show all data points properly

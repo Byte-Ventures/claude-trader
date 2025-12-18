@@ -1070,6 +1070,20 @@ class TradingDaemon:
                 is_paper=self.settings.is_paper_trading,
             )
 
+            # Initialize Cramer Mode daily stats if enabled
+            if self.cramer_client and self.settings.enable_cramer_mode:
+                cramer_portfolio_value = self._get_cramer_portfolio_value()
+                self.db.update_daily_stats(
+                    starting_balance=cramer_portfolio_value,
+                    starting_price=starting_price,
+                    is_paper=True,  # Cramer Mode is paper-only
+                    bot_mode=BotMode.INVERTED,
+                )
+                logger.info(
+                    "cramer_daily_stats_initialized",
+                    starting_balance=str(cramer_portfolio_value),
+                )
+
             # Send startup notification
             mode = "PAPER" if self.settings.is_paper_trading else "LIVE"
             self.notifier.notify_startup(mode, portfolio_value, exchange=self.exchange_name)
@@ -2650,6 +2664,15 @@ class TradingDaemon:
                 # Update Cramer cooldown
                 if self.cramer_trade_cooldown:
                     self.cramer_trade_cooldown.record_trade("buy", filled_price)
+
+                # Update Cramer Mode daily stats with new ending balance
+                cramer_ending_balance = self._get_cramer_portfolio_value()
+                self.db.update_daily_stats(
+                    ending_balance=cramer_ending_balance,
+                    ending_price=current_price,
+                    is_paper=True,
+                    bot_mode=BotMode.INVERTED,
+                )
             else:
                 logger.warning("cramer_buy_failed", error=result.error)
 
@@ -2753,6 +2776,15 @@ class TradingDaemon:
                 # Update Cramer cooldown
                 if self.cramer_trade_cooldown:
                     self.cramer_trade_cooldown.record_trade("sell", filled_price)
+
+                # Update Cramer Mode daily stats with new ending balance
+                cramer_ending_balance = self._get_cramer_portfolio_value()
+                self.db.update_daily_stats(
+                    ending_balance=cramer_ending_balance,
+                    ending_price=current_price,
+                    is_paper=True,
+                    bot_mode=BotMode.INVERTED,
+                )
             else:
                 logger.warning("cramer_sell_failed", error=result.error)
 
@@ -2842,6 +2874,15 @@ class TradingDaemon:
                 price=str(filled_price),
                 fee=str(result.fee),
                 realized_pnl=str(realized_pnl),
+            )
+
+            # Update Cramer Mode daily stats with new ending balance
+            cramer_ending_balance = self._get_cramer_portfolio_value()
+            self.db.update_daily_stats(
+                ending_balance=cramer_ending_balance,
+                ending_price=current_price,
+                is_paper=True,
+                bot_mode=BotMode.INVERTED,
             )
         else:
             logger.warning("cramer_trailing_stop_sell_failed", error=result.error)
@@ -2952,6 +2993,18 @@ class TradingDaemon:
         """Get total portfolio value in quote currency."""
         base_balance = self.client.get_balance(self._base_currency).available
         quote_balance = self.client.get_balance(self._quote_currency).available
+        current_price = self.client.get_current_price(self.settings.trading_pair)
+
+        base_value = base_balance * current_price
+        return quote_balance + base_value
+
+    def _get_cramer_portfolio_value(self) -> Decimal:
+        """Get Cramer Mode total portfolio value in quote currency."""
+        if not self.cramer_client:
+            return Decimal("0")
+
+        base_balance = self.cramer_client.get_balance(self._base_currency).available
+        quote_balance = self.cramer_client.get_balance(self._quote_currency).available
         current_price = self.client.get_current_price(self.settings.trading_pair)
 
         base_value = base_balance * current_price
@@ -3837,6 +3890,16 @@ class TradingDaemon:
                 ending_price=ending_price,
                 is_paper=self.settings.is_paper_trading,
             )
+
+            # Save Cramer Mode final state if enabled
+            if self.cramer_client and self.settings.enable_cramer_mode:
+                cramer_portfolio_value = self._get_cramer_portfolio_value()
+                self.db.update_daily_stats(
+                    ending_balance=cramer_portfolio_value,
+                    ending_price=ending_price,
+                    is_paper=True,
+                    bot_mode=BotMode.INVERTED,
+                )
         except Exception as e:
             logger.error("shutdown_state_save_failed", error=str(e))
 
