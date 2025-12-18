@@ -651,6 +651,12 @@ This software is provided for **educational and experimental purposes only**. By
 
 This is an experimental project. If you choose to use it with real money, you do so entirely at your own risk.
 
+## FAQ
+
+**Q: HuRr dUrr now you just gotta program it to do the opposite you'll be rich**
+
+A: Way ahead of you. The Cramer portfolio does exactly that - sells when paper bot buys, and vice versa.
+
 ## Contributing
 
 1. Fork the repository
