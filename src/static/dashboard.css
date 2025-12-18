@@ -578,6 +578,30 @@ footer {
     background-color: var(--accent-red);
 }
 
+/* Cramer Mode Styles */
+.cramer-card {
+    border-color: var(--accent-red);
+}
+
+.cramer-card h3 {
+    color: var(--accent-red);
+}
+
+.trade-mode {
+    display: inline-block;
+    font-size: 0.625rem;
+    padding: 0.125rem 0.375rem;
+    border-radius: 9999px;
+    font-weight: 600;
+    text-transform: uppercase;
+    margin-left: 0.5rem;
+}
+
+.trade-mode.cramer {
+    background-color: var(--accent-red);
+    color: white;
+}
+
 @media (max-width: 1200px) {
     .metrics-section {
         grid-template-columns: repeat(3, 1fr);

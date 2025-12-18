@@ -1706,6 +1706,7 @@ class TradingDaemon:
                 "portfolio_value": str(portfolio_value),
                 "position_percent": position_percent,
             },
+            "cramer_portfolio": self._get_cramer_portfolio_info(current_price) if self.cramer_client else None,
             "regime": regime.regime_name,
             "weight_profile": {
                 "name": self._last_weight_profile,
@@ -3010,6 +3011,26 @@ class TradingDaemon:
 
         base_value = base_balance * current_price
         return quote_balance + base_value
+
+    def _get_cramer_portfolio_info(self, current_price: Decimal) -> Optional[dict]:
+        """Get Cramer Mode portfolio info for dashboard display."""
+        if not self.cramer_client:
+            return None
+
+        base_balance = self.cramer_client.get_balance(self._base_currency).available
+        quote_balance = self.cramer_client.get_balance(self._quote_currency).available
+        base_value = base_balance * current_price
+        portfolio_value = quote_balance + base_value
+
+        # Calculate position percent (how much is in BTC)
+        position_percent = float(base_value / portfolio_value * 100) if portfolio_value > 0 else 0.0
+
+        return {
+            "quote_balance": str(quote_balance),
+            "base_balance": str(base_balance),
+            "portfolio_value": str(portfolio_value),
+            "position_percent": position_percent,
+        }
 
     def _check_daily_report(self) -> None:
         """Check if we should generate daily performance report (UTC)."""
