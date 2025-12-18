@@ -1215,6 +1215,12 @@ class TradingDaemon:
         # Cramer Mode is for strategy comparison only - it should NOT trigger
         # kill switch, circuit breaker, or loss limiter independently.
         # Only normal bot's performance affects safety thresholds.
+        #
+        # WHY Cramer Mode doesn't update loss_limiter:
+        # 1. Purpose: Compare strategy performance, not add to risk exposure
+        # 2. If Cramer loses money, we don't want to halt normal bot trading
+        # 3. Paper trading only - no real financial impact from Cramer losses
+        # 4. Cramer PnL is tracked separately in database for analysis
         self.validator.update_balances(base_balance, quote_balance, current_price)
 
         # Log warning if both bots have positions simultaneously (for visibility)
@@ -2515,6 +2521,22 @@ class TradingDaemon:
                 new_quote = self.cramer_client.get_balance(self._quote_currency).available
                 new_base = self.cramer_client.get_balance(self._base_currency).available
 
+                # Verify balance consistency BEFORE DB writes (defensive check)
+                # If mismatch detected, skip all DB operations to preserve data integrity
+                actual_quote = self.cramer_client.get_balance(self._quote_currency).available
+                actual_base = self.cramer_client.get_balance(self._base_currency).available
+                if actual_quote != new_quote or actual_base != new_base:
+                    logger.error(
+                        "cramer_balance_mismatch",
+                        expected_quote=str(new_quote),
+                        actual_quote=str(actual_quote),
+                        expected_base=str(new_base),
+                        actual_base=str(actual_base),
+                    )
+                    logger.warning("cramer_mode_disabled_due_to_mismatch")
+                    self._cramer_mode_disabled = True
+                    return
+
                 # Update Cramer Mode position
                 new_avg_cost = self._update_position_after_buy(
                     result.size, filled_price, result.fee,
@@ -2555,21 +2577,6 @@ class TradingDaemon:
                     price=str(filled_price),
                     fee=str(result.fee),
                 )
-
-                # Verify balance consistency (defensive check)
-                actual_quote = self.cramer_client.get_balance(self._quote_currency).available
-                actual_base = self.cramer_client.get_balance(self._base_currency).available
-                if actual_quote != new_quote or actual_base != new_base:
-                    logger.error(
-                        "cramer_balance_mismatch",
-                        expected_quote=str(new_quote),
-                        actual_quote=str(actual_quote),
-                        expected_base=str(new_base),
-                        actual_base=str(actual_base),
-                    )
-                    logger.warning("cramer_mode_disabled_due_to_mismatch")
-                    self._cramer_mode_disabled = True
-                    return
             else:
                 logger.warning("cramer_buy_failed", error=result.error)
 
@@ -2612,6 +2619,22 @@ class TradingDaemon:
                 new_quote = self.cramer_client.get_balance(self._quote_currency).available
                 new_base = self.cramer_client.get_balance(self._base_currency).available
 
+                # Verify balance consistency BEFORE DB writes (defensive check)
+                # If mismatch detected, skip all DB operations to preserve data integrity
+                actual_quote = self.cramer_client.get_balance(self._quote_currency).available
+                actual_base = self.cramer_client.get_balance(self._base_currency).available
+                if actual_quote != new_quote or actual_base != new_base:
+                    logger.error(
+                        "cramer_balance_mismatch",
+                        expected_quote=str(new_quote),
+                        actual_quote=str(actual_quote),
+                        expected_base=str(new_base),
+                        actual_base=str(actual_base),
+                    )
+                    logger.warning("cramer_mode_disabled_due_to_mismatch")
+                    self._cramer_mode_disabled = True
+                    return
+
                 # Calculate realized P&L for Cramer Mode
                 realized_pnl = self._calculate_realized_pnl(
                     result.size, filled_price, result.fee,
@@ -2646,21 +2669,6 @@ class TradingDaemon:
                     fee=str(result.fee),
                     realized_pnl=str(realized_pnl),
                 )
-
-                # Verify balance consistency (defensive check)
-                actual_quote = self.cramer_client.get_balance(self._quote_currency).available
-                actual_base = self.cramer_client.get_balance(self._base_currency).available
-                if actual_quote != new_quote or actual_base != new_base:
-                    logger.error(
-                        "cramer_balance_mismatch",
-                        expected_quote=str(new_quote),
-                        actual_quote=str(actual_quote),
-                        expected_base=str(new_base),
-                        actual_base=str(actual_base),
-                    )
-                    logger.warning("cramer_mode_disabled_due_to_mismatch")
-                    self._cramer_mode_disabled = True
-                    return
             else:
                 logger.warning("cramer_sell_failed", error=result.error)
 
@@ -2694,6 +2702,22 @@ class TradingDaemon:
             # Get new balances
             new_quote = self.cramer_client.get_balance(self._quote_currency).available
             new_base = self.cramer_client.get_balance(self._base_currency).available
+
+            # Verify balance consistency BEFORE DB writes (defensive check)
+            # If mismatch detected, skip all DB operations to preserve data integrity
+            actual_quote = self.cramer_client.get_balance(self._quote_currency).available
+            actual_base = self.cramer_client.get_balance(self._base_currency).available
+            if actual_quote != new_quote or actual_base != new_base:
+                logger.error(
+                    "cramer_balance_mismatch",
+                    expected_quote=str(new_quote),
+                    actual_quote=str(actual_quote),
+                    expected_base=str(new_base),
+                    actual_base=str(actual_base),
+                )
+                logger.warning("cramer_mode_disabled_due_to_mismatch")
+                self._cramer_mode_disabled = True
+                return
 
             # Calculate realized P&L
             realized_pnl = self._calculate_realized_pnl(
@@ -2731,21 +2755,6 @@ class TradingDaemon:
                 fee=str(result.fee),
                 realized_pnl=str(realized_pnl),
             )
-
-            # Verify balance consistency (defensive check)
-            actual_quote = self.cramer_client.get_balance(self._quote_currency).available
-            actual_base = self.cramer_client.get_balance(self._base_currency).available
-            if actual_quote != new_quote or actual_base != new_base:
-                logger.error(
-                    "cramer_balance_mismatch",
-                    expected_quote=str(new_quote),
-                    actual_quote=str(actual_quote),
-                    expected_base=str(new_base),
-                    actual_base=str(actual_base),
-                )
-                logger.warning("cramer_mode_disabled_due_to_mismatch")
-                self._cramer_mode_disabled = True
-                return
         else:
             logger.warning("cramer_trailing_stop_sell_failed", error=result.error)
 

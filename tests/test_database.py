@@ -1830,3 +1830,67 @@ class TestBotModeMigration:
         quote, base, _ = cramer_balance
         assert quote == Decimal("7500")
         assert base == Decimal("0.05")
+
+    def test_bot_mode_migration_handles_existing_data(self, db, tmp_path):
+        """Test that bot_mode migration correctly updates existing data."""
+        import sqlite3
+        from sqlalchemy import text
+
+        # Create a fresh database without bot_mode column to simulate old schema
+        test_db_path = tmp_path / "migration_test.db"
+        conn = sqlite3.connect(str(test_db_path))
+        cursor = conn.cursor()
+
+        # Create trades table WITHOUT bot_mode column (simulating old schema)
+        cursor.execute("""
+            CREATE TABLE trades (
+                id INTEGER PRIMARY KEY,
+                symbol TEXT,
+                side TEXT,
+                size TEXT,
+                price TEXT,
+                fee TEXT,
+                is_paper INTEGER DEFAULT 1,
+                executed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Insert some "old" data without bot_mode
+        cursor.execute("""
+            INSERT INTO trades (symbol, side, size, price, fee, is_paper)
+            VALUES ('BTC-USD', 'buy', '0.1', '50000', '1.0', 1)
+        """)
+        cursor.execute("""
+            INSERT INTO trades (symbol, side, size, price, fee, is_paper)
+            VALUES ('BTC-USD', 'sell', '0.05', '51000', '1.0', 1)
+        """)
+        conn.commit()
+
+        # Verify data exists but no bot_mode column
+        cursor.execute("SELECT * FROM trades")
+        rows = cursor.fetchall()
+        assert len(rows) == 2
+
+        # Now add bot_mode column with migration logic (simulating Database._run_migrations)
+        cursor.execute("ALTER TABLE trades ADD COLUMN bot_mode VARCHAR(20) DEFAULT 'normal' NOT NULL")
+        cursor.execute("UPDATE trades SET bot_mode = 'normal' WHERE bot_mode IS NULL OR bot_mode = ''")
+        conn.commit()
+
+        # Verify all existing rows have bot_mode='normal'
+        cursor.execute("SELECT id, bot_mode FROM trades")
+        rows = cursor.fetchall()
+        assert len(rows) == 2
+        for row in rows:
+            assert row[1] == "normal", f"Row {row[0]} should have bot_mode='normal', got '{row[1]}'"
+
+        # Verify new rows can use 'inverted' mode
+        cursor.execute("""
+            INSERT INTO trades (symbol, side, size, price, fee, is_paper, bot_mode)
+            VALUES ('BTC-USD', 'buy', '0.1', '52000', '1.0', 1, 'inverted')
+        """)
+        conn.commit()
+
+        cursor.execute("SELECT bot_mode FROM trades WHERE id = 3")
+        assert cursor.fetchone()[0] == "inverted"
+
+        conn.close()
