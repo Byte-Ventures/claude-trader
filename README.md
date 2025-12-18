@@ -299,6 +299,8 @@ Both bots have identical risk management: same balance constraints and independe
 - Both positions tracked separately with `bot_mode` column in database
 - Compare performance: if Cramer Mode consistently wins, consider inverting your strategy
 
+> **⚠️ Important:** Enable Cramer Mode when the normal bot has **no open positions**. Otherwise, the comparison starts unfairly (one bot has a position, the other doesn't). A warning will be logged if this situation is detected.
+
 **Use case:** Validate whether your trading signals have predictive value. If Cramer Mode performs better over time, your signals may be systematically wrong.
 
 ### Indicator Parameters
