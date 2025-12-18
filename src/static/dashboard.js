@@ -21,6 +21,7 @@ const MAX_SEEN_NOTIFICATIONS = 100;  // Prevent memory leak from unbounded Set
 // Backend sends formats like "ONE_MINUTE", "FIFTEEN_MINUTE", "ONE_HOUR"
 function parseIntervalToSeconds(interval) {
     if (!interval) return 60;
+    // Handle both backend format (ONE_MINUTE) and short format (1m)
     const intervalMap = {
         'ONE_MINUTE': 60,
         'FIVE_MINUTE': 300,
@@ -30,6 +31,14 @@ function parseIntervalToSeconds(interval) {
         'TWO_HOUR': 7200,
         'SIX_HOUR': 21600,
         'ONE_DAY': 86400,
+        '1m': 60,
+        '5m': 300,
+        '15m': 900,
+        '30m': 1800,
+        '1h': 3600,
+        '2h': 7200,
+        '6h': 21600,
+        '1d': 86400,
     };
     return intervalMap[interval] || 60;
 }
@@ -404,8 +413,9 @@ function updateDashboard(state) {
                 currentCandle.high = Math.max(currentCandle.high, price);
                 currentCandle.low = Math.min(currentCandle.low, price);
                 currentCandle.close = price;
-            } else {
-                // New candle period - start fresh
+                candleSeries.update(currentCandle);
+            } else if (!currentCandle || candleTime > currentCandle.time) {
+                // New candle period (must be newer) - start fresh
                 currentCandle = {
                     time: candleTime,
                     open: price,
@@ -413,13 +423,15 @@ function updateDashboard(state) {
                     low: price,
                     close: price,
                 };
+                candleSeries.update(currentCandle);
+            } else {
+                // candleTime < currentCandle.time - skip stale update to avoid chart error
+                console.warn(`Skipping stale candle update: new=${candleTime} (${new Date(candleTime * 1000).toISOString()}), current=${currentCandle.time} (${new Date(currentCandle.time * 1000).toISOString()}), interval=${candleIntervalSeconds}s`);
             }
 
-            candleSeries.update(currentCandle);
-
-            // Update price line
-            if (priceLine) {
-                priceLine.update({ time: candleTime, value: price });
+            // Update price line (only if we updated the candle)
+            if (priceLine && currentCandle && candleTime >= currentCandle.time) {
+                priceLine.update({ time: currentCandle.time, value: price });
             }
         }
     }
