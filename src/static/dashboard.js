@@ -579,13 +579,14 @@ function updatePerformanceChart(data) {
     if (!performanceChart || !data) return;
 
     // Handle both old format (array) and new format (object with normal/cramer)
-    const normalData = Array.isArray(data) ? data : data.normal;
+    const normalData = Array.isArray(data) ? data : (data.normal || []);
     const cramerData = Array.isArray(data) ? null : data.cramer;
 
     if (!normalData || normalData.length === 0) return;
 
     // Calculate cumulative returns (use ending values consistently)
     const firstDay = normalData[0];
+    if (!firstDay) return;
     const startBalance = parseFloat(firstDay.ending_balance) || parseFloat(firstDay.starting_balance);
     const startPrice = parseFloat(firstDay.ending_price) || parseFloat(firstDay.starting_price);
 
