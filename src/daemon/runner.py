@@ -1211,6 +1211,19 @@ class TradingDaemon:
         # Only normal bot's performance affects safety thresholds.
         self.validator.update_balances(base_balance, quote_balance, current_price)
 
+        # Log warning if both bots have positions simultaneously (for visibility)
+        if self.cramer_client:
+            cramer_base = self.cramer_client.get_balance(self._base_currency).available
+            if base_balance > Decimal("0") and cramer_base > Decimal("0"):
+                total_exposure = (base_balance + cramer_base) * current_price
+                logger.info(
+                    "dual_bot_position_exposure",
+                    normal_base=str(base_balance),
+                    cramer_base=str(cramer_base),
+                    total_exposure_usd=str(total_exposure),
+                    msg="Both bots have open positions - paper trading only",
+                )
+
         # Check BOTH trailing stops before executing either (avoid race condition)
         # We must check both BEFORE executing either because normal bot may return early,
         # which would skip Cramer Mode's trailing stop check if done sequentially.
@@ -2443,7 +2456,7 @@ class TradingDaemon:
         cramer_quote_balance = self.cramer_client.get_balance(self._quote_currency).available
         cramer_base_balance = self.cramer_client.get_balance(self._base_currency).available
 
-        logger.info(
+        logger.debug(
             "cramer_trade_attempt",
             side=side,
             quote_balance=str(cramer_quote_balance),
