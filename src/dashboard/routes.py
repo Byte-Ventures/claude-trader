@@ -1,5 +1,6 @@
 """REST API routes for dashboard."""
 
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -165,7 +166,8 @@ async def get_trades(
         all_trades.extend(cramer_trades)
 
     # Sort by executed_at descending and limit total
-    all_trades.sort(key=lambda t: t.executed_at or "", reverse=True)
+    min_datetime = datetime.min.replace(tzinfo=timezone.utc)
+    all_trades.sort(key=lambda t: t.executed_at or min_datetime, reverse=True)
     all_trades = all_trades[:limit]
 
     return [
@@ -177,7 +179,7 @@ async def get_trades(
             fee=t.fee or "0",
             realized_pnl=t.realized_pnl,
             executed_at=t.executed_at.isoformat() if t.executed_at else "",
-            bot_mode=t.bot_mode if hasattr(t, 'bot_mode') else "normal",
+            bot_mode=t.bot_mode,
         )
         for t in all_trades
     ]

@@ -3017,20 +3017,24 @@ class TradingDaemon:
         if not self.cramer_client:
             return None
 
-        base_balance = self.cramer_client.get_balance(self._base_currency).available
-        quote_balance = self.cramer_client.get_balance(self._quote_currency).available
-        base_value = base_balance * current_price
-        portfolio_value = quote_balance + base_value
+        try:
+            base_balance = self.cramer_client.get_balance(self._base_currency).available
+            quote_balance = self.cramer_client.get_balance(self._quote_currency).available
+            base_value = base_balance * current_price
+            portfolio_value = quote_balance + base_value
 
-        # Calculate position percent (how much is in BTC)
-        position_percent = float(base_value / portfolio_value * 100) if portfolio_value > 0 else 0.0
+            # Calculate position percent (how much is in BTC)
+            position_percent = float(base_value / portfolio_value * 100) if portfolio_value > 0 else 0.0
 
-        return {
-            "quote_balance": str(quote_balance),
-            "base_balance": str(base_balance),
-            "portfolio_value": str(portfolio_value),
-            "position_percent": position_percent,
-        }
+            return {
+                "quote_balance": str(quote_balance),
+                "base_balance": str(base_balance),
+                "portfolio_value": str(portfolio_value),
+                "position_percent": position_percent,
+            }
+        except Exception as e:
+            logger.warning("cramer_portfolio_fetch_error", error=str(e))
+            return None
 
     def _check_daily_report(self) -> None:
         """Check if we should generate daily performance report (UTC)."""
