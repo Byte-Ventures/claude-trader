@@ -135,6 +135,11 @@ class TradingDaemon:
         self._base_currency = pair_parts[0]
         self._quote_currency = pair_parts[1]
 
+        # Validate Cramer Mode configuration (must be paper trading only)
+        if settings.enable_cramer_mode and not settings.is_paper_trading:
+            logger.error("cramer_mode_requires_paper_trading")
+            raise ValueError("Cramer Mode can only be enabled in paper trading mode")
+
         # Initialize trading client (paper or live)
         self.client: Union[ExchangeClient, PaperTradingClient]
         if settings.is_paper_trading:
@@ -164,38 +169,35 @@ class TradingDaemon:
             )
             logger.info("using_paper_trading_client")
 
-            # Initialize Cramer Mode client if enabled (paper mode only)
+            # Initialize Cramer Mode client if enabled
             self.cramer_client: Optional[PaperTradingClient] = None
             if settings.enable_cramer_mode:
-                if not settings.is_paper_trading:
-                    logger.error("cramer_mode_requires_paper_trading")
-                    raise ValueError("Cramer Mode can only be enabled in paper trading mode")
                 # Try to restore Cramer Mode balance from database
                 cramer_balance = self.db.get_last_paper_balance(settings.trading_pair, bot_mode="inverted")
                 if cramer_balance:
-                    anti_quote, anti_base, _ = cramer_balance
+                    cramer_quote, cramer_base, _ = cramer_balance
                     logger.info(
                         "cramer_balance_restored_from_db",
-                        quote=str(anti_quote),
-                        base=str(anti_base),
+                        quote=str(cramer_quote),
+                        base=str(cramer_base),
                     )
                 else:
                     # On first startup, copy balance from normal bot
-                    anti_quote = initial_quote
-                    anti_base = initial_base
+                    cramer_quote = initial_quote
+                    cramer_base = initial_base
                     logger.info(
                         "cramer_balance_copied_from_normal",
-                        quote=str(anti_quote),
-                        base=str(anti_base),
+                        quote=str(cramer_quote),
+                        base=str(cramer_base),
                     )
 
                 self.cramer_client = PaperTradingClient(
                     real_client=self.real_client,
-                    initial_quote=float(anti_quote),
-                    initial_base=float(anti_base),
+                    initial_quote=float(cramer_quote),
+                    initial_base=float(cramer_base),
                     trading_pair=settings.trading_pair,
                 )
-                logger.info("anti_bot_enabled", mode="inverted")
+                logger.info("cramer_mode_enabled", mode="inverted")
         else:
             self.client = self.real_client
             self.cramer_client = None
@@ -2419,19 +2421,19 @@ class TradingDaemon:
             return
 
         # Get Cramer Mode balances
-        anti_quote_balance = self.cramer_client.get_balance(self._quote_currency).available
-        anti_base_balance = self.cramer_client.get_balance(self._base_currency).available
+        cramer_quote_balance = self.cramer_client.get_balance(self._quote_currency).available
+        cramer_base_balance = self.cramer_client.get_balance(self._base_currency).available
 
         logger.info(
             "cramer_trade_attempt",
             side=side,
-            quote_balance=str(anti_quote_balance),
-            base_balance=str(anti_base_balance),
+            quote_balance=str(cramer_quote_balance),
+            base_balance=str(cramer_base_balance),
         )
 
         if side == "buy":
             # Check if Cramer Mode can buy (same constraints as normal bot)
-            if anti_quote_balance < Decimal("10"):
+            if cramer_quote_balance < Decimal("10"):
                 logger.info("cramer_skip_buy", reason="insufficient_quote_balance")
                 return
 
@@ -2439,8 +2441,8 @@ class TradingDaemon:
             position = self.position_sizer.calculate_size(
                 df=candles,
                 current_price=current_price,
-                quote_balance=anti_quote_balance,
-                base_balance=anti_base_balance,
+                quote_balance=cramer_quote_balance,
+                base_balance=cramer_base_balance,
                 signal_strength=abs(signal_score),
                 side="buy",
                 safety_multiplier=safety_multiplier,
@@ -2498,30 +2500,30 @@ class TradingDaemon:
                 )
 
                 logger.info(
-                    "anti_bot_buy_executed",
+                    "cramer_buy_executed",
                     size=str(result.size),
                     price=str(filled_price),
                     fee=str(result.fee),
                 )
             else:
-                logger.warning("anti_bot_buy_failed", error=result.error)
+                logger.warning("cramer_buy_failed", error=result.error)
 
         elif side == "sell":
             # Check if Cramer Mode can sell
             min_base = Decimal(str(self.position_sizer.config.min_trade_base))
-            if anti_base_balance < min_base:
+            if cramer_base_balance < min_base:
                 logger.info("cramer_skip_sell", reason="insufficient_base_balance")
                 return
 
             # For aggressive selling, sell entire position on strong signal
             if abs(signal_score) >= 80:
-                size_base = anti_base_balance
+                size_base = cramer_base_balance
             else:
                 position = self.position_sizer.calculate_size(
                     df=candles,
                     current_price=current_price,
                     quote_balance=Decimal("0"),
-                    base_balance=anti_base_balance,
+                    base_balance=cramer_base_balance,
                     signal_strength=abs(signal_score),
                     side="sell",
                     safety_multiplier=safety_multiplier,
@@ -2573,14 +2575,14 @@ class TradingDaemon:
                 self.db.increment_daily_trade_count(is_paper=True, bot_mode="inverted")
 
                 logger.info(
-                    "anti_bot_sell_executed",
+                    "cramer_sell_executed",
                     size=str(result.size),
                     price=str(filled_price),
                     fee=str(result.fee),
                     realized_pnl=str(realized_pnl),
                 )
             else:
-                logger.warning("anti_bot_sell_failed", error=result.error)
+                logger.warning("cramer_sell_failed", error=result.error)
 
     def _execute_cramer_trailing_stop_sell(
         self,
@@ -2631,6 +2633,13 @@ class TradingDaemon:
                 spot_rate=current_price,
             )
             self.db.increment_daily_trade_count(is_paper=True, bot_mode="inverted")
+
+            # Deactivate trailing stop (critical: prevent repeated triggers)
+            self.db.deactivate_trailing_stop(
+                symbol=self.settings.trading_pair,
+                is_paper=True,
+                bot_mode="inverted",
+            )
 
             logger.info(
                 "cramer_trailing_stop_sell_executed",
