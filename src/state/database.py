@@ -996,7 +996,7 @@ class Database:
 
     def get_last_paper_balance(
         self, symbol: str = "BTC-USD", bot_mode: str = "normal"
-    ) -> Optional[tuple[Decimal, Decimal, Decimal]]:
+    ) -> Optional[tuple[Decimal, Decimal, Optional[Decimal]]]:
         """
         Get the last recorded paper trading balance.
 

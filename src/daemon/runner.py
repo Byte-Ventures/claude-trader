@@ -182,14 +182,25 @@ class TradingDaemon:
                         base=str(cramer_base),
                     )
                 else:
-                    # On first startup, copy balance from normal bot
-                    cramer_quote = initial_quote
-                    cramer_base = initial_base
+                    # First-time enable: use normal bot's CURRENT state
+                    cramer_quote = self.client.get_balance(self._quote_currency).available
+                    cramer_base = self.client.get_balance(self._base_currency).available
                     logger.info(
                         "cramer_balance_copied_from_normal",
                         quote=str(cramer_quote),
                         base=str(cramer_base),
                     )
+
+                    # Warn if normal bot has open position (unfair comparison)
+                    normal_position = self.db.get_current_position(
+                        settings.trading_pair, is_paper=True, bot_mode="normal"
+                    )
+                    if normal_position:
+                        logger.warning(
+                            "cramer_mode_starting_without_position",
+                            msg="Normal bot has open position but Cramer Mode starts fresh. Consider disabling until position is closed for fair comparison.",
+                            normal_position_size=str(normal_position.size),
+                        )
 
                 self.cramer_client = PaperTradingClient(
                     real_client=self.real_client,
