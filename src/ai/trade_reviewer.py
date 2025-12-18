@@ -664,6 +664,7 @@ Trading style: POSITION TRADING (long-term)
         quote_balance: Optional[Decimal] = None,
         base_balance: Optional[Decimal] = None,
         estimated_size: Optional[dict] = None,
+        hide_balance_info: bool = False,
     ) -> MultiAgentReviewResult:
         """
         Multi-agent review process.
@@ -678,6 +679,7 @@ Trading style: POSITION TRADING (long-term)
             quote_balance: Available quote currency balance for buying
             base_balance: Current base currency holdings for selling
             estimated_size: Estimated trade size dict with side, size_base, size_quote
+            hide_balance_info: If True, hide balance info from reviewers (for Cramer Mode)
 
         Returns:
             MultiAgentReviewResult with all reviews and judge decision
@@ -687,9 +689,17 @@ Trading style: POSITION TRADING (long-term)
         # Gather context
         fear_greed = await fetch_fear_greed_index()
         trade_summary = get_trade_summary(self.db, days=7)
+
+        # When hide_balance_info is True (Cramer Mode), don't show balance to reviewers
+        # This ensures judge evaluates signal quality, not execution feasibility
+        ctx_position_percent = None if hide_balance_info else position_percent
+        ctx_quote_balance = None if hide_balance_info else quote_balance
+        ctx_base_balance = None if hide_balance_info else base_balance
+        ctx_estimated_size = None if hide_balance_info else estimated_size
+
         context = self._build_context(
             signal_result, current_price, trading_pair, fear_greed, trade_summary, review_type,
-            position_percent, candles, quote_balance, base_balance, estimated_size
+            ctx_position_percent, candles, ctx_quote_balance, ctx_base_balance, ctx_estimated_size
         )
 
         # Multi-agent review for all decisions
@@ -1037,13 +1047,17 @@ Trading style: POSITION TRADING (long-term)
         fear_greed: FearGreedResult,
         trade_summary: TradeSummary,
         review_type: str,
-        position_percent: float = 0.0,
+        position_percent: Optional[float] = 0.0,
         candles: Optional[pd.DataFrame] = None,
         quote_balance: Optional[Decimal] = None,
         base_balance: Optional[Decimal] = None,
         estimated_size: Optional[dict] = None,
     ) -> dict:
-        """Build context dict for prompts and Telegram."""
+        """Build context dict for prompts and Telegram.
+
+        When position_percent/quote_balance/base_balance are None (Cramer Mode),
+        balance info is hidden from reviewers so they evaluate signal quality only.
+        """
         trading_style, trading_style_desc = self._get_trading_style()
 
         # Generate price action summary if candles available
@@ -1105,6 +1119,16 @@ Trading style: POSITION TRADING (long-term)
         four_h = breakdown.get("_htf_4h") or htf_trend
         htf_line = f"\n📊 HIGHER TIMEFRAME BIAS: {htf_trend.upper()} (Daily: {daily}, 4H: {four_h})"
 
+        # Build portfolio section (hidden when balance info is None for Cramer Mode comparison)
+        position_pct = context.get('position_percent')
+        if position_pct is not None:
+            portfolio_section = f"""
+Portfolio:
+- Current Position: {position_pct:.1f}% of portfolio
+"""
+        else:
+            portfolio_section = ""  # Hide portfolio info for pure signal evaluation
+
         # Build common context sections
         common_context = f"""Price: ¤{context['price']:,.2f}
 Signal Score: {context['score']:+d} (threshold: ±{context['threshold']})
@@ -1113,10 +1137,7 @@ Signal Breakdown: {json.dumps(context['breakdown'])}{whale_activity_line}{htf_li
 Trading Style: {context['trading_style_desc']}
 Timeframe: {context['candle_interval']} candles
 {timeframe_guidance}{price_action_line}
-
-Portfolio:
-- Current Position: {context['position_percent']:.1f}% of portfolio
-
+{portfolio_section}
 Market Context:
 - Fear & Greed Index: {context['fear_greed']} ({context['fear_greed_class']})
 

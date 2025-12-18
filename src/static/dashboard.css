@@ -574,6 +574,10 @@ footer {
     background-color: var(--accent-yellow);
 }
 
+.legend-color.cramer {
+    background-color: var(--accent-red);
+}
+
 @media (max-width: 1200px) {
     .metrics-section {
         grid-template-columns: repeat(3, 1fr);

@@ -8,9 +8,16 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 
 from config.settings import get_settings
+try:
+    from src.version import __version__
+except ImportError:
+    __version__ = "unknown"
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from src.state.database import Database
+import structlog
+from src.state.database import BotMode, Database
+
+logger = structlog.get_logger(__name__)
 
 from .models import (
     CandleData,
@@ -52,7 +59,9 @@ async def serve_dashboard():
     """Serve the main dashboard HTML page."""
     template_path = Path(__file__).parent.parent / "templates" / "index.html"
     if template_path.exists():
-        return HTMLResponse(content=template_path.read_text())
+        html = template_path.read_text()
+        html = html.replace("{{VERSION}}", __version__)
+        return HTMLResponse(content=html)
     return HTMLResponse(content="<h1>Dashboard template not found</h1>", status_code=404)
 
 
@@ -255,8 +264,11 @@ async def get_notifications(
 async def get_performance(
     request: Request,
     days: int = Query(default=30, ge=1, le=365),
-) -> list[dict]:
-    """Get daily performance stats for charting (UTC)."""
+) -> dict:
+    """Get daily performance stats for charting (UTC).
+
+    Returns normal stats, and cramer stats if Cramer Mode is enabled.
+    """
     from datetime import datetime, timedelta, timezone
 
     settings = get_settings()
@@ -265,20 +277,59 @@ async def get_performance(
     end_date = datetime.now(timezone.utc).date()
     start_date = end_date - timedelta(days=days)
 
-    stats = db.get_daily_stats_range(
+    # Normal bot stats
+    normal_stats = db.get_daily_stats_range(
         start_date=start_date,
         end_date=end_date,
         is_paper=settings.is_paper_trading,
+        bot_mode=BotMode.NORMAL,
     )
 
-    return [
-        {
-            "date": str(s.date),
-            "starting_balance": s.starting_balance or "0",
-            "ending_balance": s.ending_balance or "0",
-            "starting_price": s.starting_price or "0",
-            "ending_price": s.ending_price or "0",
-            "realized_pnl": s.realized_pnl or "0",
-        }
-        for s in stats
-    ]
+    result = {
+        "normal": [
+            {
+                "date": str(s.date),
+                "starting_balance": s.starting_balance or "0",
+                "ending_balance": s.ending_balance or "0",
+                "starting_price": s.starting_price or "0",
+                "ending_price": s.ending_price or "0",
+                "realized_pnl": s.realized_pnl or "0",
+            }
+            for s in normal_stats
+        ],
+        "cramer": None,
+    }
+
+    # Cramer stats (only if enabled)
+    if settings.enable_cramer_mode:
+        cramer_stats = db.get_daily_stats_range(
+            start_date=start_date,
+            end_date=end_date,
+            is_paper=True,  # Cramer Mode is paper-only
+            bot_mode=BotMode.INVERTED,
+        )
+        result["cramer"] = [
+            {
+                "date": str(s.date),
+                "starting_balance": s.starting_balance or "0",
+                "ending_balance": s.ending_balance or "0",
+                "starting_price": s.starting_price or "0",
+                "ending_price": s.ending_price or "0",
+                "realized_pnl": s.realized_pnl or "0",
+            }
+            for s in cramer_stats
+        ]
+
+        # Log if date ranges don't align (expected when Cramer Mode started mid-period)
+        if cramer_stats and normal_stats:
+            normal_dates = {str(s.date) for s in normal_stats}
+            cramer_dates = {str(s.date) for s in cramer_stats}
+            if normal_dates != cramer_dates:
+                logger.info(
+                    "cramer_partial_history",
+                    normal_days=len(normal_dates),
+                    cramer_days=len(cramer_dates),
+                    days_requested=days,
+                )
+
+    return result
