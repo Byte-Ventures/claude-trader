@@ -14,7 +14,10 @@ except ImportError:
     __version__ = "unknown"
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+import structlog
 from src.state.database import BotMode, Database
+
+logger = structlog.get_logger(__name__)
 
 from .models import (
     CandleData,
@@ -322,8 +325,6 @@ async def get_performance(
             normal_dates = {str(s.date) for s in normal_stats}
             cramer_dates = {str(s.date) for s in cramer_stats}
             if normal_dates != cramer_dates:
-                import structlog
-                logger = structlog.get_logger(__name__)
                 logger.warning(
                     "performance_date_mismatch",
                     normal_days=len(normal_dates),

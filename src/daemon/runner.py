@@ -2255,6 +2255,7 @@ class TradingDaemon:
                     avg_cost=new_avg_cost,
                     volatility=volatility,
                     take_profit_price=take_profit_price,
+                    bot_mode=BotMode.NORMAL,
                 )
             except Exception as stop_error:
                 # FAIL-SAFE: Cannot protect position, must close immediately
@@ -3842,6 +3843,7 @@ class TradingDaemon:
                 avg_cost=avg_cost,
                 volatility=self._last_volatility,  # Use last known volatility for appropriate stop width
                 take_profit_price=take_profit_price,
+                bot_mode=BotMode.NORMAL,
             )
             logger.info("emergency_stop_created", avg_cost=str(avg_cost), take_profit_price=str(take_profit_price) if take_profit_price else None)
             self.notifier.send_alert("✅ Emergency stop protection created successfully.")
