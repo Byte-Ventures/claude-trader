@@ -28,7 +28,7 @@ class SignalInfo(BaseModel):
     score: int
     action: str
     threshold: int
-    breakdown: dict[str, int]
+    breakdown: dict[str, Any]
     confidence: float
 
 
