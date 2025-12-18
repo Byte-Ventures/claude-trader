@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse
 from config.settings import get_settings
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from src.state.database import Database
+from src.state.database import BotMode, Database
 
 from .models import (
     CandleData,
@@ -255,8 +255,11 @@ async def get_notifications(
 async def get_performance(
     request: Request,
     days: int = Query(default=30, ge=1, le=365),
-) -> list[dict]:
-    """Get daily performance stats for charting (UTC)."""
+) -> dict:
+    """Get daily performance stats for charting (UTC).
+
+    Returns normal stats, and cramer stats if Cramer Mode is enabled.
+    """
     from datetime import datetime, timedelta, timezone
 
     settings = get_settings()
@@ -265,20 +268,45 @@ async def get_performance(
     end_date = datetime.now(timezone.utc).date()
     start_date = end_date - timedelta(days=days)
 
-    stats = db.get_daily_stats_range(
+    # Normal bot stats
+    normal_stats = db.get_daily_stats_range(
         start_date=start_date,
         end_date=end_date,
         is_paper=settings.is_paper_trading,
+        bot_mode=BotMode.NORMAL,
     )
 
-    return [
-        {
-            "date": str(s.date),
-            "starting_balance": s.starting_balance or "0",
-            "ending_balance": s.ending_balance or "0",
-            "starting_price": s.starting_price or "0",
-            "ending_price": s.ending_price or "0",
-            "realized_pnl": s.realized_pnl or "0",
-        }
-        for s in stats
-    ]
+    result = {
+        "normal": [
+            {
+                "date": str(s.date),
+                "starting_balance": s.starting_balance or "0",
+                "ending_balance": s.ending_balance or "0",
+                "starting_price": s.starting_price or "0",
+                "ending_price": s.ending_price or "0",
+                "realized_pnl": s.realized_pnl or "0",
+            }
+            for s in normal_stats
+        ],
+        "cramer": None,
+    }
+
+    # Cramer stats (only if enabled)
+    if settings.enable_cramer_mode:
+        cramer_stats = db.get_daily_stats_range(
+            start_date=start_date,
+            end_date=end_date,
+            is_paper=True,  # Cramer Mode is paper-only
+            bot_mode=BotMode.INVERTED,
+        )
+        result["cramer"] = [
+            {
+                "date": str(s.date),
+                "starting_balance": s.starting_balance or "0",
+                "ending_balance": s.ending_balance or "0",
+                "realized_pnl": s.realized_pnl or "0",
+            }
+            for s in cramer_stats
+        ]
+
+    return result

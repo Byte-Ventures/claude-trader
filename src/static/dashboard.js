@@ -6,6 +6,7 @@ let priceLine = null;
 let performanceChart = null;
 let portfolioSeries = null;
 let btcSeries = null;
+let cramerSeries = null;
 let ws = null;
 let reconnectAttempts = 0;
 let seenNotificationIds = new Set();
@@ -153,6 +154,14 @@ function initPerformanceChart() {
         color: '#f59e0b',
         lineWidth: 2,
         title: 'BTC',
+    });
+
+    // Cramer Mode performance line (red) - hidden until data available
+    cramerSeries = performanceChart.addLineSeries({
+        color: '#ef4444',
+        lineWidth: 2,
+        title: 'Cramer',
+        visible: false,
     });
 }
 
@@ -567,19 +576,25 @@ function toggleNotification(el) {
 
 // Update performance chart
 function updatePerformanceChart(data) {
-    if (!performanceChart || !data || data.length === 0) return;
+    if (!performanceChart || !data) return;
+
+    // Handle both old format (array) and new format (object with normal/cramer)
+    const normalData = Array.isArray(data) ? data : data.normal;
+    const cramerData = Array.isArray(data) ? null : data.cramer;
+
+    if (!normalData || normalData.length === 0) return;
 
     // Calculate cumulative returns (use ending values consistently)
-    const firstDay = data[0];
+    const firstDay = normalData[0];
     const startBalance = parseFloat(firstDay.ending_balance) || parseFloat(firstDay.starting_balance);
     const startPrice = parseFloat(firstDay.ending_price) || parseFloat(firstDay.starting_price);
 
     if (!startBalance || !startPrice) return;
 
-    const portfolioData = [];
-    const btcData = [];
+    const portfolioDataPoints = [];
+    const btcDataPoints = [];
 
-    data.forEach(d => {
+    normalData.forEach(d => {
         // Use date string format for daily charts (YYYY-MM-DD)
         const time = d.date;
         const balance = parseFloat(d.ending_balance) || parseFloat(d.starting_balance);
@@ -590,17 +605,44 @@ function updatePerformanceChart(data) {
             const portfolioReturn = ((balance - startBalance) / startBalance) * 100;
             const btcReturn = ((price - startPrice) / startPrice) * 100;
 
-            portfolioData.push({ time, value: portfolioReturn });
-            btcData.push({ time, value: btcReturn });
+            portfolioDataPoints.push({ time, value: portfolioReturn });
+            btcDataPoints.push({ time, value: btcReturn });
         }
     });
 
-    if (portfolioData.length > 0) {
-        portfolioSeries.setData(portfolioData);
-        btcSeries.setData(btcData);
-        // Fit chart to show all data points properly
-        performanceChart.timeScale().fitContent();
+    if (portfolioDataPoints.length > 0) {
+        portfolioSeries.setData(portfolioDataPoints);
+        btcSeries.setData(btcDataPoints);
     }
+
+    // Handle Cramer data if available
+    if (cramerData && cramerData.length > 0 && cramerSeries) {
+        const cramerFirstDay = cramerData[0];
+        const cramerStartBalance = parseFloat(cramerFirstDay.ending_balance) || parseFloat(cramerFirstDay.starting_balance);
+
+        if (cramerStartBalance) {
+            const cramerDataPoints = [];
+            cramerData.forEach(d => {
+                const time = d.date;
+                const balance = parseFloat(d.ending_balance) || parseFloat(d.starting_balance);
+                if (balance) {
+                    const cramerReturn = ((balance - cramerStartBalance) / cramerStartBalance) * 100;
+                    cramerDataPoints.push({ time, value: cramerReturn });
+                }
+            });
+
+            if (cramerDataPoints.length > 0) {
+                cramerSeries.setData(cramerDataPoints);
+                cramerSeries.applyOptions({ visible: true });
+            }
+        }
+    } else if (cramerSeries) {
+        // Hide Cramer series if no data
+        cramerSeries.applyOptions({ visible: false });
+    }
+
+    // Fit chart to show all data points properly
+    performanceChart.timeScale().fitContent();
 }
 
 // Escape HTML for safe display
