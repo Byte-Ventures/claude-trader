@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 
 from config.settings import get_settings
+from src.version import __version__
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from src.state.database import BotMode, Database
@@ -52,7 +53,9 @@ async def serve_dashboard():
     """Serve the main dashboard HTML page."""
     template_path = Path(__file__).parent.parent / "templates" / "index.html"
     if template_path.exists():
-        return HTMLResponse(content=template_path.read_text())
+        html = template_path.read_text()
+        html = html.replace("{{VERSION}}", __version__)
+        return HTMLResponse(content=html)
     return HTMLResponse(content="<h1>Dashboard template not found</h1>", status_code=404)
 
 
