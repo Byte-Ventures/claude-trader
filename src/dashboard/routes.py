@@ -1,5 +1,6 @@
 """REST API routes for dashboard."""
 
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -140,15 +141,34 @@ async def get_trades(
     request: Request,
     limit: int = Query(default=20, ge=1, le=100),
 ) -> list[TradeRecord]:
-    """Get recent trades."""
+    """Get recent trades (includes Cramer trades if enabled)."""
     settings = get_settings()
     db = get_db()
 
-    trades = db.get_recent_trades(
+    # Get normal trades
+    normal_trades = db.get_recent_trades(
         limit=limit,
         is_paper=settings.is_paper_trading,
         symbol=settings.trading_pair,
+        bot_mode=BotMode.NORMAL,
     )
+
+    all_trades = list(normal_trades)
+
+    # Get Cramer trades if enabled
+    if settings.enable_cramer_mode:
+        cramer_trades = db.get_recent_trades(
+            limit=limit,
+            is_paper=True,  # Cramer Mode is paper-only
+            symbol=settings.trading_pair,
+            bot_mode=BotMode.INVERTED,
+        )
+        all_trades.extend(cramer_trades)
+
+    # Sort by executed_at descending and limit total
+    min_datetime = datetime.min.replace(tzinfo=timezone.utc)
+    all_trades.sort(key=lambda t: t.executed_at or min_datetime, reverse=True)
+    all_trades = all_trades[:limit]
 
     return [
         TradeRecord(
@@ -159,8 +179,9 @@ async def get_trades(
             fee=t.fee or "0",
             realized_pnl=t.realized_pnl,
             executed_at=t.executed_at.isoformat() if t.executed_at else "",
+            bot_mode=t.bot_mode,
         )
-        for t in trades
+        for t in all_trades
     ]
 
 

@@ -3,6 +3,7 @@
 import asyncio
 import sqlite3
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 import structlog
@@ -13,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi.errors import RateLimitExceeded
 
 from config.settings import get_settings
-from src.state.database import Database
+from src.state.database import BotMode, Database
 
 from .routes import router, get_db, limiter
 from .websocket import manager
@@ -76,12 +77,30 @@ async def state_broadcaster(db: Database):
                     # Include new notifications in broadcast
                     state["new_notifications"] = new_notifications
 
-                    # Include recent trades in broadcast
-                    trades = db.get_recent_trades(
+                    # Include recent trades in broadcast (normal + Cramer if enabled)
+                    normal_trades = db.get_recent_trades(
                         symbol=settings.trading_pair,
                         limit=20,
                         is_paper=settings.is_paper_trading,
+                        bot_mode=BotMode.NORMAL,
                     )
+                    all_trades = list(normal_trades)
+
+                    # Include Cramer trades if enabled
+                    if settings.enable_cramer_mode:
+                        cramer_trades = db.get_recent_trades(
+                            symbol=settings.trading_pair,
+                            limit=20,
+                            is_paper=True,
+                            bot_mode=BotMode.INVERTED,
+                        )
+                        all_trades.extend(cramer_trades)
+
+                    # Sort by time and limit
+                    min_datetime = datetime.min.replace(tzinfo=timezone.utc)
+                    all_trades.sort(key=lambda t: t.executed_at or min_datetime, reverse=True)
+                    all_trades = all_trades[:20]
+
                     state["recent_trades"] = [
                         {
                             "id": t.id,
@@ -90,8 +109,9 @@ async def state_broadcaster(db: Database):
                             "price": str(t.price),
                             "realized_pnl": str(t.realized_pnl) if t.realized_pnl else None,
                             "executed_at": t.executed_at.isoformat() if t.executed_at else "",
+                            "bot_mode": t.bot_mode,
                         }
-                        for t in trades
+                        for t in all_trades
                     ]
 
                     await manager.broadcast(state)

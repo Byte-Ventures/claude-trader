@@ -347,6 +347,18 @@ function updateDashboard(state) {
     document.getElementById('portfolio-value').textContent = formatCurrency(parseFloat(state.portfolio.portfolio_value));
     document.getElementById('position-percent').textContent = state.portfolio.position_percent.toFixed(1) + '%';
 
+    // Update Cramer portfolio (if available)
+    const cramerCard = document.getElementById('cramer-portfolio-card');
+    if (state.cramer_portfolio) {
+        document.getElementById('cramer-quote-balance').textContent = formatCurrency(parseFloat(state.cramer_portfolio.quote_balance));
+        document.getElementById('cramer-base-balance').textContent = formatBTC(parseFloat(state.cramer_portfolio.base_balance));
+        document.getElementById('cramer-portfolio-value').textContent = formatCurrency(parseFloat(state.cramer_portfolio.portfolio_value));
+        document.getElementById('cramer-position-percent').textContent = state.cramer_portfolio.position_percent.toFixed(1) + '%';
+        cramerCard.style.display = 'block';
+    } else {
+        cramerCard.style.display = 'none';
+    }
+
     // Update signal breakdown bars
     const breakdown = state.signal.breakdown;
     updateBreakdownBar('breakdown-rsi', breakdown.rsi || 0);
@@ -421,11 +433,13 @@ function updateTradesTable(trades) {
         const pnl = trade.realized_pnl ? parseFloat(trade.realized_pnl) : null;
         const pnlClass = pnl ? (pnl >= 0 ? 'pnl-positive' : 'pnl-negative') : '';
         const pnlText = pnl !== null ? formatCurrency(pnl) : '--';
+        const isCramer = trade.bot_mode === 'inverted';
+        const modeBadge = isCramer ? '<span class="trade-mode cramer">CRAMER</span>' : '';
 
         return `
             <tr>
                 <td>${new Date(trade.executed_at + 'Z').toLocaleString()}</td>
-                <td class="trade-${trade.side}">${trade.side.toUpperCase()}</td>
+                <td class="trade-${trade.side}">${trade.side.toUpperCase()}${modeBadge}</td>
                 <td>${formatBTC(parseFloat(trade.size))}</td>
                 <td>${formatCurrency(parseFloat(trade.price))}</td>
                 <td class="${pnlClass}">${pnlText}</td>

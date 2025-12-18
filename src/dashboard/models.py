@@ -64,6 +64,7 @@ class DashboardState(BaseModel):
     signal: SignalInfo
     indicators: IndicatorValues
     portfolio: PortfolioInfo
+    cramer_portfolio: Optional[PortfolioInfo] = None
     regime: str
     weight_profile: Optional[WeightProfileInfo] = None
     safety: SafetyStatus
@@ -92,6 +93,7 @@ class TradeRecord(BaseModel):
     fee: str
     realized_pnl: Optional[str]
     executed_at: str
+    bot_mode: str = "normal"
 
 
 class PositionInfo(BaseModel):
