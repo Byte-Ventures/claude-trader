@@ -202,6 +202,21 @@ gh api repos/Byte-Ventures/claude-trader/pulls/{PR_NUMBER}/comments
 gh pr view {PR_NUMBER} --comments
 ```
 
+### Updating PRs
+
+Use `gh api` instead of `gh pr edit` to avoid GitHub Projects Classic deprecation errors:
+
+```bash
+# Update PR title
+gh api repos/Byte-Ventures/claude-trader/pulls/{PR_NUMBER} -X PATCH -f title="new title"
+
+# Update PR body
+gh api repos/Byte-Ventures/claude-trader/pulls/{PR_NUMBER} -X PATCH -f body="new body"
+
+# Get PR info
+gh api repos/Byte-Ventures/claude-trader/pulls/{PR_NUMBER} --jq '.title, .state'
+```
+
 ### Review Process
 
 1. **Critical issues** (🔴) - MUST fix before merge
