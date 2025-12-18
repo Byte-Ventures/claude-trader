@@ -17,19 +17,21 @@ const BASE_RECONNECT_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 30000;
 const MAX_SEEN_NOTIFICATIONS = 100;  // Prevent memory leak from unbounded Set
 
-// Convert candle interval string (e.g., "1m", "5m", "1h") to seconds
+// Convert candle interval string to seconds
+// Backend sends formats like "ONE_MINUTE", "FIFTEEN_MINUTE", "ONE_HOUR"
 function parseIntervalToSeconds(interval) {
     if (!interval) return 60;
-    const match = interval.match(/^(\d+)([mhd])$/i);
-    if (!match) return 60;
-    const value = parseInt(match[1], 10);
-    const unit = match[2].toLowerCase();
-    switch (unit) {
-        case 'm': return value * 60;
-        case 'h': return value * 3600;
-        case 'd': return value * 86400;
-        default: return 60;
-    }
+    const intervalMap = {
+        'ONE_MINUTE': 60,
+        'FIVE_MINUTE': 300,
+        'FIFTEEN_MINUTE': 900,
+        'THIRTY_MINUTE': 1800,
+        'ONE_HOUR': 3600,
+        'TWO_HOUR': 7200,
+        'SIX_HOUR': 21600,
+        'ONE_DAY': 86400,
+    };
+    return intervalMap[interval] || 60;
 }
 
 // Initialize on page load
@@ -394,6 +396,7 @@ function updateDashboard(state) {
         const time = Math.floor(new Date(state.timestamp).getTime() / 1000);
         if (!isNaN(time) && time > 0) {
             // Align timestamp to candle interval bucket
+            // Uses standard Unix epoch alignment (same as exchange APIs for 24/7 crypto markets)
             const candleTime = Math.floor(time / candleIntervalSeconds) * candleIntervalSeconds;
 
             if (currentCandle && currentCandle.time === candleTime) {
