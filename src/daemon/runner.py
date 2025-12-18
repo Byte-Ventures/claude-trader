@@ -1204,7 +1204,11 @@ class TradingDaemon:
         # Update circuit breaker with price data
         self.circuit_breaker.check_price_movement(float(current_price))
 
-        # Update validator with current state
+        # Update validator with current state (normal bot only)
+        # NOTE: Cramer Mode shares safety systems with normal bot intentionally.
+        # Cramer Mode is for strategy comparison only - it should NOT trigger
+        # kill switch, circuit breaker, or loss limiter independently.
+        # Only normal bot's performance affects safety thresholds.
         self.validator.update_balances(base_balance, quote_balance, current_price)
 
         # Check BOTH trailing stops before executing either (avoid race condition)
@@ -1215,8 +1219,9 @@ class TradingDaemon:
         cramer_base_balance = Decimal("0")
 
         if self.cramer_client:
-            cramer_trailing_action = self._check_trailing_stop(current_price, bot_mode="inverted")
+            # Get balance BEFORE stop check to ensure consistency
             cramer_base_balance = self.cramer_client.get_balance(self._base_currency).available
+            cramer_trailing_action = self._check_trailing_stop(current_price, bot_mode="inverted")
 
         # Execute Cramer Mode trailing stop FIRST (before normal bot's early return)
         # Why Cramer executes first:
@@ -2447,7 +2452,8 @@ class TradingDaemon:
 
         if side == "buy":
             # Check if Cramer Mode can buy (same constraints as normal bot)
-            if cramer_quote_balance < Decimal("10"):
+            min_quote = Decimal(str(self.position_sizer.config.min_trade_quote))
+            if cramer_quote_balance < min_quote:
                 logger.info("cramer_skip_buy", reason="insufficient_quote_balance")
                 return
 
@@ -2462,7 +2468,7 @@ class TradingDaemon:
                 safety_multiplier=safety_multiplier,
             )
 
-            if position.size_quote < Decimal("10"):
+            if position.size_quote < min_quote:
                 logger.info("cramer_skip_buy", reason="position_too_small")
                 return
 
@@ -3271,7 +3277,7 @@ class TradingDaemon:
             # If so, UPDATE the existing stop in-place to avoid any window
             # where the position is unprotected during the transition
             existing_stop = self.db.get_active_trailing_stop(
-                symbol=self.settings.trading_pair, is_paper=is_paper
+                symbol=self.settings.trading_pair, is_paper=is_paper, bot_mode="normal"
             )
 
             if existing_stop:
@@ -3288,6 +3294,7 @@ class TradingDaemon:
                     hard_stop=hard_stop,
                     take_profit_price=take_profit_price,
                     is_paper=is_paper,
+                    bot_mode="normal",
                 )
                 logger.info(
                     "trailing_stop_updated_dca",
