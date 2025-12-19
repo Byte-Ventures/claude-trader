@@ -129,6 +129,15 @@ class SignalScorer:
     the total score exceeds the threshold.
     """
 
+    # Price tolerance for validating OHLC data consistency (relative to candle range)
+    # Financial data can have minor discrepancies due to bid/ask spreads, timestamp
+    # differences between close/high/low, or exchange rounding. Use 0.001% tolerance
+    # (1e-5) which allows ~$0.01 difference on a typical $1,000 BTC candle range.
+    # Example: BTC at $100k with 1% daily volatility = $1,000 range, tolerance = $0.01
+    # This is conservative (tight tolerance), which may cause some false positives on
+    # data inconsistency warnings - monitor logs and adjust if needed.
+    PRICE_TOLERANCE_EPSILON = 1e-5
+
     def __init__(
         self,
         weights: Optional[SignalWeights] = None,
@@ -148,9 +157,13 @@ class SignalScorer:
         momentum_rsi_candles: int = 3,
         momentum_price_candles: int = 12,
         momentum_penalty_reduction: float = 0.5,
+        momentum_trend_strength_cap: float = 5.0,
         candle_interval: Optional[str] = None,
+        trading_pair: Optional[str] = None,
         whale_volume_threshold: float = 3.0,
         whale_direction_threshold: float = 0.003,
+        whale_candle_bullish_threshold: float = 0.7,
+        whale_candle_bearish_threshold: float = 0.3,
         whale_boost_percent: float = 0.30,
         high_volume_boost_percent: float = 0.20,
         mtf_aligned_boost: int = 20,
@@ -175,8 +188,12 @@ class SignalScorer:
             momentum_rsi_candles: Number of candles RSI must stay elevated (default: 3)
             momentum_price_candles: Number of candles to check for higher lows (default: 12)
             momentum_penalty_reduction: Factor to reduce overbought penalties (default: 0.5 = 50%)
+            momentum_trend_strength_cap: EMA gap percentage cap for trend strength normalization (default: 5.0)
+                                        Stronger trends (wider EMA gap) get more penalty reduction.
+                                        Increase for volatile markets (10-15%), decrease for stable (3%)
             candle_interval: Candle interval for adaptive MACD scaling
                             (e.g., "FIFTEEN_MINUTE", "ONE_HOUR")
+            trading_pair: Trading pair symbol (e.g., "BTC-USD") for logging context
             *: Other indicator parameters
 
         Recommended thresholds by candle interval:
@@ -203,16 +220,20 @@ class SignalScorer:
         self.ema_slow_period = ema_slow
         self.atr_period = atr_period
         self.candle_interval = candle_interval
+        self.trading_pair = trading_pair or "UNKNOWN"
 
         # Momentum mode parameters
         self.momentum_rsi_threshold = momentum_rsi_threshold
         self.momentum_rsi_candles = momentum_rsi_candles
         self.momentum_price_candles = momentum_price_candles
         self.momentum_penalty_reduction = momentum_penalty_reduction
+        self.momentum_trend_strength_cap = momentum_trend_strength_cap
 
         # Whale detection parameters
         self.whale_volume_threshold = whale_volume_threshold
         self.whale_direction_threshold = whale_direction_threshold
+        self.whale_candle_bullish_threshold = whale_candle_bullish_threshold
+        self.whale_candle_bearish_threshold = whale_candle_bearish_threshold
         self.whale_boost_percent = whale_boost_percent
         self.high_volume_boost_percent = high_volume_boost_percent
 
@@ -240,6 +261,8 @@ class SignalScorer:
         threshold: Optional[int] = None,
         whale_volume_threshold: Optional[float] = None,
         whale_direction_threshold: Optional[float] = None,
+        whale_candle_bullish_threshold: Optional[float] = None,
+        whale_candle_bearish_threshold: Optional[float] = None,
         whale_boost_percent: Optional[float] = None,
         high_volume_boost_percent: Optional[float] = None,
         rsi_period: Optional[int] = None,
@@ -272,6 +295,10 @@ class SignalScorer:
             self.whale_volume_threshold = whale_volume_threshold
         if whale_direction_threshold is not None:
             self.whale_direction_threshold = whale_direction_threshold
+        if whale_candle_bullish_threshold is not None:
+            self.whale_candle_bullish_threshold = whale_candle_bullish_threshold
+        if whale_candle_bearish_threshold is not None:
+            self.whale_candle_bearish_threshold = whale_candle_bearish_threshold
         if whale_boost_percent is not None:
             self.whale_boost_percent = whale_boost_percent
         if high_volume_boost_percent is not None:
@@ -446,6 +473,11 @@ class SignalScorer:
         """
         Calculate composite signal score from OHLCV data.
 
+        Combines multiple technical indicators (RSI, MACD, Bollinger, EMA, Volume) into
+        a unified signal. When momentum mode is active, overbought penalties are reduced
+        proportionally to trend strength (EMA gap) to enable riding strong trends while
+        maintaining responsiveness during weakening trends.
+
         Args:
             df: DataFrame with columns: open, high, low, close, volume
             current_price: Current price (uses latest close if not provided)
@@ -528,20 +560,70 @@ class SignalScorer:
         ema_score = int(ema_signal * self.weights.ema)
 
         # Momentum mode: reduce overbought penalties during sustained uptrends
+        # Penalty reduction is proportional to trend strength (measured by EMA gap)
+        # to enable more responsive exits during genuine reversals
         momentum_active, momentum_reason = self.is_momentum_mode(df, rsi)
         if momentum_active:
             original_rsi = rsi_score
             original_bb = bb_score
-            # Reduce overbought penalties by configured factor (only negative scores)
-            # Use int() instead of // for symmetric rounding behavior
-            reduction = self.momentum_penalty_reduction
+
+            # Calculate trend strength factor from EMA gap (0.0 to 1.0)
+            # Stronger trends (wider EMA gap) get more penalty reduction
+            # Weaker trends (narrower EMA gap) get less reduction for faster exits
+            # When EMAs are unavailable, trend_strength defaults to 0.0 (minimal reduction)
+            trend_strength = 0.0
+            ema_gap_percent = 0.0
+            # Minimum EMA value to filter out data quality issues (near-zero noise)
+            # Value of 1.0 covers any real tradeable asset while filtering bad data
+            MIN_EMA_VALUE = 1.0
+            # Explicit validation: momentum_trend_strength_cap should always be > 0
+            # Config validation enforces >= 1.0, but log warning if somehow invalid
+            if self.momentum_trend_strength_cap <= 0:
+                logger.warning(
+                    "invalid_momentum_trend_strength_cap",
+                    value=self.momentum_trend_strength_cap,
+                    action="skipping_trend_strength_calculation",
+                )
+            elif indicators.ema_fast and indicators.ema_slow and self.momentum_trend_strength_cap > 0:
+                # Convert to float for calculation
+                # Defense-in-depth: cap > 0 check in elif prevents division by zero even if
+                # config validation is bypassed or value changes at runtime
+                ema_slow_float = float(indicators.ema_slow)
+                ema_fast_float = float(indicators.ema_fast)
+                # Skip if EMAs are too small or invalid (EMAs for price data should always be positive)
+                # Using >= instead of abs() >= makes the assumption explicit and prevents edge cases
+                if ema_slow_float >= MIN_EMA_VALUE and ema_fast_float >= MIN_EMA_VALUE:
+                    ema_gap_percent = abs((ema_fast_float - ema_slow_float) / ema_slow_float) * 100
+                    # Cap at configured percentage for normalization
+                    # Linear scaling: 0% gap = 0.0 strength, cap% gap = 1.0 strength
+                    trend_strength = min(1.0, ema_gap_percent / self.momentum_trend_strength_cap)
+
+            # Scale the penalty reduction by trend strength
+            # Base reduction is configured value (default 0.5), scaled by trend strength
+            # Weak trend (0.0 strength): minimal reduction (near full penalty = more responsive)
+            # Strong trend (1.0 strength): full reduction (configured value)
+            # Formula: new_penalty = old_penalty * (1 - reduction)
+            # - reduction=0.0 → keep 100% of penalty (no change)
+            # - reduction=0.5 → keep 50% of penalty (half the overbought signal)
+            reduction = self.momentum_penalty_reduction * trend_strength
+
+            # Reduce overbought penalties by scaled factor (only negative scores)
+            # Use (1 - reduction) to keep the remaining portion of the penalty
+            # Example with default 0.5 max reduction:
+            # - Strong trend (1.0): reduction=0.5, keep 50% → -25 becomes -12
+            # - Moderate trend (0.5): reduction=0.25, keep 75% → -25 becomes -18
+            # - Weak trend (0.1): reduction=0.05, keep 95% → -25 becomes -23
+            # - No trend (0.0): reduction=0.0, keep 100% → -25 stays -25
             if rsi_score < 0:
-                rsi_score = int(rsi_score * reduction)
+                rsi_score = int(rsi_score * (1 - reduction))
             if bb_score < 0:
-                bb_score = int(bb_score * reduction)
+                bb_score = int(bb_score * (1 - reduction))
             logger.info(
                 "momentum_mode_active",
                 reason=momentum_reason,
+                ema_gap_percent=round(ema_gap_percent, 3),
+                trend_strength=round(trend_strength, 3),
+                penalty_reduction=round(reduction, 3),
                 rsi_original=original_rsi,
                 rsi_adjusted=rsi_score,
                 bb_original=original_bb,
@@ -590,7 +672,14 @@ class SignalScorer:
                 if volume_ratio > self.whale_volume_threshold:
                     # WHALE ACTIVITY: Extreme volume spike (configurable threshold, default 3x)
                     # Apply configurable boost (default 30%) - stronger signal than normal high volume
-                    # Note: On neutral signals (total_score=0), boost is 0 but _whale_activity
+                    #
+                    # Note: Volume boost is INDEPENDENT of OHLC consistency checks (below).
+                    # Volume ratio is calculated from volume data, not OHLC. Even if OHLC data
+                    # has timing inconsistencies (close outside high/low range), the volume
+                    # spike detection remains valid. Only the whale DIRECTION analysis (which
+                    # relies on close position within candle range) is affected by OHLC issues.
+                    #
+                    # On neutral signals (total_score=0), boost is 0 but _whale_activity
                     # is still set True. This is intentional - whale activity on neutral signals
                     # is valuable information for AI reviewers even without directional bias.
                     volume_boost = int(abs(total_score) * self.whale_boost_percent)
@@ -606,25 +695,115 @@ class SignalScorer:
                     breakdown["_volume_ratio"] = volume_ratio
 
                     # Determine whale direction based on price movement during volume spike
+                    # Enhanced with candle structure analysis for directional confirmation
                     if len(close) >= 2:
                         prev_price = close.iloc[-2]
                         current_price = close.iloc[-1]
                         if prev_price > 0 and not pd.isna(current_price) and current_price > 0:
                             price_change_pct = (current_price - prev_price) / prev_price
                             breakdown["_price_change_pct"] = round(price_change_pct, 6)
-                            if price_change_pct > self.whale_direction_threshold:
-                                breakdown["_whale_direction"] = "bullish"
-                            elif price_change_pct < -self.whale_direction_threshold:
-                                breakdown["_whale_direction"] = "bearish"
+
+                            # Analyze candle structure to confirm direction
+                            # Check if candle closed near its high (bullish) or low (bearish)
+                            candle_high = high.iloc[-1]
+                            candle_low = low.iloc[-1]
+                            candle_range = candle_high - candle_low
+
+                            # Track if we should skip direction calculation due to data issues
+                            data_inconsistency = False
+
+                            # Calculate where the close is within the candle range (0 = low, 1 = high)
+                            if candle_range > 0 and not pd.isna(candle_high) and not pd.isna(candle_low):
+                                # Verify price is within expected range before calculation
+                                # Data inconsistency can occur when close/high/low come from slightly
+                                # different timestamps or feeds. This indicates data quality issues.
+                                # Use relative epsilon based on candle range (0.001% tolerance)
+                                # This scales with actual volatility, not absolute price level
+                                # Better handles assets at any price point (micro-cap to high-value)
+                                # candle_range > 0 guaranteed by if-condition on line 716
+                                epsilon = candle_range * self.PRICE_TOLERANCE_EPSILON
+                                if current_price < (candle_low - epsilon) or current_price > (candle_high + epsilon):
+                                    # Data inconsistency detected - log warning with context and treat as unknown
+                                    # Candle structure (close/high/low) is inconsistent, but price_change_pct
+                                    # (calculated from consecutive closes) remains valid and useful
+                                    price_diff = min(abs(current_price - candle_high), abs(candle_low - current_price))
+                                    logger.warning(
+                                        "price_outside_candle_range",
+                                        trading_pair=self.trading_pair,
+                                        current_price=float(current_price),
+                                        candle_low=float(candle_low),
+                                        candle_high=float(candle_high),
+                                        difference=float(price_diff),
+                                        action="treating_as_unknown",
+                                    )
+                                    close_position = None
+                                    breakdown["_candle_close_position"] = None
+                                    breakdown["_whale_direction"] = "unknown"
+                                    # Note: _price_change_pct is kept (already set on line 699) - it's still valid
+                                    data_inconsistency = True
+                                else:
+                                    # Division by zero protection: candle_range > 0 guaranteed by if-condition above (line 716)
+                                    close_position = (current_price - candle_low) / candle_range
+                                    # Store rounded value for display only; close_position variable remains unrounded for threshold comparisons below
+                                    breakdown["_candle_close_position"] = round(close_position, 3)
                             else:
-                                breakdown["_whale_direction"] = "neutral"
+                                # Zero-range candle (doji/flat) or missing data:
+                                # When high == low (perfect equilibrium), candle_range = 0
+                                # This is interesting but ambiguous - treat as neutral
+                                # A zero-range candle with whale volume indicates perfect
+                                # equilibrium or a gap, which doesn't provide directional conviction
+                                close_position = None
+                                breakdown["_candle_close_position"] = None
+
+                            # Determine direction with candle structure confirmation
+                            # Skip if data inconsistency was detected (price outside candle range)
+                            if not data_inconsistency:
+                                # Requires strong conviction: close_position STRICTLY > 0.7 (bullish) or STRICTLY < 0.3 (bearish)
+                                # The 0.3-0.7 range is intentionally treated as "ambiguous" requiring higher conviction:
+                                #   - Bullish: close_position > 0.7 (closed in top 30% of range)
+                                #   - Bearish: close_position < 0.3 (closed in bottom 30% of range)
+                                #   - At boundaries (exactly 0.3 or 0.7): treated as neutral (conservative)
+                                #   - Middle range (0.3 to 0.7): defaults to neutral
+                                # This prevents false signals from weak candle formations
+                                # Trade-off: Prioritizes precision over recall (fewer false positives, may miss some valid signals)
+                                # For a financial system, false negatives (missed opportunities) are safer than false positives (bad trades)
+                                if price_change_pct > self.whale_direction_threshold:
+                                    # Price moved up - check candle structure for confirmation
+                                    if close_position is not None and close_position > self.whale_candle_bullish_threshold:
+                                        breakdown["_whale_direction"] = "bullish"
+                                    elif close_position is not None and close_position < 0.5:
+                                        # Closed in lower half despite price increase - fighting/rejection
+                                        breakdown["_whale_direction"] = "neutral"
+                                    else:
+                                        # Conservative: treat as neutral if either:
+                                        # 1) Missing data (close_position is None)
+                                        # 2) Ambiguous range (0.5 <= close_position <= threshold)
+                                        # Both cases lack conviction for a directional signal
+                                        breakdown["_whale_direction"] = "neutral"
+                                elif price_change_pct < -self.whale_direction_threshold:
+                                    # Price moved down - check candle structure for confirmation
+                                    if close_position is not None and close_position < self.whale_candle_bearish_threshold:
+                                        breakdown["_whale_direction"] = "bearish"
+                                    elif close_position is not None and close_position > 0.5:
+                                        # Closed in upper half despite price decrease - fighting/support
+                                        breakdown["_whale_direction"] = "neutral"
+                                    else:
+                                        # Conservative: treat as neutral if either:
+                                        # 1) Missing data (close_position is None)
+                                        # 2) Ambiguous range (bearish_threshold <= close_position <= 0.5)
+                                        # Both cases lack conviction for a directional signal
+                                        breakdown["_whale_direction"] = "neutral"
+                                else:
+                                    breakdown["_whale_direction"] = "neutral"
                         else:
                             # Zero/negative prev price - can't calculate direction
                             breakdown["_whale_direction"] = "unknown"
                             breakdown["_price_change_pct"] = None
+                            breakdown["_candle_close_position"] = None
                     else:
                         breakdown["_whale_direction"] = "unknown"
                         breakdown["_price_change_pct"] = None
+                        breakdown["_candle_close_position"] = None
                 elif volume_ratio > self.high_volume_threshold:
                     # High volume: boost signal by configurable percentage (default 20%)
                     volume_boost = int(abs(total_score) * self.high_volume_boost_percent)

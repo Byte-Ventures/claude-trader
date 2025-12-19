@@ -365,8 +365,12 @@ class TradingDaemon:
             ema_slow=settings.ema_slow,
             atr_period=settings.atr_period,
             candle_interval=settings.candle_interval,
+            trading_pair=settings.trading_pair,
+            momentum_trend_strength_cap=settings.momentum_trend_strength_cap,
             whale_volume_threshold=settings.whale_volume_threshold,
             whale_direction_threshold=settings.whale_direction_threshold,
+            whale_candle_bullish_threshold=settings.whale_candle_bullish_threshold,
+            whale_candle_bearish_threshold=settings.whale_candle_bearish_threshold,
             whale_boost_percent=settings.whale_boost_percent,
             high_volume_boost_percent=settings.high_volume_boost_percent,
             mtf_aligned_boost=settings.mtf_aligned_boost,
@@ -1742,21 +1746,50 @@ class TradingDaemon:
             signal_direction = "buy" if signal_result.score > 0 else "sell" if signal_result.score < 0 else None
 
             # Check if normal bot can trade this direction
-            # Cramer Mode only acts when normal bot acts, so only check normal bot
             normal_can_trade = (
                 (signal_direction == "buy" and can_buy) or
                 (signal_direction == "sell" and can_sell)
             )
+
+            # Check if Cramer Mode can trade the INVERSE direction
+            # Cramer buys when signal says sell, and vice versa
+            cramer_can_trade = False
+            if self.cramer_client and not self._cramer_mode_disabled:
+                try:
+                    cramer_quote_balance = self.cramer_client.get_balance(self._quote_currency)
+                    cramer_base_balance = self.cramer_client.get_balance(self._base_currency)
+                    if cramer_quote_balance and cramer_base_balance:
+                        cramer_quote = cramer_quote_balance.available
+                        cramer_base = cramer_base_balance.available
+                        min_quote = Decimal(str(self.position_sizer.config.min_trade_quote))
+                        min_base = Decimal(str(self.position_sizer.config.min_trade_base))
+                        cramer_can_buy = cramer_quote > min_quote
+                        cramer_can_sell = cramer_base > min_base
+                        # Cramer trades INVERSE: signal=sell means Cramer buys, signal=buy means Cramer sells
+                        cramer_can_trade = (
+                            (signal_direction == "sell" and cramer_can_buy) or
+                            (signal_direction == "buy" and cramer_can_sell)
+                        )
+                except Exception as e:
+                    logger.warning("cramer_balance_check_failed", error=str(e))
+                    cramer_can_trade = False
+
             direction_is_tradeable = (
                 normal_can_trade or
+                cramer_can_trade or
                 signal_direction is None  # Neutral score, no direction
             )
 
             if not direction_is_tradeable:
+                # Neither normal nor Cramer can trade this direction
+                if signal_direction == "sell":
+                    reason = "no_position_either_bot" if self.cramer_client else "no_position"
+                else:
+                    reason = "fully_allocated_both_bots" if self.cramer_client else "fully_allocated"
                 logger.info(
                     "ai_review_skipped",
                     signal_direction=signal_direction,
-                    reason="no_position" if signal_direction == "sell" else "fully_allocated",
+                    reason=reason,
                 )
             else:
                 should_review, review_type = self.trade_reviewer.should_review(
@@ -2040,8 +2073,14 @@ class TradingDaemon:
                         reason=f"insufficient_balance_or_position_limit (quote={quote_balance}, position={position_percent:.1f}%)",
                         signal_score=signal_result.score,
                     )
-                # Cramer Mode only acts when judge approves AND normal bot executes
-                # (removed independent trade logic for cleaner comparison)
+                # Cramer Mode may trade independently (see _maybe_execute_cramer_independent docstring)
+                self._maybe_execute_cramer_independent(
+                    signal_side="buy",
+                    candles=candles,
+                    current_price=current_price,
+                    signal_score=signal_result.score,
+                    safety_multiplier=safety_multiplier,
+                )
 
         elif effective_action == "sell":
             normal_bot_blocked_by_cooldown = False
@@ -2097,8 +2136,14 @@ class TradingDaemon:
                         reason=f"insufficient_base_balance ({base_balance})",
                         signal_score=signal_result.score,
                     )
-                # Cramer Mode only acts when judge approves AND normal bot executes
-                # (removed independent trade logic for cleaner comparison)
+                # Cramer Mode may trade independently (see _maybe_execute_cramer_independent docstring)
+                self._maybe_execute_cramer_independent(
+                    signal_side="sell",
+                    candles=candles,
+                    current_price=current_price,
+                    signal_score=signal_result.score,
+                    safety_multiplier=safety_multiplier,
+                )
 
     def _execute_buy(
         self,
@@ -2534,6 +2579,52 @@ class TradingDaemon:
             logger.error("sell_failed", error=result.error)
             self.circuit_breaker.record_order_failure()
             self.notifier.notify_order_failed("sell", size_base, result.error or "Unknown error")
+
+    def _maybe_execute_cramer_independent(
+        self,
+        signal_side: str,
+        candles,
+        current_price: Decimal,
+        signal_score: int,
+        safety_multiplier: float,
+    ) -> None:
+        """
+        Execute Cramer Mode trade (inverse of signal) if conditions allow.
+
+        This is called when the normal bot CANNOT execute (blocked by balance,
+        position limits, or cooldown) but Cramer may still trade independently.
+
+        Cramer Mode is for PAPER MODE strategy comparison only - it uses virtual
+        balance and does not affect real funds.
+
+        Args:
+            signal_side: The direction the normal bot would have traded ("buy" or "sell")
+            candles: OHLCV data for position sizing
+            current_price: Current market price
+            signal_score: Signal strength from scorer
+            safety_multiplier: Combined safety multiplier (circuit breaker, judge, regime)
+        """
+        if not self.cramer_client:
+            return
+
+        # Cramer trades inverse: signal "buy" -> Cramer "sell", and vice versa
+        cramer_side = "sell" if signal_side == "buy" else "buy"
+
+        if safety_multiplier > 0:
+            self._execute_cramer_trade(
+                side=cramer_side,
+                candles=candles,
+                current_price=current_price,
+                signal_score=signal_score,
+                safety_multiplier=safety_multiplier,
+            )
+        else:
+            logger.warning(
+                "cramer_trade_blocked_by_safety",
+                side=cramer_side,
+                safety_multiplier=safety_multiplier,
+                reason="circuit_breaker_active",
+            )
 
     def _execute_cramer_trade(
         self,

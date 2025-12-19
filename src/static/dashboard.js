@@ -31,6 +31,9 @@ let isInitialized = false;
 /** Timestamp of last candle update, for throttling */
 let lastCandleUpdate = 0;
 
+/** Pending candle update timeout, ensures final throttled update is applied */
+let pendingCandleUpdate = null;
+
 const MAX_RECONNECT_ATTEMPTS = 10;
 const CANDLE_UPDATE_THROTTLE_MS = 1000;  // Throttle candle updates to 1/second
 const BASE_RECONNECT_DELAY = 1000;
@@ -362,6 +365,12 @@ function connectWebSocket() {
         document.getElementById('connection-status').textContent = 'Disconnected';
         document.getElementById('connection-status').className = 'status disconnected';
 
+        // Clean up pending candle update timeout to prevent stale updates
+        if (pendingCandleUpdate) {
+            clearTimeout(pendingCandleUpdate);
+            pendingCandleUpdate = null;
+        }
+
         // Attempt to reconnect with exponential backoff and jitter
         if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
             reconnectAttempts++;
@@ -479,8 +488,36 @@ function updateDashboard(state) {
             const isThrottled = !isNewCandlePeriod &&
                 (now - lastCandleUpdate < CANDLE_UPDATE_THROTTLE_MS);
 
+            // Clear any pending trailing update (new data supersedes it)
+            if (pendingCandleUpdate) {
+                clearTimeout(pendingCandleUpdate);
+                pendingCandleUpdate = null;
+            }
+
             if (isThrottled) {
-                // Skip this update - throttling within same candle period
+                // Schedule trailing update to ensure final price is captured
+                // This prevents losing the close price if updates stop arriving
+                // Capture current timestamp to detect stale updates after reconnect
+                const scheduledAt = now;
+                pendingCandleUpdate = setTimeout(() => {
+                    pendingCandleUpdate = null;
+                    // Staleness check: ensure this update is still relevant
+                    // If WebSocket reconnected, lastCandleUpdate will have jumped ahead
+                    const currentTime = Date.now();
+                    const isStale = (currentTime - scheduledAt) > (CANDLE_UPDATE_THROTTLE_MS * 2);
+                    if (isStale) {
+                        return;  // Discard stale update from before reconnect
+                    }
+                    if (currentCandle && currentCandle.time === candleTime) {
+                        currentCandle.high = Math.max(currentCandle.high, price);
+                        currentCandle.low = Math.min(currentCandle.low, price);
+                        currentCandle.close = price;
+                        candleSeries.update(currentCandle);
+                        if (priceLine) {
+                            priceLine.update({ time: currentCandle.time, value: price });
+                        }
+                    }
+                }, CANDLE_UPDATE_THROTTLE_MS);
                 return;
             }
 
