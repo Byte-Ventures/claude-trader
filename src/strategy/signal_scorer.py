@@ -573,8 +573,15 @@ class SignalScorer:
             # Minimum EMA value to filter out data quality issues (near-zero noise)
             # Value of 1.0 covers any real tradeable asset while filtering bad data
             MIN_EMA_VALUE = 1.0
-            if (indicators.ema_fast and indicators.ema_slow and
-                self.momentum_trend_strength_cap > 0.0):
+            # Explicit validation: momentum_trend_strength_cap should always be > 0
+            # Config validation enforces >= 1.0, but log warning if somehow invalid
+            if self.momentum_trend_strength_cap <= 0:
+                logger.warning(
+                    "invalid_momentum_trend_strength_cap",
+                    value=self.momentum_trend_strength_cap,
+                    action="skipping_trend_strength_calculation",
+                )
+            elif indicators.ema_fast and indicators.ema_slow:
                 # Convert to float for calculation
                 ema_slow_float = float(indicators.ema_slow)
                 ema_fast_float = float(indicators.ema_fast)
@@ -583,8 +590,8 @@ class SignalScorer:
                     ema_gap_percent = abs((ema_fast_float - ema_slow_float) / ema_slow_float) * 100
                     # Cap at configured percentage for normalization
                     # Linear scaling: 0% gap = 0.0 strength, cap% gap = 1.0 strength
-                    # Defensive max(0.001) prevents division by zero if cap is somehow 0
-                    trend_strength = min(1.0, ema_gap_percent / max(self.momentum_trend_strength_cap, 0.001))
+                    # Note: cap > 0 guaranteed by elif condition above; max() is extra defense
+                    trend_strength = min(1.0, ema_gap_percent / self.momentum_trend_strength_cap)
 
             # Scale the penalty reduction by trend strength
             # Base reduction is configured value (default 0.5), scaled by trend strength
@@ -660,7 +667,14 @@ class SignalScorer:
                 if volume_ratio > self.whale_volume_threshold:
                     # WHALE ACTIVITY: Extreme volume spike (configurable threshold, default 3x)
                     # Apply configurable boost (default 30%) - stronger signal than normal high volume
-                    # Note: On neutral signals (total_score=0), boost is 0 but _whale_activity
+                    #
+                    # Note: Volume boost is INDEPENDENT of OHLC consistency checks (below).
+                    # Volume ratio is calculated from volume data, not OHLC. Even if OHLC data
+                    # has timing inconsistencies (close outside high/low range), the volume
+                    # spike detection remains valid. Only the whale DIRECTION analysis (which
+                    # relies on close position within candle range) is affected by OHLC issues.
+                    #
+                    # On neutral signals (total_score=0), boost is 0 but _whale_activity
                     # is still set True. This is intentional - whale activity on neutral signals
                     # is valuable information for AI reviewers even without directional bias.
                     volume_boost = int(abs(total_score) * self.whale_boost_percent)
@@ -716,7 +730,7 @@ class SignalScorer:
                                     close_position = None
                                     breakdown["_candle_close_position"] = None
                                     breakdown["_whale_direction"] = "unknown"
-                                    # Note: _price_change_pct is kept (already set on line 634) - it's still valid
+                                    # Note: _price_change_pct is kept (already set on line 699) - it's still valid
                                     data_inconsistency = True
                                 else:
                                     # Division by zero protection: candle_range > 0 guaranteed by if-condition above (line 693)

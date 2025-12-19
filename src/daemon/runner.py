@@ -2073,9 +2073,12 @@ class TradingDaemon:
                         reason=f"insufficient_balance_or_position_limit (quote={quote_balance}, position={position_percent:.1f}%)",
                         signal_score=signal_result.score,
                     )
-                # Cramer Mode can act independently when judge approved (or AI disabled)
-                # If we reached here, AI either approved, reduced, or wasn't needed
-                # (inverse trade: signal=buy means Cramer sells)
+                # INTENDED BEHAVIOR: Cramer Mode trades independently of normal bot's balance
+                # This is by design for strategy comparison:
+                # - Normal bot may be blocked by insufficient balance or position limits
+                # - Cramer should still trade (inversely) if its OWN balance allows
+                # - AI judge approval applies to BOTH bots (if judge vetoes, neither trades)
+                # - This allows fair comparison: "what if we did the opposite?"
                 # Safety check: verify circuit breaker hasn't blocked trading (multiplier > 0)
                 if self.cramer_client and safety_multiplier > 0:
                     self._execute_cramer_trade(
@@ -2142,9 +2145,12 @@ class TradingDaemon:
                         reason=f"insufficient_base_balance ({base_balance})",
                         signal_score=signal_result.score,
                     )
-                # Cramer Mode can act independently when judge approved (or AI disabled)
-                # If we reached here, AI either approved, reduced, or wasn't needed
-                # (inverse trade: signal=sell means Cramer buys)
+                # INTENDED BEHAVIOR: Cramer Mode trades independently of normal bot's balance
+                # This is by design for strategy comparison:
+                # - Normal bot may be blocked by insufficient balance or position limits
+                # - Cramer should still trade (inversely) if its OWN balance allows
+                # - AI judge approval applies to BOTH bots (if judge vetoes, neither trades)
+                # - REDUCE applies to BOTH bots (safety_multiplier includes claude_veto_multiplier)
                 # Safety check: verify circuit breaker hasn't blocked trading (multiplier > 0)
                 if self.cramer_client and safety_multiplier > 0:
                     self._execute_cramer_trade(
