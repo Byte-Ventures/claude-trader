@@ -639,7 +639,8 @@ class SignalScorer:
                                     # Closed in lower half despite price increase - fighting/rejection
                                     breakdown["_whale_direction"] = "neutral"
                                 else:
-                                    breakdown["_whale_direction"] = "bullish"
+                                    # Conservative: require confirmation (missing data or ambiguous close position)
+                                    breakdown["_whale_direction"] = "neutral"
                             elif price_change_pct < -self.whale_direction_threshold:
                                 # Price moved down - check candle structure for confirmation
                                 if close_position is not None and close_position < 0.3:
@@ -648,7 +649,8 @@ class SignalScorer:
                                     # Closed in upper half despite price decrease - fighting/support
                                     breakdown["_whale_direction"] = "neutral"
                                 else:
-                                    breakdown["_whale_direction"] = "bearish"
+                                    # Conservative: require confirmation (missing data or ambiguous close position)
+                                    breakdown["_whale_direction"] = "neutral"
                             else:
                                 breakdown["_whale_direction"] = "neutral"
                         else:
