@@ -291,6 +291,12 @@ function connectWebSocket() {
         console.log('WebSocket connected');
         document.getElementById('connection-status').textContent = 'Connected';
         document.getElementById('connection-status').className = 'status connected';
+
+        // On reconnect, reload all data to catch up on missed updates
+        if (reconnectAttempts > 0) {
+            console.log('Reconnected - reloading data to catch up');
+            loadInitialData();
+        }
         reconnectAttempts = 0;
     };
 
