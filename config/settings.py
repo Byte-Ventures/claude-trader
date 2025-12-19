@@ -747,6 +747,35 @@ class Settings(BaseSettings):
             raise ValueError("rsi_overbought must be greater than rsi_oversold")
         return v
 
+    @field_validator("whale_candle_bullish_threshold")
+    @classmethod
+    def validate_whale_candle_thresholds(cls, v: float, info) -> float:
+        """Ensure whale candle thresholds are properly configured.
+
+        Validates that:
+        1. bearish_threshold < 0.5 < bullish_threshold
+        2. The thresholds don't overlap (bullish > bearish)
+
+        This prevents misconfiguration that would cause all whale signals
+        to be classified as neutral.
+        """
+        if "whale_candle_bearish_threshold" in info.data:
+            bearish = info.data["whale_candle_bearish_threshold"]
+            if v <= bearish:
+                raise ValueError(
+                    f"whale_candle_bullish_threshold ({v}) must be greater than "
+                    f"whale_candle_bearish_threshold ({bearish})"
+                )
+            if v <= 0.5:
+                raise ValueError(
+                    f"whale_candle_bullish_threshold ({v}) must be > 0.5"
+                )
+            if bearish >= 0.5:
+                raise ValueError(
+                    f"whale_candle_bearish_threshold ({bearish}) must be < 0.5"
+                )
+        return v
+
     @model_validator(mode="after")
     def validate_telegram_config(self) -> "Settings":
         """Validate Telegram configuration if enabled."""

@@ -632,10 +632,20 @@ class SignalScorer:
 
                             # Calculate where the close is within the candle range (0 = low, 1 = high)
                             if candle_range > 0 and not pd.isna(candle_high) and not pd.isna(candle_low):
-                                close_position = (current_price - candle_low) / candle_range
-                                # Clamp to [0, 1] to prevent floating point precision issues
-                                close_position = max(0.0, min(1.0, close_position))
-                                breakdown["_candle_close_position"] = round(close_position, 3)
+                                # Verify price is within expected range before calculation
+                                # Data inconsistency can occur when close/high/low come from slightly
+                                # different timestamps or feeds. This indicates data quality issues.
+                                if current_price < candle_low or current_price > candle_high:
+                                    # Data inconsistency detected - log warning and treat as neutral
+                                    logger.warning(
+                                        f"Price {current_price} outside candle range [{candle_low}, {candle_high}] - "
+                                        f"possible data feed inconsistency"
+                                    )
+                                    close_position = None
+                                    breakdown["_candle_close_position"] = None
+                                else:
+                                    close_position = (current_price - candle_low) / candle_range
+                                    breakdown["_candle_close_position"] = round(close_position, 3)
                             else:
                                 # Zero-range candle (doji/flat) or missing data:
                                 # When high == low (perfect equilibrium), candle_range = 0
