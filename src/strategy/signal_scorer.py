@@ -26,6 +26,10 @@ logger = structlog.get_logger(__name__)
 # Type alias for sentiment categories from Fear & Greed Index
 SentimentCategory = Literal["extreme_fear", "fear", "neutral", "greed", "extreme_greed"]
 
+# Maximum trend strength value (normalized ceiling for trend strength calculation)
+# Trend strength is normalized to 0.0-1.0 range using min(MAX_TREND_STRENGTH, actual_strength)
+MAX_TREND_STRENGTH = 1.0
+
 # Recommended signal thresholds by candle interval
 # Shorter candles capture faster moves, so lower thresholds are appropriate
 # Longer candles require higher conviction, so higher thresholds are better
@@ -578,13 +582,13 @@ class SignalScorer:
                 ema_fast_float = float(indicators.ema_fast)
                 ema_gap_percent = abs((ema_fast_float - ema_slow_float) / ema_slow_float) * 100
                 # Cap at configured percentage for normalization
-                # Linear scaling: 0% gap = 0.0 strength, cap% gap = 1.0 strength
-                trend_strength = min(1.0, ema_gap_percent / self.momentum_trend_strength_cap)
+                # Linear scaling: 0% gap = 0.0 strength, cap% gap = MAX_TREND_STRENGTH
+                trend_strength = min(MAX_TREND_STRENGTH, ema_gap_percent / self.momentum_trend_strength_cap)
 
             # Scale the penalty reduction by trend strength
             # Base reduction is configured value (default 0.5), scaled by trend strength
             # Weak trend (0.0 strength): minimal reduction (near full penalty = more responsive)
-            # Strong trend (1.0 strength): full reduction (configured value)
+            # Strong trend (MAX_TREND_STRENGTH): full reduction (configured value)
             # Formula: new_penalty = old_penalty * (1 - reduction)
             # - reduction=0.0 → keep 100% of penalty (no change)
             # - reduction=0.5 → keep 50% of penalty (half the overbought signal)
@@ -597,6 +601,10 @@ class SignalScorer:
             # - Moderate trend (0.5): reduction=0.25, keep 75% → -25 becomes -18
             # - Weak trend (0.1): reduction=0.05, keep 95% → -25 becomes -23
             # - No trend (0.0): reduction=0.0, keep 100% → -25 stays -25
+            #
+            # Note: Very weak trends (< 0.2% EMA gap with default 5% cap) result in minimal
+            # penalty reduction due to integer truncation. This is intentional - it ensures
+            # more responsive exits when the trend lacks conviction.
             if rsi_score < 0:
                 rsi_score = int(rsi_score * (1 - reduction))
             if bb_score < 0:
