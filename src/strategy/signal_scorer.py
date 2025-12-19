@@ -645,8 +645,10 @@ class SignalScorer:
                                 # Data inconsistency can occur when close/high/low come from slightly
                                 # different timestamps or feeds. This indicates data quality issues.
                                 # Use relative epsilon based on price magnitude (0.0001% tolerance)
-                                epsilon = candle_high * self.PRICE_TOLERANCE_EPSILON
-                                if current_price < (candle_low - epsilon) or current_price > (candle_high + epsilon):
+                                # Use separate epsilons for upper and lower bounds for accuracy
+                                epsilon_high = candle_high * self.PRICE_TOLERANCE_EPSILON
+                                epsilon_low = abs(candle_low) * self.PRICE_TOLERANCE_EPSILON
+                                if current_price < (candle_low - epsilon_low) or current_price > (candle_high + epsilon_high):
                                     # Data inconsistency detected - log warning with context and treat as neutral
                                     price_diff = min(abs(current_price - candle_high), abs(candle_low - current_price))
                                     logger.warning(
@@ -657,6 +659,7 @@ class SignalScorer:
                                     close_position = None
                                     breakdown["_candle_close_position"] = None
                                 else:
+                                    # Division by zero protection: candle_range > 0 guaranteed by if-condition above (line 643)
                                     close_position = (current_price - candle_low) / candle_range
                                     breakdown["_candle_close_position"] = round(close_position, 3)
                             else:
