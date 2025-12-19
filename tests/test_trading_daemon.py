@@ -2171,9 +2171,10 @@ def test_store_signal_history_truncates_long_errors(htf_mock_settings, mock_exch
     """Test that long error messages are truncated with ellipsis in alerts."""
     from src.strategy.signal_scorer import SignalResult, IndicatorValues
     from sqlalchemy.exc import SQLAlchemyError
+    from src.daemon.runner import MAX_ERROR_MSG_LENGTH
 
-    # Create error with message > 200 chars
-    long_error_msg = "x" * 300
+    # Create error with message > MAX_ERROR_MSG_LENGTH chars
+    long_error_msg = "x" * (MAX_ERROR_MSG_LENGTH + 100)
     mock_session = MagicMock()
     mock_session.__enter__ = Mock(side_effect=SQLAlchemyError(long_error_msg))
     mock_session.__exit__ = Mock(return_value=False)
@@ -2220,15 +2221,16 @@ def test_store_signal_history_truncates_long_errors(htf_mock_settings, mock_exch
 
                 # Verify truncation:
                 # - Should contain "Last error: " prefix
-                # - Should have 200 chars of the error message
+                # - Should have MAX_ERROR_MSG_LENGTH chars of the error message
                 # - Should have "..." appended
                 assert "Last error: " in context
                 # Extract the error portion after "Last error: "
                 error_portion = context.split("Last error: ")[1]
                 # Verify truncation occurred and ellipsis is present
                 assert error_portion.endswith('...')
-                assert len(error_portion) <= 203  # Should be 200 chars + '...'
-                assert 'x' * 150 in error_portion  # Verify we got substantial error content
+                assert len(error_portion) <= MAX_ERROR_MSG_LENGTH + 3  # Should be MAX_ERROR_MSG_LENGTH chars + '...'
+                # Verify we got substantial error content (at least half of MAX_ERROR_MSG_LENGTH)
+                assert 'x' * (MAX_ERROR_MSG_LENGTH // 2) in error_portion
 
 
 def test_store_signal_history_short_errors_not_truncated(htf_mock_settings, mock_exchange_client, mock_database):

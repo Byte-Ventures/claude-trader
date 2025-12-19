@@ -54,6 +54,8 @@ ASYNC_TIMEOUT_SECONDS = 120
 STOP_PROTECTION_CHECK_INTERVAL_SECONDS = 300  # 5 minutes
 
 # Maximum length for error messages in signal history alerts
+# Keeps notifications readable while preserving key error details
+# (Telegram API supports up to 4096 chars total, this ensures error portion stays concise)
 MAX_ERROR_MSG_LENGTH = 200
 
 
