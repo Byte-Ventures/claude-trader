@@ -61,3 +61,4 @@ htmlcov/
 .DS_Store
 Thumbs.db
 .claude/
+trading_bot.db

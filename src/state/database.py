@@ -1670,8 +1670,22 @@ class Database:
             if existing:
                 # Update existing candle - preserve open, use max/min for high/low
                 # open_price is NOT updated - it's the first price of the period
-                existing.high_price = str(max(Decimal(existing.high_price), high_price))
-                existing.low_price = str(min(Decimal(existing.low_price), low_price))
+                try:
+                    existing_high = Decimal(existing.high_price)
+                    existing_low = Decimal(existing.low_price)
+                except (ValueError, TypeError, InvalidOperation) as e:
+                    # Corrupted database value - log and use incoming value to repair
+                    logger.warning(
+                        "rate_corrupted_decimal",
+                        error=str(e),
+                        timestamp=str(timestamp),
+                        existing_high=existing.high_price,
+                        existing_low=existing.low_price,
+                    )
+                    existing_high = high_price
+                    existing_low = low_price
+                existing.high_price = str(max(existing_high, high_price))
+                existing.low_price = str(min(existing_low, low_price))
                 existing.close_price = str(close_price)
                 existing.volume = str(volume)  # Exchange provides cumulative volume
                 return existing
@@ -1767,8 +1781,24 @@ class Database:
                         # Update existing candle - preserve open, use max/min for high/low
                         existing = existing_candles[normalized_ts]
                         # open_price is NOT updated - it's the first price of the period
-                        existing.high_price = str(max(Decimal(existing.high_price), Decimal(str(candle["high"]))))
-                        existing.low_price = str(min(Decimal(existing.low_price), Decimal(str(candle["low"]))))
+                        new_high = Decimal(str(candle["high"]))
+                        new_low = Decimal(str(candle["low"]))
+                        try:
+                            existing_high = Decimal(existing.high_price)
+                            existing_low = Decimal(existing.low_price)
+                        except (ValueError, TypeError, InvalidOperation) as e:
+                            # Corrupted database value - log and use incoming value to repair
+                            logger.warning(
+                                "rate_bulk_corrupted_decimal",
+                                error=str(e),
+                                timestamp=str(normalized_ts),
+                                existing_high=existing.high_price,
+                                existing_low=existing.low_price,
+                            )
+                            existing_high = new_high
+                            existing_low = new_low
+                        existing.high_price = str(max(existing_high, new_high))
+                        existing.low_price = str(min(existing_low, new_low))
                         existing.close_price = str(candle["close"])
                         existing.volume = str(candle["volume"])  # Exchange provides cumulative volume
                         updated += 1

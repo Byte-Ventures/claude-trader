@@ -1051,6 +1051,78 @@ def test_record_rates_bulk_partial_duplicates(db):
     assert rates[0].get_close() == Decimal("50300")
 
 
+def test_record_rates_bulk_paper_live_separation(db):
+    """
+    CRITICAL: Verify bulk upsert keeps paper and live candles completely separate.
+
+    Per CLAUDE.md: "Paper and live data must NEVER mix"
+    """
+    timestamp = datetime(2024, 1, 1, 12, 0, 0)
+
+    # Insert live candle
+    live_candles = [{
+        "timestamp": timestamp,
+        "open": Decimal("50000"),
+        "high": Decimal("50500"),
+        "low": Decimal("49500"),
+        "close": Decimal("50200"),
+        "volume": Decimal("100"),
+    }]
+    db.record_rates_bulk(live_candles, is_paper=False)
+
+    # Insert paper candle with SAME timestamp but DIFFERENT values
+    paper_candles = [{
+        "timestamp": timestamp,
+        "open": Decimal("51000"),
+        "high": Decimal("51500"),
+        "low": Decimal("50500"),
+        "close": Decimal("51200"),
+        "volume": Decimal("200"),
+    }]
+    db.record_rates_bulk(paper_candles, is_paper=True)
+
+    # Verify both exist independently
+    live_rates = db.get_rates(is_paper=False)
+    paper_rates = db.get_rates(is_paper=True)
+
+    assert len(live_rates) == 1
+    assert len(paper_rates) == 1
+    assert live_rates[0].id != paper_rates[0].id
+
+    # Verify values are different (not mixed)
+    assert live_rates[0].get_open() == Decimal("50000")
+    assert paper_rates[0].get_open() == Decimal("51000")
+    assert live_rates[0].get_high() == Decimal("50500")
+    assert paper_rates[0].get_high() == Decimal("51500")
+
+    # Now update live candle - should NOT affect paper candle
+    live_update = [{
+        "timestamp": timestamp,
+        "open": Decimal("49000"),  # Should be ignored (open is immutable)
+        "high": Decimal("51000"),  # Should update to 51000 (max of 50500, 51000)
+        "low": Decimal("49000"),   # Should update to 49000 (min of 49500, 49000)
+        "close": Decimal("50800"),
+        "volume": Decimal("150"),
+    }]
+    db.record_rates_bulk(live_update, is_paper=False)
+
+    # Refresh from database
+    live_rates = db.get_rates(is_paper=False)
+    paper_rates = db.get_rates(is_paper=True)
+
+    # Verify live was updated correctly
+    assert live_rates[0].get_open() == Decimal("50000")  # Preserved
+    assert live_rates[0].get_high() == Decimal("51000")  # Updated to max
+    assert live_rates[0].get_low() == Decimal("49000")   # Updated to min
+    assert live_rates[0].get_close() == Decimal("50800")
+
+    # Verify paper was NOT affected
+    assert paper_rates[0].get_open() == Decimal("51000")
+    assert paper_rates[0].get_high() == Decimal("51500")
+    assert paper_rates[0].get_low() == Decimal("50500")
+    assert paper_rates[0].get_close() == Decimal("51200")
+
+
 def test_get_rates_with_time_filter(db):
     """Test retrieving rates with time filter."""
     candles = [
