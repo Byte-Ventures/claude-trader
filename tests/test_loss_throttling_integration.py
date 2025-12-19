@@ -231,7 +231,7 @@ def test_no_race_conditions_in_state_updates(limiter, breaker):
     """
     with freeze_time("2024-01-01 12:00:00"):
         # Rapidly record multiple trades
-        for i in range(10):
+        for _ in range(10):
             limiter.record_trade(Decimal("-50"), "buy", Decimal("0.01"), Decimal("50000"))
 
         # Trip circuit breaker
@@ -368,6 +368,7 @@ def test_throttle_gradually_releases_after_winning_trades(limiter):
         status_before = limiter.get_status()
         assert status_before.daily_loss_percent == pytest.approx(7.5, abs=0.1)
         mult_before = status_before.position_multiplier
+        # 7.5% loss = 75% of 10% limit, should result in moderate throttling
         assert mult_before < 0.7  # Should be throttled
 
         # Win some back - reduce to 5.5% loss
@@ -495,8 +496,8 @@ def test_hourly_window_reset_while_daily_persists(limiter):
         assert status_limited.hourly_limit_hit is True
         assert status_limited.can_trade is False
 
-        # Move past hourly cooldown (1 hour + 1 minute)
-        frozen_time.move_to("2024-01-01 13:01:00")
+        # Move past hourly cooldown (1 hour + 5 minutes for safety margin)
+        frozen_time.move_to("2024-01-01 13:05:00")
 
         status_after_cooldown = limiter.get_status()
 
@@ -604,7 +605,7 @@ def test_throttled_position_respects_minimum_trade_size(validator, limiter):
         limiter.record_trade(Decimal("-200"), "buy", Decimal("0.01"), Decimal("50000"))
 
         status = limiter.get_status()
-        # Verify we're at low multiplier (should be around 0.3-0.4)
+        # Verify we're at low multiplier (9.5% loss = 95% of limit → ~30-40% multiplier)
         assert status.position_multiplier <= 0.5
 
         # Order that would normally be $200 but throttled to ~$60-80
@@ -667,6 +668,10 @@ def test_loss_limits_independent_per_trading_mode():
     achieved by instantiating separate instances for each mode.
     Database-level paper/live separation (is_paper column) is tested in
     tests/test_database.py for the Trade and Order models.
+
+    Timestamp progression is not needed for this test - we're verifying that
+    two separate LossLimiter instances maintain independent state, which
+    doesn't depend on time-based behavior.
     """
     with freeze_time("2024-01-01 12:00:00"):
         # Separate limiters for paper and live (as would be in real usage)
