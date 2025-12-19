@@ -131,7 +131,8 @@ def test_throttling_and_circuit_breaker_both_active(limiter, breaker, validator)
     )
 
     with freeze_time("2024-01-01 12:00:00") as frozen_time:
-        # Step 1: Record loss to trigger throttling (6% of $10k = $600)
+        # Step 1: Record loss to trigger throttling
+        # 6% loss on $10k balance = $600 (exceeds 5% throttle threshold)
         limiter.record_trade(Decimal("-600"), "buy", Decimal("0.01"), Decimal("50000"))
 
         # Move forward to clear hourly window
@@ -165,9 +166,11 @@ def test_circuit_breaker_red_overrides_throttling(limiter, breaker, validator):
         # Record loss to trigger throttling but not hourly limit
         # Need 5.5% to trigger throttling (above 5% threshold)
         # Split across time to avoid hourly limit (3%)
+        # 2.75% loss = $275 (on $10k balance)
         limiter.record_trade(Decimal("-275"), "buy", Decimal("0.01"), Decimal("50000"))
 
         frozen_time.move_to("2024-01-01 12:00:00")
+        # Another 2.75% loss = $275 (total 5.5% daily)
         limiter.record_trade(Decimal("-275"), "buy", Decimal("0.01"), Decimal("50000"))
 
         # Verify throttling is active but allows trading (5.5% daily, spread over time)
@@ -216,10 +219,10 @@ def test_loss_limit_hit_with_circuit_breaker_yellow(limiter, breaker, validator)
 
 def test_no_race_conditions_in_state_updates(limiter, breaker):
     """
-    Test that rapid state updates don't cause race conditions.
+    Test that rapid sequential state updates remain consistent.
 
     Rapidly record trades and trip circuit breaker to ensure state
-    remains consistent.
+    remains consistent across rapid sequential operations.
 
     Note: This test verifies state consistency with rapid sequential updates,
     but does not test true concurrent access (which would require threading).
@@ -258,6 +261,7 @@ def test_multiplier_stacking_throttle_and_breaker(limiter, breaker, validator):
     """
     with freeze_time("2024-01-01 12:00:00") as frozen_time:
         # Create 7.5% loss (75% of 10% limit) to get ~70% throttle
+        # Each trade is 2.5% of $10k balance = $250
         limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
         frozen_time.move_to("2024-01-01 14:00:00")
         limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
@@ -290,6 +294,7 @@ def test_multiplier_at_minimum_boundaries(limiter, breaker, validator):
     """
     with freeze_time("2024-01-01 12:00:00") as frozen_time:
         # Create 9.5% loss to reach near-minimum throttle
+        # 3 trades of 2.5% ($250) + 1 trade of 2% ($200) = 9.5% of $10k
         limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
         frozen_time.move_to("2024-01-01 12:30:00")
         limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
@@ -352,6 +357,7 @@ def test_throttle_gradually_releases_after_winning_trades(limiter):
     """
     with freeze_time("2024-01-01 10:00:00") as frozen_time:
         # Build up 7.5% loss (75% of limit) - moderate throttling
+        # 3 trades of 2.5% of $10k balance = $250 each
         limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
         frozen_time.move_to("2024-01-01 12:00:00")
         limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
@@ -387,6 +393,7 @@ def test_throttle_prevents_rapid_flapping(limiter):
     with freeze_time("2024-01-01 12:00:00") as frozen_time:
         # Get to 5.5% loss (just above throttle threshold of 5%)
         # Spread across time to avoid hourly limit
+        # 2 trades of 2.75% of $10k balance = $275 each
         limiter.record_trade(Decimal("-275"), "buy", Decimal("0.01"), Decimal("50000"))
         frozen_time.move_to("2024-01-01 14:00:00")
         limiter.record_trade(Decimal("-275"), "buy", Decimal("0.01"), Decimal("50000"))
@@ -509,6 +516,7 @@ def test_both_limits_approach_simultaneously(limiter):
     """
     with freeze_time("2024-01-01 12:00:00") as frozen_time:
         # Create 2.5% hourly loss (83% of 3% hourly limit)
+        # 2.5% of $10k balance = $250
         limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
 
         # Also 2.5% daily loss (25% of 10% daily limit)
@@ -539,7 +547,7 @@ def test_multiple_hourly_windows_in_one_day(limiter):
     before hitting daily limit.
     """
     with freeze_time("2024-01-01 08:00:00") as frozen_time:
-        # First hourly limit hit (3% = $300)
+        # First hourly limit hit (3% of $10k = $300)
         limiter.record_trade(Decimal("-300"), "buy", Decimal("0.01"), Decimal("50000"))
 
         status1 = limiter.get_status()
@@ -548,7 +556,7 @@ def test_multiple_hourly_windows_in_one_day(limiter):
         # Move past cooldown
         frozen_time.move_to("2024-01-01 09:30:00")
 
-        # Second hourly limit hit (another $300)
+        # Second hourly limit hit (another 3% = $300)
         limiter.record_trade(Decimal("-300"), "buy", Decimal("0.01"), Decimal("50000"))
 
         status2 = limiter.get_status()
@@ -586,6 +594,7 @@ def test_throttled_position_respects_minimum_trade_size(validator, limiter):
 
     with freeze_time("2024-01-01 12:00:00") as frozen_time:
         # Create 9.5% loss to reach near-minimum throttle (~30%)
+        # 3 trades of 2.5% ($250) + 1 trade of 2% ($200) = 9.5% of $10k
         limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
         frozen_time.move_to("2024-01-01 14:00:00")
         limiter.record_trade(Decimal("-250"), "buy", Decimal("0.01"), Decimal("50000"))
@@ -659,42 +668,43 @@ def test_loss_limits_independent_per_trading_mode():
     Database-level paper/live separation (is_paper column) is tested in
     tests/test_database.py for the Trade and Order models.
     """
-    # Separate limiters for paper and live (as would be in real usage)
-    paper_limiter = LossLimiter(
-        config=LossLimitConfig(
-            throttle_at_percent=50.0,
-            throttle_min_multiplier=0.3,
-            max_daily_loss_percent=10.0,
-            max_hourly_loss_percent=3.0,
-        ),
-        starting_balance=Decimal("10000")
-    )
+    with freeze_time("2024-01-01 12:00:00"):
+        # Separate limiters for paper and live (as would be in real usage)
+        paper_limiter = LossLimiter(
+            config=LossLimitConfig(
+                throttle_at_percent=50.0,
+                throttle_min_multiplier=0.3,
+                max_daily_loss_percent=10.0,
+                max_hourly_loss_percent=3.0,
+            ),
+            starting_balance=Decimal("10000")
+        )
 
-    live_limiter = LossLimiter(
-        config=LossLimitConfig(
-            throttle_at_percent=50.0,
-            throttle_min_multiplier=0.3,
-            max_daily_loss_percent=10.0,
-            max_hourly_loss_percent=3.0,
-        ),
-        starting_balance=Decimal("50000")
-    )
+        live_limiter = LossLimiter(
+            config=LossLimitConfig(
+                throttle_at_percent=50.0,
+                throttle_min_multiplier=0.3,
+                max_daily_loss_percent=10.0,
+                max_hourly_loss_percent=3.0,
+            ),
+            starting_balance=Decimal("50000")
+        )
 
-    # Paper trading has losses
-    paper_limiter.record_trade(Decimal("-800"), "buy", Decimal("0.01"), Decimal("50000"))
+        # Paper trading has losses
+        paper_limiter.record_trade(Decimal("-800"), "buy", Decimal("0.01"), Decimal("50000"))
 
-    # Live trading is clean
-    # (no trades recorded)
+        # Live trading is clean
+        # (no trades recorded)
 
-    # Paper should be throttled
-    paper_status = paper_limiter.get_status()
-    assert paper_status.daily_loss_percent == pytest.approx(8.0, abs=0.1)
-    assert paper_status.position_multiplier < 1.0
+        # Paper should be throttled
+        paper_status = paper_limiter.get_status()
+        assert paper_status.daily_loss_percent == pytest.approx(8.0, abs=0.1)
+        assert paper_status.position_multiplier < 1.0
 
-    # Live should be unaffected
-    live_status = live_limiter.get_status()
-    assert live_status.daily_loss_percent == 0.0
-    assert live_status.position_multiplier == 1.0
+        # Live should be unaffected
+        live_status = live_limiter.get_status()
+        assert live_status.daily_loss_percent == 0.0
+        assert live_status.position_multiplier == 1.0
 
 
 # ============================================================================
@@ -717,6 +727,7 @@ def test_throttling_provides_clear_warning_messages(validator, limiter):
     with freeze_time("2024-01-01 10:00:00") as frozen_time:
         # Create loss to trigger throttling but not hourly limit
         # Split across time: 5.5% total daily
+        # 2 trades of 2.75% of $10k balance = $275 each
         limiter.record_trade(Decimal("-275"), "buy", Decimal("0.01"), Decimal("50000"))
         frozen_time.move_to("2024-01-01 14:00:00")
         limiter.record_trade(Decimal("-275"), "buy", Decimal("0.01"), Decimal("50000"))
@@ -750,6 +761,7 @@ def test_combined_warnings_from_multiple_systems(validator, limiter, breaker):
 
     with freeze_time("2024-01-01 10:00:00") as frozen_time:
         # Trigger loss throttling (split to avoid hourly limit)
+        # 2 trades of 2.75% of $10k balance = $275 each (5.5% total)
         limiter.record_trade(Decimal("-275"), "buy", Decimal("0.01"), Decimal("50000"))
         frozen_time.move_to("2024-01-01 14:00:00")
         limiter.record_trade(Decimal("-275"), "buy", Decimal("0.01"), Decimal("50000"))
