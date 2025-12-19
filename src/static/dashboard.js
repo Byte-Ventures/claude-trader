@@ -444,6 +444,8 @@ function updateDashboard(state) {
                          htfBias.combined_bias === 'bearish' ? '❌' :
                          '⚖️';
 
+        // Defensive check: Pydantic guarantees combined_bias is non-null Literal["bullish", "bearish", "neutral"]
+        // but we check anyway for runtime safety in JavaScript
         const biasText = htfBias.combined_bias
             ? htfBias.combined_bias.charAt(0).toUpperCase() + htfBias.combined_bias.slice(1)
             : 'Unknown';

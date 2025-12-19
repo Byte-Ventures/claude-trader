@@ -1420,6 +1420,8 @@ class TradingDaemon:
             )
 
         # Get HTF bias for multi-timeframe confirmation
+        # NOTE: _get_htf_bias() handles MTF-disabled case by returning ("neutral", "neutral", "neutral")
+        # These variables are used later in signal calculation AND dashboard state, ensuring consistency
         htf_bias, daily_trend, four_hour_trend = self._get_htf_bias()
 
         # Fetch sentiment before signal calculation to enable extreme fear override in MTF logic.
