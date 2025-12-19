@@ -590,8 +590,9 @@ class SignalScorer:
             # Reduce overbought penalties by scaled factor (only negative scores)
             # Use int() instead of // for symmetric rounding behavior
             # Note: Very weak trends (reduction near 0) will result in near-zero penalty scores
-            # (original negative penalty multiplied by ~0), enabling maximum responsiveness.
-            # This is intentional - neutral scores allow exits during potential reversals.
+            # due to integer truncation (e.g., int(-25 * 0.005) = int(-0.125) = 0).
+            # This is intentional - near-zero or zero scores enable fast exits during weak
+            # trends where reversals are more likely, aligning with issue #54 goals.
             if rsi_score < 0:
                 rsi_score = int(rsi_score * reduction)
             if bb_score < 0:
