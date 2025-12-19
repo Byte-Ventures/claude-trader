@@ -656,11 +656,17 @@ class Settings(BaseSettings):
         default=False,
         description="Include 4-hour timeframe in MTF (false = daily-only, simpler)"
     )
-    mtf_candle_limit: int = Field(
+    mtf_daily_candle_limit: int = Field(
         default=50,
         ge=20,
         le=100,
-        description="Number of candles to fetch for HTF trend calculation"
+        description="Candles for daily trend analysis (50 = ~7 weeks)"
+    )
+    mtf_4h_candle_limit: int = Field(
+        default=84,
+        ge=20,
+        le=200,
+        description="Candles for 4H trend analysis (84 = 14 days)"
     )
     mtf_daily_cache_minutes: int = Field(
         default=60,

@@ -744,7 +744,7 @@ class TradingDaemon:
             self._ai_recommendation_ttl_minutes = new_settings.ai_recommendation_ttl_minutes
 
             # Invalidate HTF cache if MTF settings changed
-            mtf_settings = {"mtf_enabled", "mtf_4h_enabled", "mtf_candle_limit",
+            mtf_settings = {"mtf_enabled", "mtf_4h_enabled", "mtf_daily_candle_limit", "mtf_4h_candle_limit",
                            "mtf_daily_cache_minutes", "mtf_4h_cache_minutes",
                            "mtf_aligned_boost", "mtf_counter_penalty"}
             if mtf_settings & set(changes.keys()):
@@ -868,11 +868,17 @@ class TradingDaemon:
         if last_fetch and (now - last_fetch) < timedelta(minutes=cache_minutes):
             return cached_trend
 
+        # Select appropriate candle limit based on timeframe
+        if granularity == "ONE_DAY":
+            candle_limit = self.settings.mtf_daily_candle_limit
+        else:  # FOUR_HOUR
+            candle_limit = self.settings.mtf_4h_candle_limit
+
         try:
             candles = self.client.get_candles(
                 self.settings.trading_pair,
                 granularity=granularity,
-                limit=self.settings.mtf_candle_limit,
+                limit=candle_limit,
             )
 
             # Validate candles before processing - need enough data for trend calculation

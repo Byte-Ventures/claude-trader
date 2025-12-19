@@ -1819,7 +1819,8 @@ def htf_mock_settings(mock_settings):
     """Extend mock settings with MTF configuration."""
     mock_settings.mtf_enabled = True
     mock_settings.mtf_4h_enabled = True
-    mock_settings.mtf_candle_limit = 50
+    mock_settings.mtf_daily_candle_limit = 50
+    mock_settings.mtf_4h_candle_limit = 84
     mock_settings.mtf_daily_cache_minutes = 60
     mock_settings.mtf_4h_cache_minutes = 30
     mock_settings.mtf_aligned_boost = 20
