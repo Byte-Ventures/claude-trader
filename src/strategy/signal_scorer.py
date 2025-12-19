@@ -635,7 +635,9 @@ class SignalScorer:
                                 # Verify price is within expected range before calculation
                                 # Data inconsistency can occur when close/high/low come from slightly
                                 # different timestamps or feeds. This indicates data quality issues.
-                                if current_price < candle_low or current_price > candle_high:
+                                # Use small epsilon (1e-8) to tolerate floating-point precision differences
+                                EPSILON = 1e-8
+                                if current_price < (candle_low - EPSILON) or current_price > (candle_high + EPSILON):
                                     # Data inconsistency detected - log warning and treat as neutral
                                     logger.warning(
                                         f"Price {current_price} outside candle range [{candle_low}, {candle_high}] - "
@@ -656,11 +658,12 @@ class SignalScorer:
                                 breakdown["_candle_close_position"] = None
 
                             # Determine direction with candle structure confirmation
-                            # Requires strong conviction: close_position > 0.7 (bullish) or < 0.3 (bearish)
+                            # Requires strong conviction: close_position STRICTLY > 0.7 (bullish) or STRICTLY < 0.3 (bearish)
                             # The 0.3-0.7 range is intentionally treated as "ambiguous" requiring higher conviction:
-                            #   - Bullish: only accept close > 0.7 (closed in top 30% of range)
-                            #   - Bearish: only accept close < 0.3 (closed in bottom 30% of range)
-                            #   - Middle range (0.3-0.7): defaults to neutral (conservative approach)
+                            #   - Bullish: close_position > 0.7 (closed in top 30% of range)
+                            #   - Bearish: close_position < 0.3 (closed in bottom 30% of range)
+                            #   - At boundaries (exactly 0.3 or 0.7): treated as neutral (conservative)
+                            #   - Middle range (0.3 to 0.7): defaults to neutral
                             # This prevents false signals from weak candle formations
                             # Trade-off: Prioritizes precision over recall (fewer false positives, may miss some valid signals)
                             # For a financial system, false negatives (missed opportunities) are safer than false positives (bad trades)
