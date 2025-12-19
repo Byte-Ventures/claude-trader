@@ -146,15 +146,6 @@ When creating new configuration parameters:
 3. Push and create PR to `develop`
 4. After review, merge to `develop`
 5. When ready for release, create PR from `develop` to `main`
-6. **After every PR merge to `main`**, reset `develop` to `main`:
-   ```bash
-   git checkout develop
-   git fetch origin main
-   git reset --hard origin/main
-   git push --force-with-lease origin develop
-   ```
-
-**Why reset instead of rebase?** PRs to main are squash-merged (cleaner main history). Rebasing would try to replay the original commits that are already in main (as squash commits), causing conflicts. Reset is safe because all work is already merged.
 
 ### Creating PRs to Main
 
@@ -175,8 +166,6 @@ This ensures the PR only shows commits that are actually new.
 - Direct commits to `main` are not allowed
 - **NEVER delete the `develop` branch** - feature branches depend on it. Do NOT use `--delete-branch` when merging PRs from develop to main.
 - **ALWAYS check that a PR is still OPEN before pushing commits to it** - use `gh pr view {NUMBER} --json state`
-- **NEVER push additional commits to `develop` after a PR is merged** - reset develop to main first, then create a new PR for any additional fixes
-- **After ANY PR merge to `main`**: immediately reset `develop` to `main` before doing anything else
 
 ## Pull Request Reviews (CRITICAL)
 
