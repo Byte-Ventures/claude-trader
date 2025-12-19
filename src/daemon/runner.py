@@ -1076,11 +1076,9 @@ class TradingDaemon:
                 self._signal_history_failures > 10
                 and (self._signal_history_failures - 10) % 50 == 0
             ):
-                error_str = str(e)
-                error_msg = error_str[:MAX_ERROR_MSG_LENGTH]
                 self.notifier.notify_error(
                     f"Signal history storage failing ({self._signal_history_failures} consecutive failures)",
-                    context=f"Last error: {error_msg}{'...' if len(error_str) > MAX_ERROR_MSG_LENGTH else ''}",
+                    context=f"Last error: {self._truncate_error_msg(e)}",
                 )
             return None
 
@@ -1358,6 +1356,8 @@ class TradingDaemon:
                         unrealized_pnl=str(unrealized_pnl),
                         combined_loss_pct=f"{combined_loss_pct:.1f}%",
                     )
+                    # Note: No truncation needed - message uses fixed-format percentage string
+                    # which is always short (e.g., "Combined loss 12.3% exceeds daily limit")
                     self.notifier.notify_error(
                         f"Combined loss {combined_loss_pct:.1f}% exceeds daily limit",
                         "Unrealized loss warning"
