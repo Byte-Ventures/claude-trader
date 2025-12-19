@@ -53,9 +53,10 @@ ASYNC_TIMEOUT_SECONDS = 120
 # Interval for periodic stop protection checks (seconds)
 STOP_PROTECTION_CHECK_INTERVAL_SECONDS = 300  # 5 minutes
 
-# Maximum length for error messages in signal history alerts
-# Keeps notifications readable while preserving key error details
-# (Telegram API supports up to 4096 chars total, this ensures error portion stays concise)
+# Maximum length for error messages in Telegram notifications
+# Preserves first 200 chars which typically contain the most relevant error details
+# (Telegram API supports up to 4096 chars total, but long tracebacks/SQLAlchemy
+# errors can be thousands of chars - this ensures notifications stay readable)
 MAX_ERROR_MSG_LENGTH = 200
 
 
@@ -584,6 +585,21 @@ class TradingDaemon:
                 return (float(price) - indicators.bb_lower) / bb_range
         return None
 
+    def _truncate_error_msg(self, error: Exception) -> str:
+        """
+        Truncate error message to prevent Telegram length issues.
+
+        Args:
+            error: Exception to convert and truncate
+
+        Returns:
+            Error string truncated to MAX_ERROR_MSG_LENGTH if needed
+        """
+        error_str = str(error)
+        if len(error_str) > MAX_ERROR_MSG_LENGTH:
+            return error_str[:MAX_ERROR_MSG_LENGTH] + "..."
+        return error_str
+
     def _validate_trading_pair(self, trading_pair: str) -> None:
         """
         Validate trading pair format and against exchange.
@@ -784,7 +800,7 @@ class TradingDaemon:
 
         except Exception as e:
             logger.error("config_reload_failed", error=str(e))
-            self.notifier.notify_error(str(e), "Config reload failed")
+            self.notifier.notify_error(self._truncate_error_msg(e), "Config reload failed")
 
     def _get_adaptive_interval(self) -> int:
         """
@@ -1240,7 +1256,7 @@ class TradingDaemon:
                     self._trading_iteration()
                 except Exception as e:
                     logger.error("trading_iteration_error", error=str(e))
-                    self.notifier.notify_error(str(e), "Main trading loop")
+                    self.notifier.notify_error(self._truncate_error_msg(e), "Main trading loop")
                     # Continue running after non-fatal errors
                     time.sleep(60)
                     continue
@@ -1252,7 +1268,7 @@ class TradingDaemon:
 
         except Exception as e:
             logger.critical("daemon_fatal_error", error=str(e))
-            self.notifier.notify_error(str(e), "Fatal error - daemon stopping")
+            self.notifier.notify_error(self._truncate_error_msg(e), "Fatal error - daemon stopping")
             raise
 
         finally:

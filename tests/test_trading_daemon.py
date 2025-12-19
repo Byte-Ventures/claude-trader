@@ -2228,7 +2228,7 @@ def test_store_signal_history_truncates_long_errors(htf_mock_settings, mock_exch
                 error_portion = context.split("Last error: ")[1]
                 # Verify truncation occurred and ellipsis is present
                 assert error_portion.endswith('...')
-                assert len(error_portion) <= MAX_ERROR_MSG_LENGTH + 3  # Should be MAX_ERROR_MSG_LENGTH chars + '...'
+                assert len(error_portion) == MAX_ERROR_MSG_LENGTH + 3  # Exactly MAX_ERROR_MSG_LENGTH chars + '...'
                 # Verify we got substantial error content (at least half of MAX_ERROR_MSG_LENGTH)
                 assert 'x' * (MAX_ERROR_MSG_LENGTH // 2) in error_portion
 
