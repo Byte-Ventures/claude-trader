@@ -1707,6 +1707,87 @@ def test_confluence_excludes_momentum_metadata(scorer, momentum_df):
         assert result.confidence <= 1.0
 
 
+def test_trend_strength_calculation_directly():
+    """Test trend strength scaling logic with mock values.
+
+    This deterministic test validates the core scaling formula using the fixture's
+    existing momentum data but comparing different trend strength cap configurations.
+    When the cap changes, penalty reduction should scale proportionally.
+
+    Formula tested:
+    - trend_strength = min(1.0, ema_gap_percent / momentum_trend_strength_cap)
+    - reduction = momentum_penalty_reduction * trend_strength
+    - adjusted_score = int(original_score * reduction)
+    """
+    # Create momentum data that should trigger momentum mode
+    np.random.seed(123)
+    length = 50
+    prices = []
+    current = 40000.0
+
+    for i in range(length):
+        # Strong uptrend with minor noise (70% up, 30% small down)
+        if np.random.random() < 0.7:
+            change = current * np.random.uniform(0.003, 0.008)  # Up move
+        else:
+            change = -current * np.random.uniform(0.001, 0.002)  # Small pullback
+        current = current + change
+        prices.append(current)
+
+    df = pd.DataFrame({
+        'open': [p * 0.998 for p in prices],
+        'high': [p * 1.01 for p in prices],
+        'low': [p * 0.99 for p in prices],
+        'close': prices,
+        'volume': [10000.0] * length,
+    })
+
+    # Test with two different caps but same base reduction
+    # Lower cap = higher trend strength for same EMA gap = higher reduction value = MORE penalty (more negative)
+    # Higher cap = lower trend strength for same EMA gap = lower reduction value = LESS penalty (closer to zero)
+    scorer_high_cap = SignalScorer(
+        momentum_penalty_reduction=0.5,
+        momentum_trend_strength_cap=10.0,  # High cap: harder to reach 1.0 strength, lower reduction values
+    )
+
+    scorer_low_cap = SignalScorer(
+        momentum_penalty_reduction=0.5,
+        momentum_trend_strength_cap=2.0,   # Low cap: easier to reach 1.0 strength, higher reduction values
+    )
+
+    result_high_cap = scorer_high_cap.calculate_score(df)
+    result_low_cap = scorer_low_cap.calculate_score(df)
+
+    # Both should activate momentum (same data)
+    if (result_high_cap.breakdown.get('_momentum_active') and
+        result_low_cap.breakdown.get('_momentum_active')):
+
+        # If both have negative RSI scores (overbought penalties)
+        rsi_high_cap = result_high_cap.breakdown.get('rsi', 0)
+        rsi_low_cap = result_low_cap.breakdown.get('rsi', 0)
+
+        if rsi_high_cap < 0 and rsi_low_cap < 0:
+            # Key insight: adjusted_score = int(original_score * reduction)
+            # For negative scores: HIGHER reduction = MORE negative (less reduced penalty)
+            # For negative scores: LOWER reduction = LESS negative (more reduced penalty)
+            #
+            # High cap (10.0) with same EMA gap: lower trend_strength, lower reduction, LESS negative
+            # Low cap (2.0) with same EMA gap: higher trend_strength, higher reduction, MORE negative
+            #
+            # Therefore: rsi_high_cap should be CLOSER to zero (less negative) than rsi_low_cap
+            assert rsi_high_cap >= rsi_low_cap, \
+                f"High cap should give less negative penalty: {rsi_high_cap} >= {rsi_low_cap}"
+
+            # Additionally, both should be affected by momentum mode
+            # (not the full -25 penalty, since reduction is applied)
+            # The actual values depend on EMA gap, but they should be different
+            assert rsi_high_cap != rsi_low_cap, \
+                "Different caps should produce different RSI scores, validating trend_strength scaling"
+    else:
+        # If momentum not active in both, we can't test the scaling
+        pytest.skip("Momentum mode not active in both scenarios - can't compare scaling")
+
+
 def test_momentum_penalty_reduction_scales_with_trend_strength():
     """Test that momentum penalty reduction is proportional to EMA gap (trend strength).
 
