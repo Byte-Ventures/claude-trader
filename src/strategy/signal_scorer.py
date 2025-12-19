@@ -633,6 +633,8 @@ class SignalScorer:
                             # Calculate where the close is within the candle range (0 = low, 1 = high)
                             if candle_range > 0 and not pd.isna(candle_high) and not pd.isna(candle_low):
                                 close_position = (current_price - candle_low) / candle_range
+                                # Clamp to [0, 1] to prevent floating point precision issues
+                                close_position = max(0.0, min(1.0, close_position))
                                 breakdown["_candle_close_position"] = round(close_position, 3)
                             else:
                                 # Zero-range candle (doji/flat) or missing data:
@@ -660,7 +662,10 @@ class SignalScorer:
                                     # Closed in lower half despite price increase - fighting/rejection
                                     breakdown["_whale_direction"] = "neutral"
                                 else:
-                                    # Conservative: require confirmation (missing data or ambiguous close position)
+                                    # Conservative: treat as neutral if either:
+                                    # 1) Missing data (close_position is None)
+                                    # 2) Ambiguous range (0.5 <= close_position <= threshold)
+                                    # Both cases lack conviction for a directional signal
                                     breakdown["_whale_direction"] = "neutral"
                             elif price_change_pct < -self.whale_direction_threshold:
                                 # Price moved down - check candle structure for confirmation
@@ -670,7 +675,10 @@ class SignalScorer:
                                     # Closed in upper half despite price decrease - fighting/support
                                     breakdown["_whale_direction"] = "neutral"
                                 else:
-                                    # Conservative: require confirmation (missing data or ambiguous close position)
+                                    # Conservative: treat as neutral if either:
+                                    # 1) Missing data (close_position is None)
+                                    # 2) Ambiguous range (threshold <= close_position <= 0.5)
+                                    # Both cases lack conviction for a directional signal
                                     breakdown["_whale_direction"] = "neutral"
                             else:
                                 breakdown["_whale_direction"] = "neutral"
