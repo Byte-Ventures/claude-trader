@@ -68,6 +68,7 @@ def mock_settings():
     settings.position_reduction = 0.5
     settings.ai_api_timeout = 120
     settings.postmortem_enabled = False
+    settings.ai_review_rejection_cooldown = True
 
     # Strategy config
     settings.signal_threshold = 50
@@ -3550,3 +3551,138 @@ def test_cramer_mode_database_separation(mock_settings):
                     # Second call should be for Cramer Mode (inverted)
                     assert calls[1][1].get('bot_mode') == 'inverted', \
                         "Second balance query should be for Cramer Mode (inverted)"
+
+
+# ============================================================================
+# Veto Cooldown Tests (Issue #224)
+# ============================================================================
+
+class TestVetoCooldown:
+    """
+    Tests for AI review veto cooldown feature.
+
+    After a SKIP or REDUCE veto, subsequent AI reviews should be skipped until:
+    - A new candle period begins, OR
+    - The signal direction changes (BUY -> SELL or vice versa)
+    """
+
+    @pytest.fixture
+    def daemon_with_cooldown(self, mock_settings, mock_exchange_client, mock_database):
+        """Create a TradingDaemon with veto cooldown enabled."""
+        mock_settings.ai_review_rejection_cooldown = True
+        mock_settings.candle_interval = "ONE_HOUR"
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+                    return daemon
+
+    def test_get_candle_start_one_hour(self, daemon_with_cooldown):
+        """Test candle start calculation for ONE_HOUR interval."""
+        from datetime import datetime, timezone
+
+        daemon = daemon_with_cooldown
+        daemon.settings.candle_interval = "ONE_HOUR"
+
+        # 14:35:00 should map to 14:00:00 start
+        timestamp = datetime(2025, 1, 15, 14, 35, 0, tzinfo=timezone.utc)
+        candle_start = daemon._get_candle_start(timestamp)
+
+        assert candle_start.hour == 14
+        assert candle_start.minute == 0
+        assert candle_start.second == 0
+
+    def test_get_candle_start_fifteen_minute(self, daemon_with_cooldown):
+        """Test candle start calculation for FIFTEEN_MINUTE interval."""
+        from datetime import datetime, timezone
+
+        daemon = daemon_with_cooldown
+        daemon.settings.candle_interval = "FIFTEEN_MINUTE"
+
+        # 14:37:00 should map to 14:30:00 start
+        timestamp = datetime(2025, 1, 15, 14, 37, 0, tzinfo=timezone.utc)
+        candle_start = daemon._get_candle_start(timestamp)
+
+        assert candle_start.hour == 14
+        assert candle_start.minute == 30
+        assert candle_start.second == 0
+
+    def test_skip_review_no_prior_veto(self, daemon_with_cooldown):
+        """Should not skip if no prior veto recorded."""
+        daemon = daemon_with_cooldown
+
+        should_skip, reason = daemon._should_skip_review_after_veto("buy")
+
+        assert should_skip is False
+        assert reason is None
+
+    def test_skip_review_same_candle_same_direction(self, daemon_with_cooldown):
+        """Should skip review if same candle and same direction."""
+        from datetime import datetime, timezone
+
+        daemon = daemon_with_cooldown
+        now = datetime.now(timezone.utc)
+
+        # Record a veto
+        daemon._last_veto_timestamp = now
+        daemon._last_veto_direction = "buy"
+
+        # Same direction within same candle
+        should_skip, reason = daemon._should_skip_review_after_veto("buy")
+
+        assert should_skip is True
+        assert "veto_cooldown" in reason
+
+    def test_skip_review_direction_changed(self, daemon_with_cooldown):
+        """Should NOT skip if signal direction changed."""
+        from datetime import datetime, timezone
+
+        daemon = daemon_with_cooldown
+        now = datetime.now(timezone.utc)
+
+        # Record a veto for buy
+        daemon._last_veto_timestamp = now
+        daemon._last_veto_direction = "buy"
+
+        # Different direction - should allow review
+        should_skip, reason = daemon._should_skip_review_after_veto("sell")
+
+        assert should_skip is False
+        assert reason is None
+
+    def test_skip_review_new_candle(self, daemon_with_cooldown):
+        """Should NOT skip if new candle period started."""
+        from datetime import datetime, timezone, timedelta
+
+        daemon = daemon_with_cooldown
+        daemon.settings.candle_interval = "ONE_HOUR"
+
+        # Veto was 2 hours ago (definitely different candle)
+        old_time = datetime.now(timezone.utc) - timedelta(hours=2)
+        daemon._last_veto_timestamp = old_time
+        daemon._last_veto_direction = "buy"
+
+        should_skip, reason = daemon._should_skip_review_after_veto("buy")
+
+        assert should_skip is False
+        # Cooldown state should be reset
+        assert daemon._last_veto_timestamp is None
+        assert daemon._last_veto_direction is None
+
+    def test_skip_review_disabled_by_config(self, daemon_with_cooldown):
+        """Should NOT skip if cooldown is disabled in settings."""
+        from datetime import datetime, timezone
+
+        daemon = daemon_with_cooldown
+        daemon.settings.ai_review_rejection_cooldown = False
+
+        # Record a veto
+        daemon._last_veto_timestamp = datetime.now(timezone.utc)
+        daemon._last_veto_direction = "buy"
+
+        # With cooldown disabled, should not skip
+        should_skip, reason = daemon._should_skip_review_after_veto("buy")
+
+        assert should_skip is False
+        assert reason is None

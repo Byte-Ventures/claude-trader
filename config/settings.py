@@ -538,6 +538,10 @@ class Settings(BaseSettings):
         default=False,
         description="Review ALL decisions with AI (for debugging/testing)"
     )
+    ai_review_rejection_cooldown: bool = Field(
+        default=True,
+        description="Skip AI reviews until next candle after SKIP/REDUCE veto"
+    )
     ai_failure_mode: AIFailureMode = Field(
         default=AIFailureMode.OPEN,
         description="DEPRECATED: Use ai_failure_mode_buy/sell instead. Fallback if per-action not set."
