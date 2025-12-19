@@ -235,7 +235,9 @@ The `claude[bot]` automatically reviews PRs. Its comments appear under `/issues/
 
 ### Handling Identified Issues
 
-**All issues identified in PR reviews MUST be handled.**
+**All issues identified in PR reviews MUST be handled. Do NOT ignore or dismiss issues.**
+
+This is a financial trading system. Every identified issue could affect money or data integrity. Ignoring issues is unacceptable.
 
 First, **verify the issue** - Check if the issue actually exists in the code (bot reviews can be wrong).
 
@@ -247,6 +249,11 @@ Then, do ONE of the following:
 4. **Explicitly decline** - Document in PR comments why the suggestion won't be implemented
 
 No issue should be left unacknowledged. When summarizing PR reviews, create a checklist showing how each issue was handled.
+
+**Priority levels:**
+- 🔴 Critical - MUST fix before merge
+- 🟡 High/Medium - MUST fix before merge (financial system requirement)
+- 🟢 Low - Fix if straightforward, otherwise create GitHub issue
 
 ### Deferred Issues MUST Become GitHub Issues
 

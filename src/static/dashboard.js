@@ -25,7 +25,14 @@ let currentCandle = null;
 /** Candle interval in seconds, loaded from backend config */
 let candleIntervalSeconds = 60;
 
+/** Flag to defer WebSocket candle updates until initial data loads */
+let isInitialized = false;
+
+/** Timestamp of last candle update, for throttling */
+let lastCandleUpdate = 0;
+
 const MAX_RECONNECT_ATTEMPTS = 10;
+const CANDLE_UPDATE_THROTTLE_MS = 1000;  // Throttle candle updates to 1/second
 const BASE_RECONNECT_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 30000;
 const MAX_SEEN_NOTIFICATIONS = 100;  // Prevent memory leak from unbounded Set
@@ -215,6 +222,9 @@ function initPerformanceChart() {
 
 // Load initial data from REST API
 async function loadInitialData() {
+    // Reset flag during reload (e.g., on WebSocket reconnect)
+    isInitialized = false;
+
     try {
         // Load candles
         const candlesResponse = await fetch('/api/candles?limit=100');
@@ -297,6 +307,9 @@ async function loadInitialData() {
             const performance = await performanceResponse.json();
             updatePerformanceChart(performance);
         }
+
+        // Mark initialization complete - WebSocket updates can now update candles
+        isInitialized = true;
     } catch (error) {
         console.error('Failed to load initial data:', error);
     }
@@ -427,6 +440,10 @@ function updateDashboard(state) {
 
     // Update chart with new price (if we have valid data)
     //
+    // Guards:
+    // - Skip until initial data loads (prevents race condition with loadInitialData)
+    // - Throttle to 1 update/second (prevents hammering chart library)
+    //
     // Candle Bucketing Algorithm:
     // 1. Align timestamp to interval boundary: floor(time / interval) * interval
     //    Example: 23:47:15 with 15-min interval → 23:45:00
@@ -435,7 +452,12 @@ function updateDashboard(state) {
     // 4. If older bucket: skip (stale data from reconnect/lag)
     //
     // This matches exchange OHLC bucketing (Unix epoch aligned, 24/7 crypto markets).
-    if (state.timestamp && candleSeries && !isNaN(price) && price > 0) {
+    const now = Date.now();
+    const shouldUpdateChart = isInitialized &&
+        (now - lastCandleUpdate >= CANDLE_UPDATE_THROTTLE_MS);
+
+    if (shouldUpdateChart && state.timestamp && candleSeries && !isNaN(price) && price > 0) {
+        lastCandleUpdate = now;
         // Don't add 'Z' - state timestamps already have timezone info (+00:00)
         const time = Math.floor(new Date(state.timestamp).getTime() / 1000);
         if (!isNaN(time) && time > 0) {
