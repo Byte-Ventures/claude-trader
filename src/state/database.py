@@ -1948,28 +1948,49 @@ class Database:
         Returns:
             Number of records deleted
 
+        Raises:
+            ValueError: If retention_days is less than 1
+
         Note:
             This operation is safe to run during trading - uses indexed timestamp
             column for efficient deletion. Consider running during low-activity hours
             and following up with VACUUM for database optimization.
         """
-        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        # Runtime validation for retention_days parameter
+        if retention_days < 1:
+            raise ValueError("retention_days must be >= 1")
 
-        with self.session() as session:
-            query = session.query(SignalHistory).filter(
-                SignalHistory.timestamp < cutoff
-            )
-            if is_paper is not None:
-                query = query.filter(SignalHistory.is_paper == is_paper)
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
-            count = query.count()
-            if count > 0:
-                query.delete(synchronize_session=False)
-                logger.info(
-                    "signal_history_cleanup",
-                    deleted=count,
-                    retention_days=retention_days,
-                    cutoff=cutoff.isoformat(),
-                    is_paper=is_paper,
+            with self.session() as session:
+                query = session.query(SignalHistory).filter(
+                    SignalHistory.timestamp < cutoff
                 )
-            return count
+                if is_paper is not None:
+                    query = query.filter(SignalHistory.is_paper == is_paper)
+
+                count = query.count()
+                if count > 0:
+                    query.delete(synchronize_session=False)
+                    session.commit()  # Explicit commit for financial system
+                    logger.info(
+                        "signal_history_cleanup",
+                        deleted=count,
+                        retention_days=retention_days,
+                        cutoff=cutoff.isoformat(),
+                        is_paper=is_paper,
+                    )
+                return count
+
+        except ValueError:
+            # Re-raise validation errors without logging
+            raise
+        except Exception as e:
+            logger.error(
+                "signal_history_cleanup_failed",
+                error=str(e),
+                retention_days=retention_days,
+                is_paper=is_paper,
+            )
+            raise  # Re-raise after logging for visibility
