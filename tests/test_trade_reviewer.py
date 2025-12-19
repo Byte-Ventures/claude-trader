@@ -142,8 +142,8 @@ class TestHTFNullSafety:
         """Judge model name."""
         return "judge-model"
 
-    def test_build_reviewer_prompt_handles_empty_string_htf_values(self, mock_db, reviewer_models, judge_model):
-        """Test that empty string HTF values are displayed (not replaced with 'unknown')."""
+    def test_build_reviewer_prompt_hides_htf_for_empty_string_values(self, mock_db, reviewer_models, judge_model):
+        """Test that empty string HTF values result in HTF line being hidden."""
         reviewer = TradeReviewer(
             api_key="test-key",
             db=mock_db,
@@ -153,7 +153,7 @@ class TestHTFNullSafety:
 
         context = {
             'breakdown': {
-                '_htf_trend': '',      # Empty string, not None
+                '_htf_trend': '',      # Empty string - not actionable
                 '_htf_daily': '',
                 '_htf_4h': '',
             },
@@ -173,16 +173,11 @@ class TestHTFNullSafety:
 
         prompt = reviewer._build_reviewer_prompt(context)
 
-        # Empty strings should be preserved, NOT replaced with "UNKNOWN"
-        # The HTF line should show empty strings when uppercased (empty strings uppercased are still empty)
-        assert 'HIGHER TIMEFRAME BIAS:  (Daily: , 4H: )' in prompt
-        # Should NOT contain "UNKNOWN" for these empty string values
-        # Note: The word "unknown" may appear in the prompt for None values in other tests,
-        # but for empty strings, they should be preserved as-is
-        # We verify the exact format appears in the prompt
+        # Empty string HTF trend is not actionable, so HTF line should be hidden
+        assert 'HIGHER TIMEFRAME BIAS' not in prompt
 
-    def test_build_reviewer_prompt_handles_none_htf_values(self, mock_db, reviewer_models, judge_model):
-        """Test that None HTF values are replaced with 'unknown'."""
+    def test_build_reviewer_prompt_hides_htf_for_none_values(self, mock_db, reviewer_models, judge_model):
+        """Test that None HTF values result in HTF line being hidden."""
         reviewer = TradeReviewer(
             api_key="test-key",
             db=mock_db,
@@ -192,7 +187,7 @@ class TestHTFNullSafety:
 
         context = {
             'breakdown': {
-                '_htf_trend': None,    # None values
+                '_htf_trend': None,    # None -> "unknown" -> hidden
                 '_htf_daily': None,
                 '_htf_4h': None,
             },
@@ -212,5 +207,39 @@ class TestHTFNullSafety:
 
         prompt = reviewer._build_reviewer_prompt(context)
 
-        # None values should be replaced with "unknown"
-        assert 'HIGHER TIMEFRAME BIAS: UNKNOWN (Daily: UNKNOWN, 4H: UNKNOWN)' in prompt
+        # None values become "unknown" which is not actionable, so HTF line should be hidden
+        assert 'HIGHER TIMEFRAME BIAS' not in prompt
+
+    def test_build_reviewer_prompt_shows_htf_for_bullish_trend(self, mock_db, reviewer_models, judge_model):
+        """Test that actionable HTF trends (bullish/bearish) are shown."""
+        reviewer = TradeReviewer(
+            api_key="test-key",
+            db=mock_db,
+            reviewer_models=reviewer_models,
+            judge_model=judge_model,
+        )
+
+        context = {
+            'breakdown': {
+                '_htf_trend': 'bullish',
+                '_htf_daily': 'bullish',
+                '_htf_4h': 'neutral',
+            },
+            'score': 75,
+            'threshold': 70,
+            'price': 50000,
+            'candle_interval': '1h',
+            'trading_style_desc': 'swing trading (hours to days)',
+            'position_percent': 50.0,
+            'action': 'buy',
+            'fear_greed': 50,
+            'fear_greed_class': 'Neutral',
+            'win_rate': 60.0,
+            'net_pnl': 1000.0,
+            'total_trades': 10,
+        }
+
+        prompt = reviewer._build_reviewer_prompt(context)
+
+        # Bullish trend is actionable, so HTF line should be shown
+        assert 'HIGHER TIMEFRAME BIAS: BULLISH (Daily: BULLISH, 4H: NEUTRAL)' in prompt
