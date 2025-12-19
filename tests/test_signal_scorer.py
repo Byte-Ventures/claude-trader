@@ -1600,9 +1600,11 @@ def test_momentum_penalty_reduction_in_calculate_score(momentum_df):
     assert "_momentum_active" in result.breakdown
     # In a strong uptrend, momentum should be active
     if result.breakdown["_momentum_active"] == 1:
-        # RSI penalty should be reduced (less negative than -25)
-        # Note: The actual value depends on the data
-        assert result.breakdown["rsi"] >= -13  # -25 * 0.5 = -12.5, int() = -12
+        # RSI penalty should be reduced (less negative than full -25)
+        # The actual reduction depends on trend strength (EMA gap)
+        # With trend strength scaling, penalty reduction varies from 0% to 50%
+        # So RSI score should be >= -25 (full penalty) and potentially much less negative
+        assert result.breakdown["rsi"] >= -25  # At minimum, no worse than full penalty
 
 
 def test_momentum_mode_does_not_affect_positive_scores():
@@ -1703,6 +1705,46 @@ def test_confluence_excludes_momentum_metadata(scorer, momentum_df):
         # Confidence should be based on 6 components max (rsi, macd, bollinger, ema, volume, trend_filter)
         # Not 7 (with momentum included)
         assert result.confidence <= 1.0
+
+
+def test_momentum_penalty_reduction_scales_with_trend_strength():
+    """Test that momentum penalty reduction is proportional to EMA gap (trend strength)."""
+    scorer = SignalScorer()
+
+    # Case 1: Strong uptrend with wide EMA gap (should get more penalty reduction)
+    strong_trend_prices = [40000 + (i * 300) for i in range(50)]  # Steep uptrend
+    strong_df = pd.DataFrame({
+        'open': [p * 0.998 for p in strong_trend_prices],
+        'high': [p * 1.01 for p in strong_trend_prices],
+        'low': [p * 0.995 for p in strong_trend_prices],
+        'close': strong_trend_prices,
+        'volume': [10000.0] * 50,
+    })
+
+    # Case 2: Weak uptrend with narrow EMA gap (should get less penalty reduction)
+    weak_trend_prices = [40000 + (i * 50) for i in range(50)]  # Gradual uptrend
+    weak_df = pd.DataFrame({
+        'open': [p * 0.998 for p in weak_trend_prices],
+        'high': [p * 1.01 for p in weak_trend_prices],
+        'low': [p * 0.995 for p in weak_trend_prices],
+        'close': weak_trend_prices,
+        'volume': [10000.0] * 50,
+    })
+
+    strong_result = scorer.calculate_score(strong_df)
+    weak_result = scorer.calculate_score(weak_df)
+
+    # Both should potentially have momentum active, but with different penalty reductions
+    # The test is flexible because momentum activation depends on RSI levels
+    # What matters: if both have momentum active, strong trend should have more reduction
+    if (strong_result.breakdown.get("_momentum_active") == 1 and
+        weak_result.breakdown.get("_momentum_active") == 1):
+        # When both active, strong trend should have penalties reduced more
+        # (i.e., RSI/BB scores should be less negative in strong trend)
+        # This is the key improvement from issue #54
+        if strong_result.breakdown["rsi"] < 0 and weak_result.breakdown["rsi"] < 0:
+            # Less negative = more penalty reduction
+            assert strong_result.breakdown["rsi"] >= weak_result.breakdown["rsi"]
 
 
 # ============================================================================
@@ -2054,8 +2096,9 @@ class TestHTFBiasModifier:
 
         # Test requires positive signal (buy signal) to verify extreme fear buy override
         # The bullish_signal_df fixture is designed to produce buy signals, but trend_filter
-        # and other penalties can flip the final score. Test conditionally based on actual signal.
-        if result_baseline.score > 0:
+        # and other penalties can flip the final score. The extreme fear logic checks the score
+        # BEFORE HTF adjustments (_raw_score), so we test based on that.
+        if result_baseline.breakdown.get("_raw_score", 0) > 0:
             # Without extreme fear, partial penalty (-10) is applied
             assert result_baseline.breakdown.get("htf_bias") == -10, "Expected half penalty without extreme fear"
             # With extreme fear, FULL penalty (-20) should be applied
@@ -2063,7 +2106,7 @@ class TestHTFBiasModifier:
             # Score difference should be exactly 10 points (full vs half penalty)
             assert result_baseline.score - result_with_fear.score == 10, "Expected 10-point difference"
         else:
-            # If baseline isn't bullish, extreme fear override shouldn't activate
+            # If baseline raw score isn't bullish, extreme fear override shouldn't activate
             assert result_baseline.breakdown.get("htf_bias") == result_with_fear.breakdown.get("htf_bias"), \
                 "HTF bias should not change when signal direction doesn't match extreme fear condition"
 
@@ -2088,8 +2131,9 @@ class TestHTFBiasModifier:
 
         # Test requires negative signal (sell signal) to verify extreme fear sell override
         # The bearish_signal_df fixture is designed to produce sell signals, but trend_filter
-        # and other penalties can flip the final score. Test conditionally based on actual signal.
-        if result_baseline.score < 0:
+        # and other penalties can flip the final score. The extreme fear logic checks the score
+        # BEFORE HTF adjustments (_raw_score), so we test based on that.
+        if result_baseline.breakdown.get("_raw_score", 0) < 0:
             # Without extreme fear, partial penalty (+10) is applied
             assert result_baseline.breakdown.get("htf_bias") == 10, "Expected half penalty without extreme fear"
             # With extreme fear, FULL penalty (+20) should be applied to weaken sell

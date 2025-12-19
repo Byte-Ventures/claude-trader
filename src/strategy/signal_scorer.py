@@ -547,13 +547,31 @@ class SignalScorer:
         ema_score = int(ema_signal * self.weights.ema)
 
         # Momentum mode: reduce overbought penalties during sustained uptrends
+        # Penalty reduction is proportional to trend strength (measured by EMA gap)
+        # to enable more responsive exits during genuine reversals
         momentum_active, momentum_reason = self.is_momentum_mode(df, rsi)
         if momentum_active:
             original_rsi = rsi_score
             original_bb = bb_score
-            # Reduce overbought penalties by configured factor (only negative scores)
+
+            # Calculate trend strength factor from EMA gap (0.0 to 1.0)
+            # Stronger trends (wider EMA gap) get more penalty reduction
+            # Weaker trends (narrower EMA gap) get less reduction for faster exits
+            trend_strength = 0.0
+            if indicators.ema_fast and indicators.ema_slow and indicators.ema_slow != 0:
+                ema_gap_percent = abs((float(indicators.ema_fast) - float(indicators.ema_slow)) / float(indicators.ema_slow)) * 100
+                # Cap at 5% for normalization (5% EMA gap is very strong trend)
+                # Linear scaling: 0% gap = 0.0 strength, 5%+ gap = 1.0 strength
+                trend_strength = min(1.0, ema_gap_percent / 5.0)
+
+            # Scale the penalty reduction by trend strength
+            # Base reduction is configured value (default 0.5), scaled by trend strength
+            # Weak trend (0.0 strength): minimal reduction (near full penalty = more responsive)
+            # Strong trend (1.0 strength): full reduction (configured value)
+            reduction = self.momentum_penalty_reduction * trend_strength
+
+            # Reduce overbought penalties by scaled factor (only negative scores)
             # Use int() instead of // for symmetric rounding behavior
-            reduction = self.momentum_penalty_reduction
             if rsi_score < 0:
                 rsi_score = int(rsi_score * reduction)
             if bb_score < 0:
@@ -561,6 +579,8 @@ class SignalScorer:
             logger.info(
                 "momentum_mode_active",
                 reason=momentum_reason,
+                trend_strength=round(trend_strength, 3),
+                penalty_reduction=round(reduction, 3),
                 rsi_original=original_rsi,
                 rsi_adjusted=rsi_score,
                 bb_original=original_bb,
