@@ -441,16 +441,18 @@ function updateDashboard(state) {
         };
 
         const biasEmoji = htfBias.combined_bias === 'bullish' ? '✅' :
-                         htfBias.combined_bias === 'bearish' ? '✅' :
+                         htfBias.combined_bias === 'bearish' ? '❌' :
                          '⚖️';
 
-        const biasText = htfBias.combined_bias.charAt(0).toUpperCase() + htfBias.combined_bias.slice(1);
+        const biasText = htfBias.combined_bias
+            ? htfBias.combined_bias.charAt(0).toUpperCase() + htfBias.combined_bias.slice(1)
+            : 'Unknown';
         document.getElementById('htf-combined-bias').textContent = `${biasEmoji} ${biasText}`;
 
         const dailyEmoji = trendEmoji[htfBias.daily_trend] || '↔️';
         const fourHourEmoji = trendEmoji[htfBias.four_hour_trend] || '↔️';
         document.getElementById('htf-trends').textContent =
-            `Daily: ${dailyEmoji} | 6H: ${fourHourEmoji}`;
+            `Daily: ${dailyEmoji} | 4H: ${fourHourEmoji}`;
     } else {
         htfBiasCard.style.display = 'none';
     }

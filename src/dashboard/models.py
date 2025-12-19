@@ -1,7 +1,7 @@
 """Pydantic models for dashboard API responses."""
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -59,9 +59,9 @@ class WeightProfileInfo(BaseModel):
 class HTFBiasInfo(BaseModel):
     """Higher timeframe bias information."""
 
-    daily_trend: str
-    four_hour_trend: str
-    combined_bias: str
+    daily_trend: Literal["bullish", "bearish", "neutral"]
+    four_hour_trend: Literal["bullish", "bearish", "neutral"]
+    combined_bias: Literal["bullish", "bearish", "neutral"]
 
 
 class DashboardState(BaseModel):
