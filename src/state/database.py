@@ -1676,8 +1676,12 @@ class Database:
                     existing_high = Decimal(existing.high_price)
                     existing_low = Decimal(existing.low_price)
                 except (ValueError, TypeError, InvalidOperation) as e:
-                    # CRITICAL: Database corruption detected - should be investigated
-                    # Using incoming value to repair, but this indicates a serious issue
+                    # CRITICAL: Database corruption detected - requires investigation!
+                    # We repair with incoming value rather than crash because:
+                    # 1. Trading bot must continue running to manage existing positions
+                    # 2. Error is logged for monitoring/alerting
+                    # 3. Incoming value is valid and repairs the corrupt state
+                    # If this error appears, investigate root cause immediately.
                     logger.error(
                         "rate_corrupted_decimal",
                         error=str(e),
@@ -1797,6 +1801,11 @@ class Database:
 
                 # On conflict: preserve open, use max/min for high/low, update close/volume
                 # open_price is NOT in set_, so it's preserved (SQLAlchemy only updates listed columns)
+                #
+                # Float Precision Note: We cast to Float (IEEE 754 double) for atomic SQL max/min.
+                # This provides 15-17 significant decimal digits, which is more than sufficient for
+                # crypto prices (e.g., 90123.45678901 = ~13 significant figures). The comparison
+                # is done in SQL for atomicity; final storage remains as string for precision.
                 stmt = stmt.on_conflict_do_update(
                     index_elements=['symbol', 'exchange', 'interval', 'timestamp', 'is_paper'],
                     set_={
