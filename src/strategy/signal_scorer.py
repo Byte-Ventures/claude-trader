@@ -650,6 +650,8 @@ class SignalScorer:
                             #   - Bearish: only accept close < 0.3 (closed in bottom 30% of range)
                             #   - Middle range (0.3-0.7): defaults to neutral (conservative approach)
                             # This prevents false signals from weak candle formations
+                            # Trade-off: Prioritizes precision over recall (fewer false positives, may miss some valid signals)
+                            # For a financial system, false negatives (missed opportunities) are safer than false positives (bad trades)
                             if price_change_pct > self.whale_direction_threshold:
                                 # Price moved up - check candle structure for confirmation
                                 if close_position is not None and close_position > self.whale_candle_bullish_threshold:
