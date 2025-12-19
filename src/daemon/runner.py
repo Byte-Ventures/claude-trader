@@ -860,9 +860,11 @@ class TradingDaemon:
         if granularity == "ONE_DAY":
             last_fetch = self._daily_last_fetch
             cached_trend = self._daily_trend
-        else:  # FOUR_HOUR
+        elif granularity == "FOUR_HOUR":
             last_fetch = self._4h_last_fetch
             cached_trend = self._4h_trend
+        else:
+            raise ValueError(f"Unsupported granularity for HTF: {granularity}")
 
         now = datetime.now(timezone.utc)
         if last_fetch and (now - last_fetch) < timedelta(minutes=cache_minutes):
@@ -891,9 +893,11 @@ class TradingDaemon:
             if granularity == "ONE_DAY":
                 self._daily_trend = trend
                 self._daily_last_fetch = now
-            else:
+            elif granularity == "FOUR_HOUR":
                 self._4h_trend = trend
                 self._4h_last_fetch = now
+            else:
+                raise ValueError(f"Unsupported granularity for HTF: {granularity}")
 
             logger.info("htf_trend_updated", timeframe=granularity, trend=trend)
             return trend
