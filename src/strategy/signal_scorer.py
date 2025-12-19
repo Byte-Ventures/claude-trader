@@ -151,6 +151,8 @@ class SignalScorer:
         candle_interval: Optional[str] = None,
         whale_volume_threshold: float = 3.0,
         whale_direction_threshold: float = 0.003,
+        whale_candle_bullish_threshold: float = 0.7,
+        whale_candle_bearish_threshold: float = 0.3,
         whale_boost_percent: float = 0.30,
         high_volume_boost_percent: float = 0.20,
         mtf_aligned_boost: int = 20,
@@ -213,6 +215,8 @@ class SignalScorer:
         # Whale detection parameters
         self.whale_volume_threshold = whale_volume_threshold
         self.whale_direction_threshold = whale_direction_threshold
+        self.whale_candle_bullish_threshold = whale_candle_bullish_threshold
+        self.whale_candle_bearish_threshold = whale_candle_bearish_threshold
         self.whale_boost_percent = whale_boost_percent
         self.high_volume_boost_percent = high_volume_boost_percent
 
@@ -240,6 +244,8 @@ class SignalScorer:
         threshold: Optional[int] = None,
         whale_volume_threshold: Optional[float] = None,
         whale_direction_threshold: Optional[float] = None,
+        whale_candle_bullish_threshold: Optional[float] = None,
+        whale_candle_bearish_threshold: Optional[float] = None,
         whale_boost_percent: Optional[float] = None,
         high_volume_boost_percent: Optional[float] = None,
         rsi_period: Optional[int] = None,
@@ -272,6 +278,10 @@ class SignalScorer:
             self.whale_volume_threshold = whale_volume_threshold
         if whale_direction_threshold is not None:
             self.whale_direction_threshold = whale_direction_threshold
+        if whale_candle_bullish_threshold is not None:
+            self.whale_candle_bullish_threshold = whale_candle_bullish_threshold
+        if whale_candle_bearish_threshold is not None:
+            self.whale_candle_bearish_threshold = whale_candle_bearish_threshold
         if whale_boost_percent is not None:
             self.whale_boost_percent = whale_boost_percent
         if high_volume_boost_percent is not None:
@@ -625,15 +635,24 @@ class SignalScorer:
                                 close_position = (current_price - candle_low) / candle_range
                                 breakdown["_candle_close_position"] = round(close_position, 3)
                             else:
+                                # Zero-range candle (doji/flat) or missing data:
+                                # When high == low (perfect equilibrium), candle_range = 0
+                                # This is interesting but ambiguous - treat as neutral
+                                # A zero-range candle with whale volume indicates perfect
+                                # equilibrium or a gap, which doesn't provide directional conviction
                                 close_position = None
                                 breakdown["_candle_close_position"] = None
 
                             # Determine direction with candle structure confirmation
-                            # close_position > 0.7 = closed near high (bullish confirmation)
-                            # close_position < 0.3 = closed near low (bearish confirmation)
+                            # Requires strong conviction: close_position > 0.7 (bullish) or < 0.3 (bearish)
+                            # The 0.3-0.7 range is intentionally treated as "ambiguous" requiring higher conviction:
+                            #   - Bullish: only accept close > 0.7 (closed in top 30% of range)
+                            #   - Bearish: only accept close < 0.3 (closed in bottom 30% of range)
+                            #   - Middle range (0.3-0.7): defaults to neutral (conservative approach)
+                            # This prevents false signals from weak candle formations
                             if price_change_pct > self.whale_direction_threshold:
                                 # Price moved up - check candle structure for confirmation
-                                if close_position is not None and close_position > 0.7:
+                                if close_position is not None and close_position > self.whale_candle_bullish_threshold:
                                     breakdown["_whale_direction"] = "bullish"
                                 elif close_position is not None and close_position < 0.5:
                                     # Closed in lower half despite price increase - fighting/rejection
@@ -643,7 +662,7 @@ class SignalScorer:
                                     breakdown["_whale_direction"] = "neutral"
                             elif price_change_pct < -self.whale_direction_threshold:
                                 # Price moved down - check candle structure for confirmation
-                                if close_position is not None and close_position < 0.3:
+                                if close_position is not None and close_position < self.whale_candle_bearish_threshold:
                                     breakdown["_whale_direction"] = "bearish"
                                 elif close_position is not None and close_position > 0.5:
                                     # Closed in upper half despite price decrease - fighting/support

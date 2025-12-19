@@ -238,6 +238,18 @@ class Settings(BaseSettings):
         le=0.01,
         description="Price change threshold for whale direction classification (0.003 = 0.3%)"
     )
+    whale_candle_bullish_threshold: float = Field(
+        default=0.7,
+        ge=0.5,
+        le=1.0,
+        description="Candle close position threshold for bullish confirmation (0.7 = closed in top 30% of range)"
+    )
+    whale_candle_bearish_threshold: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=0.5,
+        description="Candle close position threshold for bearish confirmation (0.3 = closed in bottom 30% of range)"
+    )
     whale_boost_percent: float = Field(
         default=0.30,
         ge=0.1,

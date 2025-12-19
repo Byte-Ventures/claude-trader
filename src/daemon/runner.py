@@ -367,6 +367,8 @@ class TradingDaemon:
             candle_interval=settings.candle_interval,
             whale_volume_threshold=settings.whale_volume_threshold,
             whale_direction_threshold=settings.whale_direction_threshold,
+            whale_candle_bullish_threshold=settings.whale_candle_bullish_threshold,
+            whale_candle_bearish_threshold=settings.whale_candle_bearish_threshold,
             whale_boost_percent=settings.whale_boost_percent,
             high_volume_boost_percent=settings.high_volume_boost_percent,
             mtf_aligned_boost=settings.mtf_aligned_boost,
