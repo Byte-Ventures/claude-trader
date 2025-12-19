@@ -34,8 +34,12 @@ let lastCandleUpdate = 0;
 /** Pending candle update timeout, ensures final throttled update is applied */
 let pendingCandleUpdate = null;
 
+/** Timestamp of last stale candle warning, for throttling console spam */
+let lastStaleWarning = 0;
+
 const MAX_RECONNECT_ATTEMPTS = 10;
 const CANDLE_UPDATE_THROTTLE_MS = 1000;  // Throttle candle updates to 1/second
+const STALE_WARNING_THROTTLE_MS = 60000;  // Throttle stale candle warnings to 1/minute
 const BASE_RECONNECT_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 30000;
 const MAX_SEEN_NOTIFICATIONS = 100;  // Prevent memory leak from unbounded Set
@@ -544,7 +548,11 @@ function updateDashboard(state) {
             } else {
                 // candleTime < currentCandle.time - skip stale update to avoid chart error
                 // This can happen due to WebSocket reconnect lag or minor clock skew between server/client
-                console.warn(`Skipping stale candle update (reconnect lag or clock skew): new=${candleTime} (${new Date(candleTime * 1000).toISOString()}), current=${currentCandle.time} (${new Date(currentCandle.time * 1000).toISOString()}), interval=${candleIntervalSeconds}s`);
+                // Throttle warnings to 1/minute to avoid console spam during network issues
+                if (now - lastStaleWarning >= STALE_WARNING_THROTTLE_MS) {
+                    console.warn(`Skipping stale candle update (reconnect lag or clock skew): new=${candleTime} (${new Date(candleTime * 1000).toISOString()}), current=${currentCandle.time} (${new Date(currentCandle.time * 1000).toISOString()}), interval=${candleIntervalSeconds}s`);
+                    lastStaleWarning = now;
+                }
             }
 
             // Update price line (only if we updated the candle)
