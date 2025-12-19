@@ -571,15 +571,15 @@ class SignalScorer:
             trend_strength = 0.0
             ema_gap_percent = 0.0
             if (indicators.ema_fast and indicators.ema_slow and
-                indicators.ema_slow != 0 and indicators.ema_fast != 0):
-                # Convert to float with additional safety check for division by zero
+                indicators.ema_slow != 0 and indicators.ema_fast != 0 and
+                self.momentum_trend_strength_cap > 0.0):
+                # Convert to float for calculation
                 ema_slow_float = float(indicators.ema_slow)
                 ema_fast_float = float(indicators.ema_fast)
-                if ema_slow_float != 0.0 and self.momentum_trend_strength_cap > 0.0:
-                    ema_gap_percent = abs((ema_fast_float - ema_slow_float) / ema_slow_float) * 100
-                    # Cap at configured percentage for normalization
-                    # Linear scaling: 0% gap = 0.0 strength, cap% gap = 1.0 strength
-                    trend_strength = min(1.0, ema_gap_percent / self.momentum_trend_strength_cap)
+                ema_gap_percent = abs((ema_fast_float - ema_slow_float) / ema_slow_float) * 100
+                # Cap at configured percentage for normalization
+                # Linear scaling: 0% gap = 0.0 strength, cap% gap = 1.0 strength
+                trend_strength = min(1.0, ema_gap_percent / self.momentum_trend_strength_cap)
 
             # Scale the penalty reduction by trend strength
             # Base reduction is configured value (default 0.5), scaled by trend strength
@@ -589,10 +589,20 @@ class SignalScorer:
 
             # Reduce overbought penalties by scaled factor (only negative scores)
             # Use int() instead of // for symmetric rounding behavior
-            # Note: Very weak trends (reduction near 0) will result in near-zero penalty scores
-            # due to integer truncation (e.g., int(-25 * 0.005) = int(-0.125) = 0).
-            # This is intentional - near-zero or zero scores enable fast exits during weak
-            # trends where reversals are more likely, aligning with issue #54 goals.
+            #
+            # IMPORTANT: Integer truncation behavior for very weak trends:
+            # When trend_strength is very low (< 0.04), the reduction factor approaches zero,
+            # causing integer truncation to eliminate penalty scores entirely.
+            # Example: int(-25 * 0.01) = int(-0.25) = 0
+            #
+            # This is intentional algorithmic behavior that enables fast exits during weak
+            # or deteriorating trends where reversals are more likely. By reducing penalty
+            # scores to zero, the bot becomes more responsive to exit signals, addressing
+            # issue #54's goal of avoiding delayed exits during trend weakening.
+            #
+            # Trade-off: During very weak trends (EMA gap < ~0.2% for default 5.0 cap),
+            # momentum mode effectively deactivates, allowing quick exits but potentially
+            # missing continuation of genuine but slow-developing trends.
             if rsi_score < 0:
                 rsi_score = int(rsi_score * reduction)
             if bb_score < 0:
