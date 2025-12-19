@@ -10,18 +10,38 @@ let cramerSeries = null;
 let ws = null;
 let reconnectAttempts = 0;
 let seenNotificationIds = new Set();
-let currentCandle = null;  // Track current candle's OHLC state
-let candleIntervalSeconds = 60;  // Default 1 minute, updated from config
+/**
+ * Current candle being built from real-time WebSocket updates.
+ * Tracks OHLC state within a single candle period:
+ * - open: First price when candle started (immutable within period)
+ * - high: Maximum price seen (monotonically increasing)
+ * - low: Minimum price seen (monotonically decreasing)
+ * - close: Latest price (always updated)
+ * - time: Unix timestamp of candle start, aligned to interval boundary
+ * @type {{time: number, open: number, high: number, low: number, close: number}|null}
+ */
+let currentCandle = null;
+
+/** Candle interval in seconds, loaded from backend config */
+let candleIntervalSeconds = 60;
+
 const MAX_RECONNECT_ATTEMPTS = 10;
 const BASE_RECONNECT_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 30000;
 const MAX_SEEN_NOTIFICATIONS = 100;  // Prevent memory leak from unbounded Set
 
-// Convert candle interval string to seconds
-// Backend sends formats like "ONE_MINUTE", "FIFTEEN_MINUTE", "ONE_HOUR"
+/**
+ * Convert candle interval string to seconds.
+ *
+ * Supports two formats:
+ * - Backend format: "ONE_MINUTE", "FIFTEEN_MINUTE", "ONE_HOUR", etc.
+ * - Short format: "1m", "15m", "1h", etc.
+ *
+ * @param {string} interval - Interval string from backend config
+ * @returns {number} Interval duration in seconds (defaults to 60 if unknown)
+ */
 function parseIntervalToSeconds(interval) {
     if (!interval) return 60;
-    // Handle both backend format (ONE_MINUTE) and short format (1m)
     const intervalMap = {
         'ONE_MINUTE': 60,
         'FIVE_MINUTE': 300,
@@ -406,12 +426,19 @@ function updateDashboard(state) {
     updateBreakdownBar('breakdown-volume', breakdown.volume || 0);
 
     // Update chart with new price (if we have valid data)
+    //
+    // Candle Bucketing Algorithm:
+    // 1. Align timestamp to interval boundary: floor(time / interval) * interval
+    //    Example: 23:47:15 with 15-min interval → 23:45:00
+    // 2. If same bucket as currentCandle: update H/L/C, preserve O
+    // 3. If newer bucket: start new candle with O=H=L=C=price
+    // 4. If older bucket: skip (stale data from reconnect/lag)
+    //
+    // This matches exchange OHLC bucketing (Unix epoch aligned, 24/7 crypto markets).
     if (state.timestamp && candleSeries && !isNaN(price) && price > 0) {
         // Don't add 'Z' - state timestamps already have timezone info (+00:00)
         const time = Math.floor(new Date(state.timestamp).getTime() / 1000);
         if (!isNaN(time) && time > 0) {
-            // Align timestamp to candle interval bucket
-            // Uses standard Unix epoch alignment (same as exchange APIs for 24/7 crypto markets)
             const candleTime = Math.floor(time / candleIntervalSeconds) * candleIntervalSeconds;
 
             if (currentCandle && currentCandle.time === candleTime) {
