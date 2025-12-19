@@ -185,6 +185,9 @@ class SignalScorer:
             momentum_rsi_candles: Number of candles RSI must stay elevated (default: 3)
             momentum_price_candles: Number of candles to check for higher lows (default: 12)
             momentum_penalty_reduction: Factor to reduce overbought penalties (default: 0.5 = 50%)
+            momentum_trend_strength_cap: EMA gap percentage cap for trend strength normalization (default: 5.0)
+                                        Stronger trends (wider EMA gap) get more penalty reduction.
+                                        Increase for volatile markets (10-15%), decrease for stable (3%)
             candle_interval: Candle interval for adaptive MACD scaling
                             (e.g., "FIFTEEN_MINUTE", "ONE_HOUR")
             trading_pair: Trading pair symbol (e.g., "BTC-USD") for logging context
@@ -564,10 +567,14 @@ class SignalScorer:
             ema_gap_percent = 0.0
             if (indicators.ema_fast and indicators.ema_slow and
                 indicators.ema_slow != 0 and indicators.ema_fast != 0):
-                ema_gap_percent = abs((float(indicators.ema_fast) - float(indicators.ema_slow)) / float(indicators.ema_slow)) * 100
-                # Cap at configured percentage for normalization
-                # Linear scaling: 0% gap = 0.0 strength, cap% gap = 1.0 strength
-                trend_strength = min(1.0, ema_gap_percent / self.momentum_trend_strength_cap)
+                # Convert to float with additional safety check for division by zero
+                ema_slow_float = float(indicators.ema_slow)
+                ema_fast_float = float(indicators.ema_fast)
+                if ema_slow_float != 0.0:
+                    ema_gap_percent = abs((ema_fast_float - ema_slow_float) / ema_slow_float) * 100
+                    # Cap at configured percentage for normalization
+                    # Linear scaling: 0% gap = 0.0 strength, cap% gap = 1.0 strength
+                    trend_strength = min(1.0, ema_gap_percent / self.momentum_trend_strength_cap)
 
             # Scale the penalty reduction by trend strength
             # Base reduction is configured value (default 0.5), scaled by trend strength

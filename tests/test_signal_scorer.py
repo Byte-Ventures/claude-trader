@@ -1746,8 +1746,12 @@ def test_momentum_penalty_reduction_scales_with_trend_strength():
             # Less negative = more penalty reduction
             assert strong_result.breakdown["rsi"] >= weak_result.breakdown["rsi"], \
                 f"Expected strong trend RSI {strong_result.breakdown['rsi']} >= weak trend {weak_result.breakdown['rsi']}"
-        # If RSI is not negative, we can't test the penalty reduction behavior
-        # This test will pass but doesn't validate the core functionality in that case
+        else:
+            # Skip test if conditions not met - can't validate penalty reduction without negative RSI
+            pytest.skip("Test conditions not met - RSI not negative in both scenarios")
+    else:
+        # Skip test if momentum not active in both scenarios
+        pytest.skip("Test conditions not met - momentum not active in both scenarios")
 
 
 # ============================================================================
