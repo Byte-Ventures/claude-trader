@@ -1765,11 +1765,11 @@ class TradingDaemon:
         #
         # Applied BEFORE:
         #   - Action determination (buy/sell/hold decision)
-        #   - Layer 4: Dual-extreme blocking (line ~1967)
+        #   - Layer 4: Dual-extreme blocking (line ~2059)
         #
         # Applied AFTER:
         #   - Signal score calculation (signal_scorer.calculate_score)
-        #   - Layer 3: Extreme fear MTF override (signal_scorer.py:762)
+        #   - Layer 3: Extreme fear MTF override (signal_scorer.py:755)
         #
         # See: src/strategy/regime.py for calculation logic
         base_threshold = self.settings.signal_threshold + regime.threshold_adjustment

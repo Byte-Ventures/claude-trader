@@ -954,8 +954,8 @@ class SignalScorer:
             # signals from neutralizing the more reliable daily trend during extreme conditions.
             #
             # Applied BEFORE:
-            #   - Layer 4: Dual-extreme blocking (in runner.py:1967)
-            #   - Layer 5: Extreme volatility stop widening (in runner.py:3474)
+            #   - Layer 4: Dual-extreme blocking (in runner.py:2059)
+            #   - Layer 5: Extreme volatility stop widening (in runner.py:3579)
             #
             # Applied AFTER:
             #   - Base indicator scoring (RSI, MACD, Bollinger, EMA, Volume)
