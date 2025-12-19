@@ -981,7 +981,7 @@ class SignalScorer:
             total_score += htf_adjustment
             logger.info(
                 "htf_bias_applied",
-                htf_bias=htf_bias or "neutral",
+                htf_bias=htf_bias if htf_bias is not None else "unknown",
                 htf_daily=htf_daily,
                 htf_4h=htf_4h,
                 sentiment=sentiment_category,

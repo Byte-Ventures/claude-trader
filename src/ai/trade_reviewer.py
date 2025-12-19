@@ -1117,7 +1117,7 @@ Trading style: POSITION TRADING (long-term)
         htf_trend = breakdown.get("_htf_trend") if breakdown.get("_htf_trend") is not None else "unknown"
         daily = breakdown.get("_htf_daily") if breakdown.get("_htf_daily") is not None else "unknown"
         four_h = breakdown.get("_htf_4h") if breakdown.get("_htf_4h") is not None else "unknown"
-        htf_line = f"\n📊 HIGHER TIMEFRAME BIAS: {htf_trend.upper()} (Daily: {daily}, 4H: {four_h})"
+        htf_line = f"\n📊 HIGHER TIMEFRAME BIAS: {htf_trend.upper()} (Daily: {daily.upper()}, 4H: {four_h.upper()})"
 
         # Build portfolio section (hidden when balance info is None for Cramer Mode comparison)
         position_pct = context.get('position_percent')
