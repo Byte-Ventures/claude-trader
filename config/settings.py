@@ -238,6 +238,18 @@ class Settings(BaseSettings):
         le=0.01,
         description="Price change threshold for whale direction classification (0.003 = 0.3%)"
     )
+    whale_candle_bullish_threshold: float = Field(
+        default=0.7,
+        ge=0.5,
+        le=1.0,
+        description="Candle close position threshold for bullish confirmation (0.7 = closed in top 30% of range)"
+    )
+    whale_candle_bearish_threshold: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=0.5,
+        description="Candle close position threshold for bearish confirmation (0.3 = closed in bottom 30% of range)"
+    )
     whale_boost_percent: float = Field(
         default=0.30,
         ge=0.1,
@@ -734,6 +746,34 @@ class Settings(BaseSettings):
         if "rsi_oversold" in info.data and v <= info.data["rsi_oversold"]:
             raise ValueError("rsi_overbought must be greater than rsi_oversold")
         return v
+
+    @model_validator(mode="after")
+    def validate_whale_candle_thresholds(self) -> "Settings":
+        """Ensure whale candle thresholds are properly configured.
+
+        Validates that:
+        1. bearish_threshold < 0.5 < bullish_threshold
+        2. The thresholds don't overlap (bullish > bearish)
+
+        This prevents misconfiguration that would cause all whale signals
+        to be classified as neutral.
+        """
+        # Validate bearish threshold
+        if self.whale_candle_bearish_threshold >= 0.5:
+            raise ValueError(
+                f"whale_candle_bearish_threshold ({self.whale_candle_bearish_threshold}) must be < 0.5"
+            )
+
+        # Validate bullish threshold
+        if self.whale_candle_bullish_threshold <= 0.5:
+            raise ValueError(
+                f"whale_candle_bullish_threshold ({self.whale_candle_bullish_threshold}) must be > 0.5"
+            )
+
+        # Note: Third check (bearish < bullish) is mathematically guaranteed by the above two checks
+        # and is therefore redundant (bearish < 0.5 < bullish)
+
+        return self
 
     @model_validator(mode="after")
     def validate_telegram_config(self) -> "Settings":

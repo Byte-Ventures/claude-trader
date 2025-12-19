@@ -678,6 +678,220 @@ def test_update_settings_whale_threshold():
     assert scorer.whale_volume_threshold == 5.0
 
 
+def test_whale_candle_structure_bullish_confirmation():
+    """Test whale direction with bullish price move and close near high (>0.7)."""
+    scorer = SignalScorer()
+
+    # Bullish price move (1% up) with close near high (position 0.8)
+    # Candle: low=50000, high=51000, close=50800 -> position = 800/1000 = 0.8
+    closes = [50000] * 99 + [50800]
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [50000] * 100,
+        'close': closes,
+        'volume': [10000] * 99 + [50000]  # 5x spike
+    })
+
+    result = scorer.calculate_score(df)
+
+    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_direction") == "bullish"
+    assert result.breakdown.get("_candle_close_position") is not None
+    assert result.breakdown.get("_candle_close_position") > 0.7
+
+
+def test_whale_candle_structure_bullish_rejection():
+    """Test whale direction with bullish price move but close in lower half (<0.5)."""
+    scorer = SignalScorer()
+
+    # Bullish price move (1% up) but close near low (position 0.3)
+    # Candle: low=50000, high=51000, close=50300 -> position = 300/1000 = 0.3
+    # This indicates rejection/fighting despite price increase
+    closes = [50000] * 99 + [50300]
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [50000] * 100,
+        'close': closes,
+        'volume': [10000] * 99 + [50000]  # 5x spike
+    })
+
+    result = scorer.calculate_score(df)
+
+    assert result.breakdown.get("_whale_activity") is True
+    # Should be neutral due to rejection pattern
+    assert result.breakdown.get("_whale_direction") == "neutral"
+    assert result.breakdown.get("_candle_close_position") is not None
+    assert result.breakdown.get("_candle_close_position") < 0.5
+
+
+def test_whale_candle_structure_bearish_confirmation():
+    """Test whale direction with bearish price move and close near low (<0.3)."""
+    scorer = SignalScorer()
+
+    # Bearish price move (1% down) with close near low (position 0.2)
+    # Candle: low=49000, high=50000, close=49200 -> position = 200/1000 = 0.2
+    closes = [50000] * 99 + [49200]
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [50000] * 100,
+        'low': [49000] * 100,
+        'close': closes,
+        'volume': [10000] * 99 + [50000]  # 5x spike
+    })
+
+    result = scorer.calculate_score(df)
+
+    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_direction") == "bearish"
+    assert result.breakdown.get("_candle_close_position") is not None
+    assert result.breakdown.get("_candle_close_position") < 0.3
+
+
+def test_whale_candle_structure_bearish_support():
+    """Test whale direction with bearish price move but close in upper half (>0.5)."""
+    scorer = SignalScorer()
+
+    # Bearish price move (1% down) but close near high (position 0.7)
+    # Candle: low=49000, high=50000, close=49700 -> position = 700/1000 = 0.7
+    # This indicates support/fighting despite price decrease
+    closes = [50000] * 99 + [49700]
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [50000] * 100,
+        'low': [49000] * 100,
+        'close': closes,
+        'volume': [10000] * 99 + [50000]  # 5x spike
+    })
+
+    result = scorer.calculate_score(df)
+
+    assert result.breakdown.get("_whale_activity") is True
+    # Should be neutral due to support pattern
+    assert result.breakdown.get("_whale_direction") == "neutral"
+    assert result.breakdown.get("_candle_close_position") is not None
+    assert result.breakdown.get("_candle_close_position") > 0.5
+
+
+def test_whale_candle_structure_ambiguous_range():
+    """Test whale direction with close in ambiguous range (0.5-0.7)."""
+    scorer = SignalScorer()
+
+    # Bullish price move (1% up) with close at 0.6 (ambiguous zone)
+    # Candle: low=50000, high=51000, close=50600 -> position = 600/1000 = 0.6
+    closes = [50000] * 99 + [50600]
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [50000] * 100,
+        'close': closes,
+        'volume': [10000] * 99 + [50000]  # 5x spike
+    })
+
+    result = scorer.calculate_score(df)
+
+    assert result.breakdown.get("_whale_activity") is True
+    # Should be neutral due to ambiguous close position (0.5-0.7 range)
+    assert result.breakdown.get("_whale_direction") == "neutral"
+    assert result.breakdown.get("_candle_close_position") is not None
+    position = result.breakdown.get("_candle_close_position")
+    assert 0.5 <= position <= 0.7
+
+
+def test_whale_candle_structure_zero_range():
+    """Test whale direction with zero candle range (doji/flat candle)."""
+    scorer = SignalScorer()
+
+    # Zero range candle - high equals low (doji pattern)
+    # When high == low, candle_range = 0, close_position should be None
+    closes = [50000] * 99 + [50500]
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [50000] * 99 + [50500],  # Last candle: high = close
+        'low': [50000] * 99 + [50500],   # Last candle: low = close (zero range)
+        'close': closes,
+        'volume': [10000] * 99 + [50000]  # 5x spike
+    })
+
+    result = scorer.calculate_score(df)
+
+    assert result.breakdown.get("_whale_activity") is True
+    # Should be neutral due to missing close_position (zero range candle)
+    assert result.breakdown.get("_whale_direction") == "neutral"
+    assert result.breakdown.get("_candle_close_position") is None
+
+
+def test_whale_candle_structure_missing_data():
+    """Test whale direction handles missing candle data gracefully."""
+    scorer = SignalScorer()
+
+    # Missing high/low data (NaN values)
+    closes = [50000] * 99 + [50500]
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 99 + [float('nan')],  # Last candle missing high
+        'low': [49000] * 99 + [float('nan')],   # Last candle missing low
+        'close': closes,
+        'volume': [10000] * 99 + [50000]  # 5x spike
+    })
+
+    result = scorer.calculate_score(df)
+
+    assert result.breakdown.get("_whale_activity") is True
+    # Should be neutral due to missing candle data
+    assert result.breakdown.get("_whale_direction") == "neutral"
+    assert result.breakdown.get("_candle_close_position") is None
+
+
+def test_whale_candle_structure_edge_case_exactly_0_7():
+    """Test whale direction with close exactly at 0.7 threshold."""
+    scorer = SignalScorer()
+
+    # Bullish price move with close exactly at 0.7
+    # Candle: low=50000, high=51000, close=50700 -> position = 700/1000 = 0.7
+    closes = [50000] * 99 + [50700]
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [50000] * 100,
+        'close': closes,
+        'volume': [10000] * 99 + [50000]  # 5x spike
+    })
+
+    result = scorer.calculate_score(df)
+
+    assert result.breakdown.get("_whale_activity") is True
+    # At exactly 0.7, the condition is close_position > 0.7, so this should be neutral
+    # (not greater than, so falls into ambiguous range)
+    assert result.breakdown.get("_whale_direction") == "neutral"
+    assert result.breakdown.get("_candle_close_position") == 0.7
+
+
+def test_whale_candle_structure_edge_case_exactly_0_3():
+    """Test whale direction with close exactly at 0.3 threshold."""
+    scorer = SignalScorer()
+
+    # Bearish price move with close exactly at 0.3
+    # Candle: low=49000, high=50000, close=49300 -> position = 300/1000 = 0.3
+    closes = [50000] * 99 + [49300]
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [50000] * 100,
+        'low': [49000] * 100,
+        'close': closes,
+        'volume': [10000] * 99 + [50000]  # 5x spike
+    })
+
+    result = scorer.calculate_score(df)
+
+    assert result.breakdown.get("_whale_activity") is True
+    # At exactly 0.3, the condition is close_position < 0.3, so this should be neutral
+    # (not less than, so falls into ambiguous range)
+    assert result.breakdown.get("_whale_direction") == "neutral"
+    assert result.breakdown.get("_candle_close_position") == 0.3
+
+
 def test_whale_volume_boundary_behavior():
     """Test that whale detection uses strict greater-than comparison.
 
@@ -705,6 +919,64 @@ def test_whale_volume_boundary_behavior():
     result2 = scorer.calculate_score(df)
     assert result2.breakdown.get("_whale_activity") is True
     assert result2.breakdown.get("_volume_ratio") > 3.0
+
+
+def test_whale_candle_structure_price_outside_range():
+    """Test handling when close price is outside high/low range (data inconsistency)."""
+    scorer = SignalScorer()
+
+    # Close price above high (data inconsistency) - only on last candle
+    closes = [50500] * 99 + [51100]  # Last close > high
+    df = pd.DataFrame({
+        'open': [50000] * 99 + [50000],
+        'high': [51000] * 99 + [51000],  # high = 51000
+        'low': [50000] * 99 + [50000],
+        'close': closes,  # Last close = 51100 (!)
+        'volume': [10000] * 99 + [50000]  # 5x spike = whale activity
+    })
+
+    result = scorer.calculate_score(df)
+
+    # Should detect whale activity (volume spike)
+    assert result.breakdown.get("_whale_activity") is True
+
+    # But candle close position should be None due to data inconsistency
+    assert result.breakdown.get("_candle_close_position") is None
+
+    # Whale direction should be unknown (can't trust inconsistent candle structure)
+    assert result.breakdown.get("_whale_direction") == "unknown"
+
+    # Price change percentage should still be valid (calculated from consecutive closes)
+    assert result.breakdown.get("_price_change_pct") is not None
+
+
+def test_whale_candle_structure_price_below_low():
+    """Test handling when close price is below low (data inconsistency)."""
+    scorer = SignalScorer()
+
+    # Close price below low (data inconsistency) - only on last candle
+    closes = [50500] * 99 + [49900]  # Last close < low
+    df = pd.DataFrame({
+        'open': [50000] * 99 + [50000],
+        'high': [51000] * 99 + [51000],
+        'low': [50000] * 99 + [50000],  # low = 50000
+        'close': closes,  # Last close = 49900 (!)
+        'volume': [10000] * 99 + [50000]  # 5x spike = whale activity
+    })
+
+    result = scorer.calculate_score(df)
+
+    # Should detect whale activity (volume spike)
+    assert result.breakdown.get("_whale_activity") is True
+
+    # But candle close position should be None due to data inconsistency
+    assert result.breakdown.get("_candle_close_position") is None
+
+    # Whale direction should be unknown (can't trust inconsistent candle structure)
+    assert result.breakdown.get("_whale_direction") == "unknown"
+
+    # Price change percentage should still be valid (calculated from consecutive closes)
+    assert result.breakdown.get("_price_change_pct") is not None
 
 
 # ============================================================================
