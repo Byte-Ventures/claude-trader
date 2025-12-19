@@ -264,6 +264,8 @@ class Settings(BaseSettings):
     )
 
     # Momentum Mode Parameters
+    # Minimum 1.0: Values below 1.0 would make even tiny EMA gaps (<1%) reach max strength,
+    # causing overly aggressive penalty reduction and potentially late exits during reversals
     momentum_trend_strength_cap: float = Field(
         default=5.0,
         ge=1.0,

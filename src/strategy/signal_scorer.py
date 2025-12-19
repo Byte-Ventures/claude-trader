@@ -587,28 +587,22 @@ class SignalScorer:
             # Strong trend (1.0 strength): full reduction (configured value)
             reduction = self.momentum_penalty_reduction * trend_strength
 
-            # Reduce overbought penalties by scaled factor (only negative scores)
-            # Use int() instead of // for symmetric rounding behavior
-            #
-            # IMPORTANT: Integer truncation behavior for very weak trends:
-            # When trend_strength is very low (< 0.04), the reduction factor approaches zero,
-            # causing integer truncation to eliminate penalty scores entirely.
-            # Example: int(-25 * 0.01) = int(-0.25) = 0
-            #
-            # This is intentional algorithmic behavior that enables fast exits during weak
-            # or deteriorating trends where reversals are more likely. By reducing penalty
-            # scores to zero, the bot becomes more responsive to exit signals, addressing
-            # issue #54's goal of avoiding delayed exits during trend weakening.
-            #
-            # Trade-off: During very weak trends (EMA gap < ~0.2% for default 5.0 cap),
-            # penalty reduction becomes ineffective due to truncation (though momentum mode
-            # remains technically active for logging/tracking). This allows quick exits but
-            # potentially misses continuation of genuine but slow-developing trends.
-            if rsi_score < 0:
-                rsi_score = int(rsi_score * reduction)
-            if bb_score < 0:
-                bb_score = int(bb_score * reduction)
-            logger.info(
+            # Only apply penalty reduction if trend strength is meaningful (>= 4%)
+            # This prevents integer truncation discontinuity where very weak trends
+            # would result in zero penalty (e.g., int(-25 * 0.01) = 0)
+            # With this threshold:
+            # - EMA gap < 0.2% (for default 5.0 cap): momentum mode inactive
+            # - EMA gap >= 0.2%: momentum mode active with proportional reduction
+            # This ensures predictable behavior and avoids false momentum signals
+            if trend_strength >= 0.04:
+                # Reduce overbought penalties by scaled factor (only negative scores)
+                # Use int() instead of // for symmetric rounding behavior
+                if rsi_score < 0:
+                    rsi_score = int(rsi_score * reduction)
+                if bb_score < 0:
+                    bb_score = int(bb_score * reduction)
+            # Use debug level for detailed breakdown to reduce log volume in high-frequency trading
+            logger.debug(
                 "momentum_mode_active",
                 reason=momentum_reason,
                 ema_gap_percent=round(ema_gap_percent, 3),
