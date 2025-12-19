@@ -110,6 +110,8 @@ class TradingDaemon:
         self._last_ai_failure_notification: Optional[datetime] = None  # Cooldown for AI failure notifications
         self._last_interesting_hold_review: Optional[datetime] = None  # Cooldown for interesting_hold reviews
         self._last_interesting_hold_score: Optional[int] = None  # Track signal changes
+        self._last_veto_timestamp: Optional[datetime] = None  # Cooldown after AI veto rejection
+        self._last_veto_direction: Optional[str] = None  # Signal direction at veto ("buy"/"sell")
 
         # Multi-Timeframe state (for HTF bias caching)
         self._daily_trend: str = "neutral"
@@ -778,6 +780,69 @@ class TradingDaemon:
             "extreme": self.settings.interval_extreme_volatility,
         }
         return interval_map.get(self._last_volatility, self.settings.check_interval_seconds)
+
+    def _get_candle_start(self, timestamp: datetime) -> datetime:
+        """
+        Get start of the candle period containing the given timestamp.
+
+        Args:
+            timestamp: Any datetime within a candle period
+
+        Returns:
+            datetime representing the start of that candle period
+        """
+        granularity_seconds = {
+            "ONE_MINUTE": 60,
+            "FIVE_MINUTE": 300,
+            "FIFTEEN_MINUTE": 900,
+            "THIRTY_MINUTE": 1800,
+            "ONE_HOUR": 3600,
+            "TWO_HOUR": 7200,
+            "SIX_HOUR": 21600,
+            "ONE_DAY": 86400,
+        }
+        seconds = granularity_seconds.get(self.settings.candle_interval, 3600)
+        ts = timestamp.timestamp()
+        candle_start_ts = (ts // seconds) * seconds
+        return datetime.fromtimestamp(candle_start_ts, tz=timezone.utc)
+
+    def _should_skip_review_after_veto(self, signal_action: str) -> tuple[bool, Optional[str]]:
+        """
+        Check if AI review should be skipped due to recent veto rejection.
+
+        After a SKIP or REDUCE veto, skip further reviews until:
+        - A new candle period begins, OR
+        - The signal direction changes (BUY -> SELL or vice versa)
+
+        Args:
+            signal_action: Current signal action ("buy" or "sell")
+
+        Returns:
+            Tuple of (should_skip, reason) where reason explains why if skipping
+        """
+        if not self.settings.ai_review_rejection_cooldown:
+            return False, None
+
+        if self._last_veto_timestamp is None:
+            return False, None
+
+        # Direction changed - allow review
+        if self._last_veto_direction != signal_action:
+            return False, None
+
+        # Check if we're in a new candle period
+        now = datetime.now(timezone.utc)
+        current_candle_start = self._get_candle_start(now)
+        veto_candle_start = self._get_candle_start(self._last_veto_timestamp)
+
+        if current_candle_start > veto_candle_start:
+            # New candle, reset cooldown state
+            self._last_veto_timestamp = None
+            self._last_veto_direction = None
+            return False, None
+
+        # Same candle, same direction - skip review
+        return True, f"veto_cooldown (same candle, direction={signal_action})"
 
     def _get_timeframe_trend(self, granularity: str, cache_minutes: int) -> str:
         """
@@ -1815,6 +1880,20 @@ class TradingDaemon:
                         )
                         should_review = False
 
+                # Veto cooldown: skip trade reviews if recently rejected for same direction
+                if should_review and review_type == "trade":
+                    skip_veto, veto_reason = self._should_skip_review_after_veto(
+                        signal_result.action
+                    )
+                    if skip_veto:
+                        logger.info(
+                            "ai_review_skipped_veto_cooldown",
+                            action=signal_result.action,
+                            score=signal_result.score,
+                            reason=veto_reason,
+                        )
+                        should_review = False
+
                 if should_review:
                     try:
                         # Estimate trade size for context (before AI veto adjustments)
@@ -1907,6 +1986,9 @@ class TradingDaemon:
                         if review_type == "trade" and not review.judge_decision:
                             if review.final_veto_action == VetoAction.SKIP.value:
                                 logger.info("trade_vetoed", reason=review.judge_reasoning)
+                                # Record veto for cooldown (skip reviews until next candle)
+                                self._last_veto_timestamp = datetime.now(timezone.utc)
+                                self._last_veto_direction = signal_result.action
                                 return  # Skip this iteration
                             elif review.final_veto_action == VetoAction.REDUCE.value:
                                 claude_veto_multiplier = self.settings.position_reduction
@@ -1914,6 +1996,9 @@ class TradingDaemon:
                                     "trade_reduced_by_review",
                                     multiplier=f"{claude_veto_multiplier:.2f}",
                                 )
+                                # Record veto for cooldown (skip reviews until next candle)
+                                self._last_veto_timestamp = datetime.now(timezone.utc)
+                                self._last_veto_direction = signal_result.action
                             # Tiered system: skip or reduce only (no delay)
 
                         # For interesting holds, store recommendation for threshold adjustment
