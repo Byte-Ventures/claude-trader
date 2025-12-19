@@ -77,6 +77,15 @@ _DEFAULT_HISTOGRAM_SCALE_FACTOR = 200  # Fallback for unknown intervals
 # Interval multipliers for dynamic scaling
 # Shorter intervals need higher sensitivity (larger multipliers)
 # Longer intervals need lower sensitivity (smaller multipliers)
+#
+# These multipliers are calibrated based on the observation that shorter timeframes
+# produce noisier signals and need higher sensitivity to capture meaningful moves,
+# while longer timeframes have clearer trends and need lower sensitivity to avoid
+# overtrading. The values are proportionally scaled from the 15-minute baseline.
+#
+# Note: These values should be validated through backtesting across different assets
+# and market conditions. Consider making them configurable parameters if optimization
+# shows significant performance variations.
 _INTERVAL_MULTIPLIERS = {
     "ONE_MINUTE": 2.0,      # Highest sensitivity for 1-minute candles
     "FIVE_MINUTE": 1.5,     # High sensitivity
@@ -92,6 +101,7 @@ _DEFAULT_INTERVAL_MULTIPLIER = 1.0  # Fallback for unknown intervals
 _HISTOGRAM_DEAD_ZONE = 0.1  # Minimum normalized histogram for signal
 _BASE_SIGNAL_CLAMP = 0.8  # Max base signal before relationship boost
 _RELATIONSHIP_BOOST = 0.2  # Boost for MACD/signal line relationship
+_MAX_SCALE_FACTOR = 1000  # Maximum scale factor cap to prevent oversensitivity in low volatility
 
 
 def get_histogram_scale_factor(candle_interval: Optional[str] = None) -> float:
@@ -148,8 +158,9 @@ def get_dynamic_histogram_scale(
     # Calculate ATR as percentage of price
     atr_percent_series = calculate_atr_percent(atr_result, close)
 
-    if len(atr_percent_series) < 1 or pd.isna(atr_percent_series.iloc[-1]):
-        # Fallback to static scale factor if ATR is unavailable
+    # ATR needs at least 14 periods to be reliable (default ATR period)
+    # Fallback to static scale factor if ATR has insufficient data or is unavailable
+    if len(atr_percent_series) < 14 or pd.isna(atr_percent_series.iloc[-1]):
         return get_histogram_scale_factor(candle_interval)
 
     atr_percent = atr_percent_series.iloc[-1]
@@ -170,6 +181,9 @@ def get_dynamic_histogram_scale(
     )
 
     dynamic_scale = base_scale * interval_multiplier
+
+    # Cap the scale factor to prevent oversensitivity in extremely low volatility markets
+    dynamic_scale = min(dynamic_scale, _MAX_SCALE_FACTOR)
 
     logger.debug(
         "dynamic_macd_scale",
