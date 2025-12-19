@@ -744,10 +744,10 @@ class TradingDaemon:
             self._ai_recommendation_ttl_minutes = new_settings.ai_recommendation_ttl_minutes
 
             # Invalidate HTF cache if MTF settings changed
-            mtf_settings = {"mtf_enabled", "mtf_4h_enabled", "mtf_candle_limit",
-                           "mtf_daily_cache_minutes", "mtf_4h_cache_minutes",
-                           "mtf_aligned_boost", "mtf_counter_penalty"}
-            if mtf_settings & set(changes.keys()):
+            # Only invalidate for parameters that affect trend fetching, not score calculation
+            cache_affecting_settings = {"mtf_enabled", "mtf_4h_enabled", "mtf_candle_limit",
+                                       "mtf_daily_cache_minutes", "mtf_4h_cache_minutes"}
+            if cache_affecting_settings & set(changes.keys()):
                 self._invalidate_htf_cache()
 
             logger.info(
