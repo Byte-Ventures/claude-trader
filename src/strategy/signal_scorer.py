@@ -154,6 +154,7 @@ class SignalScorer:
         momentum_rsi_candles: int = 3,
         momentum_price_candles: int = 12,
         momentum_penalty_reduction: float = 0.5,
+        momentum_trend_strength_cap: float = 5.0,
         candle_interval: Optional[str] = None,
         trading_pair: Optional[str] = None,
         whale_volume_threshold: float = 3.0,
@@ -220,6 +221,7 @@ class SignalScorer:
         self.momentum_rsi_candles = momentum_rsi_candles
         self.momentum_price_candles = momentum_price_candles
         self.momentum_penalty_reduction = momentum_penalty_reduction
+        self.momentum_trend_strength_cap = momentum_trend_strength_cap
 
         # Whale detection parameters
         self.whale_volume_threshold = whale_volume_threshold
@@ -557,12 +559,15 @@ class SignalScorer:
             # Calculate trend strength factor from EMA gap (0.0 to 1.0)
             # Stronger trends (wider EMA gap) get more penalty reduction
             # Weaker trends (narrower EMA gap) get less reduction for faster exits
+            # When EMAs are unavailable, trend_strength defaults to 0.0 (minimal reduction)
             trend_strength = 0.0
-            if indicators.ema_fast and indicators.ema_slow and indicators.ema_slow != 0:
+            ema_gap_percent = 0.0
+            if (indicators.ema_fast and indicators.ema_slow and
+                indicators.ema_slow != 0 and indicators.ema_fast != 0):
                 ema_gap_percent = abs((float(indicators.ema_fast) - float(indicators.ema_slow)) / float(indicators.ema_slow)) * 100
-                # Cap at 5% for normalization (5% EMA gap is very strong trend)
-                # Linear scaling: 0% gap = 0.0 strength, 5%+ gap = 1.0 strength
-                trend_strength = min(1.0, ema_gap_percent / 5.0)
+                # Cap at configured percentage for normalization
+                # Linear scaling: 0% gap = 0.0 strength, cap% gap = 1.0 strength
+                trend_strength = min(1.0, ema_gap_percent / self.momentum_trend_strength_cap)
 
             # Scale the penalty reduction by trend strength
             # Base reduction is configured value (default 0.5), scaled by trend strength
@@ -579,6 +584,7 @@ class SignalScorer:
             logger.info(
                 "momentum_mode_active",
                 reason=momentum_reason,
+                ema_gap_percent=round(ema_gap_percent, 3),
                 trend_strength=round(trend_strength, 3),
                 penalty_reduction=round(reduction, 3),
                 rsi_original=original_rsi,

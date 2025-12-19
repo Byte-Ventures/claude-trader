@@ -366,6 +366,7 @@ class TradingDaemon:
             atr_period=settings.atr_period,
             candle_interval=settings.candle_interval,
             trading_pair=settings.trading_pair,
+            momentum_trend_strength_cap=settings.momentum_trend_strength_cap,
             whale_volume_threshold=settings.whale_volume_threshold,
             whale_direction_threshold=settings.whale_direction_threshold,
             whale_candle_bullish_threshold=settings.whale_candle_bullish_threshold,

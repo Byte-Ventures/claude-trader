@@ -1744,7 +1744,10 @@ def test_momentum_penalty_reduction_scales_with_trend_strength():
         # This is the key improvement from issue #54
         if strong_result.breakdown["rsi"] < 0 and weak_result.breakdown["rsi"] < 0:
             # Less negative = more penalty reduction
-            assert strong_result.breakdown["rsi"] >= weak_result.breakdown["rsi"]
+            assert strong_result.breakdown["rsi"] >= weak_result.breakdown["rsi"], \
+                f"Expected strong trend RSI {strong_result.breakdown['rsi']} >= weak trend {weak_result.breakdown['rsi']}"
+        # If RSI is not negative, we can't test the penalty reduction behavior
+        # This test will pass but doesn't validate the core functionality in that case
 
 
 # ============================================================================
