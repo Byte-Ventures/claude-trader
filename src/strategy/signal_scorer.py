@@ -579,7 +579,8 @@ class SignalScorer:
                 ema_gap_percent = abs((ema_fast_float - ema_slow_float) / ema_slow_float) * 100
                 # Cap at configured percentage for normalization
                 # Linear scaling: 0% gap = 0.0 strength, cap% gap = 1.0 strength
-                trend_strength = min(1.0, ema_gap_percent / self.momentum_trend_strength_cap)
+                # Defensive max(0.001) prevents division by zero if cap is somehow 0
+                trend_strength = min(1.0, ema_gap_percent / max(self.momentum_trend_strength_cap, 0.001))
 
             # Scale the penalty reduction by trend strength
             # Base reduction is configured value (default 0.5), scaled by trend strength

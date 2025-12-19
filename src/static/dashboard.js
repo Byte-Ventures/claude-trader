@@ -31,6 +31,9 @@ let isInitialized = false;
 /** Timestamp of last candle update, for throttling */
 let lastCandleUpdate = 0;
 
+/** Pending candle update timeout, ensures final throttled update is applied */
+let pendingCandleUpdate = null;
+
 const MAX_RECONNECT_ATTEMPTS = 10;
 const CANDLE_UPDATE_THROTTLE_MS = 1000;  // Throttle candle updates to 1/second
 const BASE_RECONNECT_DELAY = 1000;
@@ -479,8 +482,27 @@ function updateDashboard(state) {
             const isThrottled = !isNewCandlePeriod &&
                 (now - lastCandleUpdate < CANDLE_UPDATE_THROTTLE_MS);
 
+            // Clear any pending trailing update (new data supersedes it)
+            if (pendingCandleUpdate) {
+                clearTimeout(pendingCandleUpdate);
+                pendingCandleUpdate = null;
+            }
+
             if (isThrottled) {
-                // Skip this update - throttling within same candle period
+                // Schedule trailing update to ensure final price is captured
+                // This prevents losing the close price if updates stop arriving
+                pendingCandleUpdate = setTimeout(() => {
+                    pendingCandleUpdate = null;
+                    if (currentCandle && currentCandle.time === candleTime) {
+                        currentCandle.high = Math.max(currentCandle.high, price);
+                        currentCandle.low = Math.min(currentCandle.low, price);
+                        currentCandle.close = price;
+                        candleSeries.update(currentCandle);
+                        if (priceLine) {
+                            priceLine.update({ time: currentCandle.time, value: price });
+                        }
+                    }
+                }, CANDLE_UPDATE_THROTTLE_MS);
                 return;
             }
 
