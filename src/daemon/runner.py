@@ -860,7 +860,7 @@ class TradingDaemon:
         if granularity == "ONE_DAY":
             last_fetch = self._daily_last_fetch
             cached_trend = self._daily_trend
-        else:  # SIX_HOUR
+        else:  # FOUR_HOUR
             last_fetch = self._6h_last_fetch
             cached_trend = self._6h_trend
 

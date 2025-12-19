@@ -658,15 +658,15 @@ class Settings(BaseSettings):
     )
     mtf_daily_candle_limit: int = Field(
         default=50,
-        ge=20,
+        ge=26,
         le=100,
-        description="Candles for daily trend analysis (50 = ~7 weeks)"
+        description="Candles for daily trend analysis (50 = ~7 weeks, min 26 for EMA/MACD)"
     )
     mtf_4h_candle_limit: int = Field(
         default=84,
-        ge=20,
+        ge=26,
         le=200,
-        description="Candles for 4H trend analysis (84 = 14 days)"
+        description="Candles for 4H trend analysis (84 = 14 days, min 26 for EMA/MACD)"
     )
     mtf_daily_cache_minutes: int = Field(
         default=60,
