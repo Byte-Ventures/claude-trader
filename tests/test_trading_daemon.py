@@ -1959,14 +1959,14 @@ def test_invalidate_htf_cache(htf_mock_settings, mock_exchange_client, mock_data
 
                 # Set cache timestamps
                 daemon._daily_last_fetch = datetime.now(timezone.utc)
-                daemon._6h_last_fetch = datetime.now(timezone.utc)
+                daemon._4h_last_fetch = datetime.now(timezone.utc)
 
                 # Invalidate cache
                 daemon._invalidate_htf_cache()
 
                 # Verify timestamps are cleared
                 assert daemon._daily_last_fetch is None
-                assert daemon._6h_last_fetch is None
+                assert daemon._4h_last_fetch is None
 
 
 def test_store_signal_history_returns_id(htf_mock_settings, mock_exchange_client, mock_database):
