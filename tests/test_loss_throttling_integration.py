@@ -212,6 +212,11 @@ def test_no_race_conditions_in_state_updates(limiter, breaker):
 
     Rapidly record trades and trip circuit breaker to ensure state
     remains consistent.
+
+    Note: This test verifies state consistency with rapid sequential updates,
+    but does not test true concurrent access (which would require threading).
+    The loss limiter and circuit breaker are designed for single-threaded
+    event loop usage in the trading bot.
     """
     with freeze_time("2024-01-01 12:00:00"):
         # Rapidly record multiple trades
@@ -636,8 +641,11 @@ def test_loss_limits_independent_per_trading_mode():
     """
     Test that paper and live trading have independent loss tracking.
 
-    This test verifies the concept - actual DB separation is tested elsewhere.
-    Loss limiter instances for paper and live should be independent.
+    Note: This is a conceptual test using separate LossLimiter instances.
+    LossLimiter is an in-memory safety system - paper/live separation is
+    achieved by instantiating separate instances for each mode.
+    Database-level paper/live separation (is_paper column) is tested in
+    tests/test_database.py for the Trade and Order models.
     """
     # Separate limiters for paper and live (as would be in real usage)
     paper_limiter = LossLimiter(
