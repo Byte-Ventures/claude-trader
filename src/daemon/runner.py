@@ -1784,6 +1784,11 @@ class TradingDaemon:
                 "confidence": self._last_weight_profile_confidence,
                 "reasoning": self._last_weight_profile_reasoning,
             } if self.weight_profile_selector else None,
+            "htf_bias": {
+                "daily_trend": daily_trend,
+                "four_hour_trend": four_hour_trend,
+                "combined_bias": htf_bias,
+            } if self.settings.mtf_enabled else None,
             "safety": {
                 "circuit_breaker": self.circuit_breaker.level.name,
                 "can_trade": self.circuit_breaker.can_trade,

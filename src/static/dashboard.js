@@ -428,6 +428,33 @@ function updateDashboard(state) {
         document.getElementById('weight-profile-confidence').textContent = '--';
     }
 
+    // Update HTF bias
+    const htfBiasCard = document.getElementById('htf-bias-card');
+    const htfBias = state.htf_bias;
+    if (htfBias) {
+        htfBiasCard.style.display = 'block';
+
+        const trendEmoji = {
+            'bullish': '📈',
+            'bearish': '📉',
+            'neutral': '↔️'
+        };
+
+        const biasEmoji = htfBias.combined_bias === 'bullish' ? '✅' :
+                         htfBias.combined_bias === 'bearish' ? '✅' :
+                         '⚖️';
+
+        const biasText = htfBias.combined_bias.charAt(0).toUpperCase() + htfBias.combined_bias.slice(1);
+        document.getElementById('htf-combined-bias').textContent = `${biasEmoji} ${biasText}`;
+
+        const dailyEmoji = trendEmoji[htfBias.daily_trend] || '↔️';
+        const fourHourEmoji = trendEmoji[htfBias.four_hour_trend] || '↔️';
+        document.getElementById('htf-trends').textContent =
+            `Daily: ${dailyEmoji} | 6H: ${fourHourEmoji}`;
+    } else {
+        htfBiasCard.style.display = 'none';
+    }
+
     // Update circuit breaker
     const cbEl = document.getElementById('circuit-breaker');
     const cbLevel = state.safety.circuit_breaker;

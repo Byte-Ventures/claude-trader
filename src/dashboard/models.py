@@ -56,6 +56,14 @@ class WeightProfileInfo(BaseModel):
     reasoning: str = ""
 
 
+class HTFBiasInfo(BaseModel):
+    """Higher timeframe bias information."""
+
+    daily_trend: str
+    four_hour_trend: str
+    combined_bias: str
+
+
 class DashboardState(BaseModel):
     """Complete dashboard state for WebSocket broadcast."""
 
@@ -67,6 +75,7 @@ class DashboardState(BaseModel):
     cramer_portfolio: Optional[PortfolioInfo] = None
     regime: str
     weight_profile: Optional[WeightProfileInfo] = None
+    htf_bias: Optional[HTFBiasInfo] = None
     safety: SafetyStatus
     trading_pair: str
     is_paper: bool
