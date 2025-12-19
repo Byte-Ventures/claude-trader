@@ -490,7 +490,8 @@ class TradeReviewer:
         market_research_cache_minutes: int = 15,
         candle_interval: str = "ONE_HOUR",
         signal_threshold: int = 60,
-        max_tokens: int = 4000,
+        reviewer_max_tokens: int = 800,
+        research_max_tokens: int = 4000,
         api_timeout: int = 120,
     ):
         """
@@ -510,7 +511,8 @@ class TradeReviewer:
             ai_web_search_enabled: Allow AI models to search web during analysis
             market_research_cache_minutes: Cache duration for research data
             candle_interval: Candle timeframe for determining trading style
-            max_tokens: Maximum tokens for AI API responses
+            reviewer_max_tokens: Maximum tokens for trade review decisions (shorter)
+            research_max_tokens: Maximum tokens for market research (longer)
             api_timeout: Timeout in seconds for API calls
         """
         self.api_key = api_key
@@ -526,7 +528,8 @@ class TradeReviewer:
         self.ai_web_search_enabled = ai_web_search_enabled
         self.candle_interval = candle_interval
         self.signal_threshold = signal_threshold
-        self.max_tokens = max_tokens
+        self.reviewer_max_tokens = reviewer_max_tokens
+        self.research_max_tokens = research_max_tokens
         self.api_timeout = api_timeout
 
         # Set cache TTL for market research
@@ -1397,6 +1400,7 @@ Explain what the indicators are showing, considering the trading timeframe."""
             system_prompts[stance],
             prompt,
             enable_tools=True,  # Enable web search for market analysis
+            use_research_tokens=True,  # Use higher token limit for market research
         )
         data = self._extract_json(response)
 
@@ -1425,7 +1429,12 @@ Explain what the indicators are showing, considering the trading timeframe."""
     ) -> dict:
         """Run judge to synthesize market reviews."""
         prompt = self._build_market_judge_prompt(reviews, context)
-        response = await self._call_api(self.judge_model, SYSTEM_PROMPT_MARKET_JUDGE, prompt)
+        response = await self._call_api(
+            self.judge_model,
+            SYSTEM_PROMPT_MARKET_JUDGE,
+            prompt,
+            use_research_tokens=True,  # Use higher token limit for market research
+        )
         data = self._extract_json(response)
 
         # Validate recommendation
@@ -1519,6 +1528,7 @@ Based on these three perspectives, provide the final market outlook."""
         system_prompt: str,
         user_prompt: str,
         enable_tools: bool = False,
+        use_research_tokens: bool = False,
     ) -> str:
         """
         Call OpenRouter API with optional tool support.
@@ -1528,6 +1538,7 @@ Based on these three perspectives, provide the final market outlook."""
             system_prompt: System message
             user_prompt: User message
             enable_tools: Whether to enable web search tool
+            use_research_tokens: Use research_max_tokens (True) or reviewer_max_tokens (False)
 
         Returns:
             Model response content as string
@@ -1537,9 +1548,11 @@ Based on these three perspectives, provide the final market outlook."""
             {"role": "user", "content": user_prompt},
         ]
 
+        max_tokens = self.research_max_tokens if use_research_tokens else self.reviewer_max_tokens
+
         request_body = {
             "model": model,
-            "max_tokens": self.max_tokens,
+            "max_tokens": max_tokens,
             "messages": messages,
         }
 

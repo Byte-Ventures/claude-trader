@@ -576,11 +576,17 @@ class Settings(BaseSettings):
         default=True,
         description="Allow AI models to search web during market analysis"
     )
-    ai_max_tokens: int = Field(
+    ai_reviewer_max_tokens: int = Field(
+        default=800,
+        ge=200,
+        le=2000,
+        description="Max tokens for trade review decisions (shorter responses)"
+    )
+    ai_research_max_tokens: int = Field(
         default=4000,
-        ge=500,
-        le=16000,
-        description="Maximum tokens for AI API responses (increase if seeing truncated JSON errors)"
+        ge=1000,
+        le=8000,
+        description="Max tokens for market research (longer responses)"
     )
     ai_api_timeout: int = Field(
         default=120,
