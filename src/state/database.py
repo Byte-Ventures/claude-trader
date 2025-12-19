@@ -1966,10 +1966,10 @@ class Database:
         if retention_days < 1:
             raise ValueError("retention_days must be >= 1")
 
-        try:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
-            with self.session() as session:
+        with self.session() as session:
+            try:
                 query = session.query(SignalHistory).filter(
                     SignalHistory.timestamp < cutoff
                 )
@@ -1989,15 +1989,12 @@ class Database:
                     )
                 return deleted_count
 
-        except ValueError:
-            # Re-raise validation errors without logging
-            raise
-        except Exception as e:
-            session.rollback()  # Explicit rollback for financial system integrity
-            logger.error(
-                "signal_history_cleanup_failed",
-                error=str(e),
-                retention_days=retention_days,
-                is_paper=is_paper,
-            )
-            raise  # Re-raise after logging for visibility
+            except Exception as e:
+                session.rollback()  # Explicit rollback for financial system integrity
+                logger.error(
+                    "signal_history_cleanup_failed",
+                    error=str(e),
+                    retention_days=retention_days,
+                    is_paper=is_paper,
+                )
+                raise  # Re-raise after logging for visibility
