@@ -118,6 +118,8 @@ class TradingDaemon:
         self._daily_last_fetch: Optional[datetime] = None
         self._6h_trend: str = "neutral"
         self._6h_last_fetch: Optional[datetime] = None
+        self._htf_cache_hits: int = 0
+        self._htf_cache_misses: int = 0
 
         # Signal history tracking for marking executed trades.
         # Thread-safety note: This is safe because TradingDaemon runs single-threaded.
@@ -866,8 +868,10 @@ class TradingDaemon:
 
         now = datetime.now(timezone.utc)
         if last_fetch and (now - last_fetch) < timedelta(minutes=cache_minutes):
+            self._htf_cache_hits += 1
             return cached_trend
 
+        self._htf_cache_misses += 1
         try:
             candles = self.client.get_candles(
                 self.settings.trading_pair,
@@ -895,7 +899,13 @@ class TradingDaemon:
                 self._6h_trend = trend
                 self._6h_last_fetch = now
 
-            logger.info("htf_trend_updated", timeframe=granularity, trend=trend)
+            logger.info(
+                "htf_trend_updated",
+                timeframe=granularity,
+                trend=trend,
+                cache_hits=self._htf_cache_hits,
+                cache_misses=self._htf_cache_misses,
+            )
             return trend
         except (ConnectionError, TimeoutError, OSError, ValueError, KeyError, NotImplementedError) as e:
             # Expected failures: network issues, API errors, data parsing issues,
