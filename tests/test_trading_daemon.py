@@ -1906,22 +1906,28 @@ def test_get_timeframe_trend_caching(htf_mock_settings, mock_exchange_client, mo
                 # Mock signal scorer get_trend
                 daemon.signal_scorer.get_trend = Mock(return_value="bullish")
 
-                # First call should fetch
+                # First call should fetch (cache miss)
                 trend1 = daemon._get_timeframe_trend("ONE_DAY", 60)
 
                 # Verify get_candles was called
                 assert mock_exchange_client.get_candles.called
+                # Verify cache miss counter incremented
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 0
 
                 # Reset mock to verify caching
                 mock_exchange_client.get_candles.reset_mock()
                 daemon.signal_scorer.get_trend.reset_mock()
 
-                # Second call within cache period should use cache
+                # Second call within cache period should use cache (cache hit)
                 trend2 = daemon._get_timeframe_trend("ONE_DAY", 60)
 
                 # Should NOT call get_candles again (cache hit)
                 assert not mock_exchange_client.get_candles.called
                 assert trend1 == trend2 == "bullish"
+                # Verify cache hit counter incremented
+                assert daemon._htf_cache_misses == 1  # Still 1
+                assert daemon._htf_cache_hits == 1    # Now 1
 
 
 def test_get_timeframe_trend_fail_open(htf_mock_settings, mock_database):

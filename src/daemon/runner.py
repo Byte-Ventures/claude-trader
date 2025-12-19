@@ -871,7 +871,6 @@ class TradingDaemon:
             self._htf_cache_hits += 1
             return cached_trend
 
-        self._htf_cache_misses += 1
         try:
             candles = self.client.get_candles(
                 self.settings.trading_pair,
@@ -888,6 +887,9 @@ class TradingDaemon:
                     required=self.signal_scorer.ema_slow_period,
                 )
                 return cached_trend or "neutral"
+
+            # Only count as cache miss if we successfully fetched new data
+            self._htf_cache_misses += 1
 
             trend = self.signal_scorer.get_trend(candles)
 
