@@ -53,6 +53,9 @@ ASYNC_TIMEOUT_SECONDS = 120
 # Interval for periodic stop protection checks (seconds)
 STOP_PROTECTION_CHECK_INTERVAL_SECONDS = 300  # 5 minutes
 
+# Maximum length for error messages in signal history alerts
+MAX_ERROR_MSG_LENGTH = 200
+
 
 class TradingDaemon:
     """
@@ -1056,10 +1059,10 @@ class TradingDaemon:
                 and (self._signal_history_failures - 10) % 50 == 0
             ):
                 error_str = str(e)
-                error_msg = error_str[:200]
+                error_msg = error_str[:MAX_ERROR_MSG_LENGTH]
                 self.notifier.notify_error(
                     f"Signal history storage failing ({self._signal_history_failures} consecutive failures)",
-                    context=f"Last error: {error_msg}{'...' if len(error_str) > 200 else ''}",
+                    context=f"Last error: {error_msg}{'...' if len(error_str) > MAX_ERROR_MSG_LENGTH else ''}",
                 )
             return None
 
