@@ -35,6 +35,16 @@ from src.safety.validator import (
 
 
 # ============================================================================
+# Test Date Convention
+# ============================================================================
+# All tests use freeze_time with "2024-01-01" as the base timestamp.
+# This is intentional - using a fixed past date ensures:
+# 1. Reproducible test results regardless of when tests run
+# 2. No timezone-related flakiness from "current time"
+# 3. Clean daily reset behavior at midnight UTC (hour 0)
+# The specific date (2024-01-01) is arbitrary - any date would work.
+
+# ============================================================================
 # Fixtures
 # ============================================================================
 
@@ -401,6 +411,10 @@ def test_throttle_prevents_rapid_flapping(limiter):
         mult_above = status_above.position_multiplier
 
         # Changes should be gradual, not sudden jumps
+        # Using 0.15 tolerance to verify smoothness without being overly strict.
+        # The throttle formula produces non-linear changes, so small P&L shifts
+        # near the threshold can cause multiplier changes in the 0.05-0.10 range.
+        # This tolerance ensures the test validates smoothness without flakiness.
         assert abs(mult_at_threshold - mult_below) < 0.15
         assert abs(mult_below - mult_above) < 0.15
 
