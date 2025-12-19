@@ -13,30 +13,30 @@ MARKET PROTECTION LAYERS (applied in this order):
 1. REGIME THRESHOLD ADJUSTMENTS (MarketRegime.calculate)
    - Modifies signal threshold based on sentiment/volatility/trend
    - Example: Extreme fear + bearish trend → threshold +10
-   - Applied: Before action determination (line ~1632)
+   - Applied: Before action determination (line ~1687)
    - See: src/strategy/regime.py
 
 2. REGIME POSITION SIZING (MarketRegime.calculate)
    - Multiplier applied to position size (0.7x to 1.3x)
    - Example: Extreme volatility → 0.8x position size
-   - Applied: In safety_multiplier calculation (line ~1963)
+   - Applied: In safety_multiplier calculation (line ~2035)
    - See: src/strategy/regime.py
 
 3. EXTREME FEAR MTF OVERRIDE (SignalScorer.calculate_score)
    - Full counter-penalty when daily/4H disagree during extreme fear
    - Prevents 4H neutral from overriding bearish daily during crashes
-   - Applied: During signal score calculation (line ~762)
-   - See: src/strategy/signal_scorer.py:762
+   - Applied: During signal score calculation (line ~755)
+   - See: src/strategy/signal_scorer.py:755
 
 4. DUAL-EXTREME BLOCKING (_trading_iteration)
    - Blocks buys when sentiment=extreme_fear AND volatility=extreme
-   - Applied: AFTER signal calculation, BEFORE order execution (line ~1967)
-   - See: Block check at line ~1967
+   - Applied: AFTER signal calculation, BEFORE order execution (line ~2059)
+   - See: Block check at line ~2059
 
-5. EXTREME VOLATILITY STOP WIDENING (_create_emergency_stop)
+5. EXTREME VOLATILITY STOP WIDENING (_create_trailing_stop)
    - 2.0x ATR stops vs 1.5x during extreme volatility
-   - Applied: During stop loss calculation (line ~3474)
-   - See: Stop creation at line ~3474
+   - Applied: During stop loss calculation (line ~3579)
+   - See: Stop creation at line ~3579
 
 MULTIPLIER STACKING:
 final_position = base_size * regime_mult * throttle_mult * ai_veto_mult * safety_mult
@@ -2180,9 +2180,9 @@ class TradingDaemon:
         # Post-mortem #135: These conditions create unfavorable risk/reward for entries
         #
         # Applied AFTER:
-        #   - Layer 1: Regime threshold adjustments (line ~1632)
+        #   - Layer 1: Regime threshold adjustments (line ~1687)
         #   - Layer 2: Regime position sizing (included in safety_multiplier above)
-        #   - Layer 3: Extreme fear MTF override (in signal_scorer.py:762)
+        #   - Layer 3: Extreme fear MTF override (in signal_scorer.py:755)
         #
         # Applied BEFORE:
         #   - Order execution
