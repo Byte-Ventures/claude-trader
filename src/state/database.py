@@ -410,6 +410,7 @@ class SignalHistory(Base):
         Index('ix_signal_history_timestamp', 'timestamp'),
         Index('ix_signal_history_paper_timestamp', 'is_paper', 'timestamp'),
         Index('ix_signal_history_symbol_paper_time', 'symbol', 'is_paper', 'timestamp'),
+        Index('ix_signal_history_executed_lookup', 'is_paper', 'trade_executed', 'timestamp'),
     )
 
 
