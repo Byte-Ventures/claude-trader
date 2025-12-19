@@ -1927,3 +1927,49 @@ class Database:
                 )
                 .scalar()
             )
+
+    # Signal history methods
+    def cleanup_signal_history(
+        self,
+        retention_days: int = 90,
+        is_paper: Optional[bool] = None,
+    ) -> int:
+        """
+        Clean up old signal history records based on retention policy.
+
+        Deletes signal history records older than retention_days to prevent
+        unbounded database growth. Signal history is valuable for post-mortem
+        analysis but accumulates ~2,880 records/day at 30-second intervals.
+
+        Args:
+            retention_days: Number of days to retain (older records deleted)
+            is_paper: Filter by paper/live mode (None = clean both)
+
+        Returns:
+            Number of records deleted
+
+        Note:
+            This operation is safe to run during trading - uses indexed timestamp
+            column for efficient deletion. Consider running during low-activity hours
+            and following up with VACUUM for database optimization.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+
+        with self.session() as session:
+            query = session.query(SignalHistory).filter(
+                SignalHistory.timestamp < cutoff
+            )
+            if is_paper is not None:
+                query = query.filter(SignalHistory.is_paper == is_paper)
+
+            count = query.count()
+            if count > 0:
+                query.delete(synchronize_session=False)
+                logger.info(
+                    "signal_history_cleanup",
+                    deleted=count,
+                    retention_days=retention_days,
+                    cutoff=cutoff.isoformat(),
+                    is_paper=is_paper,
+                )
+            return count

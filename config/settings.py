@@ -743,6 +743,14 @@ class Settings(BaseSettings):
         description="Enable Cramer Mode: execute opposite trade alongside each normal trade for comparison (paper mode only)"
     )
 
+    # Signal History Cleanup
+    signal_history_retention_days: int = Field(
+        default=90,
+        ge=1,
+        le=365,
+        description="Number of days to retain signal history records (older records are deleted during cleanup)"
+    )
+
     @field_validator("ema_slow")
     @classmethod
     def validate_ema_slow(cls, v: int, info) -> int:
