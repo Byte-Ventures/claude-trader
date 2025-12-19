@@ -60,7 +60,7 @@ class HTFBiasInfo(BaseModel):
     """Higher timeframe bias information."""
 
     daily_trend: Literal["bullish", "bearish", "neutral"]
-    four_hour_trend: Literal["bullish", "bearish", "neutral"]
+    four_hour_trend: Optional[Literal["bullish", "bearish", "neutral"]]
     combined_bias: Literal["bullish", "bearish", "neutral"]
 
 

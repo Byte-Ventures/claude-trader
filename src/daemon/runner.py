@@ -911,10 +911,10 @@ class TradingDaemon:
 
     def _get_htf_bias(self) -> tuple[str, str, str]:
         """
-        Get combined HTF bias from daily + 6-hour trends.
+        Get combined HTF bias from daily + 4-hour trends.
 
         Returns:
-            Tuple of (combined_bias, daily_trend, 6h_trend)
+            Tuple of (combined_bias, daily_trend, 4h_trend)
             - Both bullish → "bullish"
             - Both bearish → "bearish"
             - Mixed/neutral → "neutral"
