@@ -639,6 +639,9 @@ class SignalScorer:
                             candle_low = low.iloc[-1]
                             candle_range = candle_high - candle_low
 
+                            # Track if we should skip direction calculation due to data issues
+                            data_inconsistency = False
+
                             # Calculate where the close is within the candle range (0 = low, 1 = high)
                             if candle_range > 0 and not pd.isna(candle_high) and not pd.isna(candle_low):
                                 # Verify price is within expected range before calculation
@@ -649,18 +652,23 @@ class SignalScorer:
                                 epsilon_high = candle_high * self.PRICE_TOLERANCE_EPSILON
                                 epsilon_low = abs(candle_low) * self.PRICE_TOLERANCE_EPSILON
                                 if current_price < (candle_low - epsilon_low) or current_price > (candle_high + epsilon_high):
-                                    # Data inconsistency detected - log warning with context and treat as neutral
+                                    # Data inconsistency detected - log warning with context and treat as unknown
+                                    # Price data unreliable - skip all direction calculations for safety
                                     price_diff = min(abs(current_price - candle_high), abs(candle_low - current_price))
                                     logger.warning(
                                         f"[{self.trading_pair}] Price {current_price:.2f} outside candle range "
                                         f"[{candle_low:.2f}, {candle_high:.2f}] (difference: {price_diff:.2f}) - "
-                                        f"possible data feed inconsistency"
+                                        f"possible data feed inconsistency, treating as unknown"
                                     )
                                     close_position = None
                                     breakdown["_candle_close_position"] = None
+                                    breakdown["_whale_direction"] = "unknown"
+                                    breakdown["_price_change_pct"] = None
+                                    data_inconsistency = True
                                 else:
                                     # Division by zero protection: candle_range > 0 guaranteed by if-condition above (line 643)
                                     close_position = (current_price - candle_low) / candle_range
+                                    # Rounded for display only; actual threshold comparisons use full precision
                                     breakdown["_candle_close_position"] = round(close_position, 3)
                             else:
                                 # Zero-range candle (doji/flat) or missing data:
@@ -672,43 +680,45 @@ class SignalScorer:
                                 breakdown["_candle_close_position"] = None
 
                             # Determine direction with candle structure confirmation
-                            # Requires strong conviction: close_position STRICTLY > 0.7 (bullish) or STRICTLY < 0.3 (bearish)
-                            # The 0.3-0.7 range is intentionally treated as "ambiguous" requiring higher conviction:
-                            #   - Bullish: close_position > 0.7 (closed in top 30% of range)
-                            #   - Bearish: close_position < 0.3 (closed in bottom 30% of range)
-                            #   - At boundaries (exactly 0.3 or 0.7): treated as neutral (conservative)
-                            #   - Middle range (0.3 to 0.7): defaults to neutral
-                            # This prevents false signals from weak candle formations
-                            # Trade-off: Prioritizes precision over recall (fewer false positives, may miss some valid signals)
-                            # For a financial system, false negatives (missed opportunities) are safer than false positives (bad trades)
-                            if price_change_pct > self.whale_direction_threshold:
-                                # Price moved up - check candle structure for confirmation
-                                if close_position is not None and close_position > self.whale_candle_bullish_threshold:
-                                    breakdown["_whale_direction"] = "bullish"
-                                elif close_position is not None and close_position < 0.5:
-                                    # Closed in lower half despite price increase - fighting/rejection
-                                    breakdown["_whale_direction"] = "neutral"
+                            # Skip if data inconsistency was detected (price outside candle range)
+                            if not data_inconsistency:
+                                # Requires strong conviction: close_position STRICTLY > 0.7 (bullish) or STRICTLY < 0.3 (bearish)
+                                # The 0.3-0.7 range is intentionally treated as "ambiguous" requiring higher conviction:
+                                #   - Bullish: close_position > 0.7 (closed in top 30% of range)
+                                #   - Bearish: close_position < 0.3 (closed in bottom 30% of range)
+                                #   - At boundaries (exactly 0.3 or 0.7): treated as neutral (conservative)
+                                #   - Middle range (0.3 to 0.7): defaults to neutral
+                                # This prevents false signals from weak candle formations
+                                # Trade-off: Prioritizes precision over recall (fewer false positives, may miss some valid signals)
+                                # For a financial system, false negatives (missed opportunities) are safer than false positives (bad trades)
+                                if price_change_pct > self.whale_direction_threshold:
+                                    # Price moved up - check candle structure for confirmation
+                                    if close_position is not None and close_position > self.whale_candle_bullish_threshold:
+                                        breakdown["_whale_direction"] = "bullish"
+                                    elif close_position is not None and close_position < 0.5:
+                                        # Closed in lower half despite price increase - fighting/rejection
+                                        breakdown["_whale_direction"] = "neutral"
+                                    else:
+                                        # Conservative: treat as neutral if either:
+                                        # 1) Missing data (close_position is None)
+                                        # 2) Ambiguous range (0.5 <= close_position <= threshold)
+                                        # Both cases lack conviction for a directional signal
+                                        breakdown["_whale_direction"] = "neutral"
+                                elif price_change_pct < -self.whale_direction_threshold:
+                                    # Price moved down - check candle structure for confirmation
+                                    if close_position is not None and close_position < self.whale_candle_bearish_threshold:
+                                        breakdown["_whale_direction"] = "bearish"
+                                    elif close_position is not None and close_position > 0.5:
+                                        # Closed in upper half despite price decrease - fighting/support
+                                        breakdown["_whale_direction"] = "neutral"
+                                    else:
+                                        # Conservative: treat as neutral if either:
+                                        # 1) Missing data (close_position is None)
+                                        # 2) Ambiguous range (bearish_threshold <= close_position <= 0.5)
+                                        # Both cases lack conviction for a directional signal
+                                        breakdown["_whale_direction"] = "neutral"
                                 else:
-                                    # Conservative: treat as neutral if either:
-                                    # 1) Missing data (close_position is None)
-                                    # 2) Ambiguous range (0.5 <= close_position <= threshold)
-                                    # Both cases lack conviction for a directional signal
                                     breakdown["_whale_direction"] = "neutral"
-                            elif price_change_pct < -self.whale_direction_threshold:
-                                # Price moved down - check candle structure for confirmation
-                                if close_position is not None and close_position < self.whale_candle_bearish_threshold:
-                                    breakdown["_whale_direction"] = "bearish"
-                                elif close_position is not None and close_position > 0.5:
-                                    # Closed in upper half despite price decrease - fighting/support
-                                    breakdown["_whale_direction"] = "neutral"
-                                else:
-                                    # Conservative: treat as neutral if either:
-                                    # 1) Missing data (close_position is None)
-                                    # 2) Ambiguous range (bearish_threshold <= close_position <= 0.5)
-                                    # Both cases lack conviction for a directional signal
-                                    breakdown["_whale_direction"] = "neutral"
-                            else:
-                                breakdown["_whale_direction"] = "neutral"
                         else:
                             # Zero/negative prev price - can't calculate direction
                             breakdown["_whale_direction"] = "unknown"
