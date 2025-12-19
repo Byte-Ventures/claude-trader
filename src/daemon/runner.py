@@ -1746,21 +1746,43 @@ class TradingDaemon:
             signal_direction = "buy" if signal_result.score > 0 else "sell" if signal_result.score < 0 else None
 
             # Check if normal bot can trade this direction
-            # Cramer Mode only acts when normal bot acts, so only check normal bot
             normal_can_trade = (
                 (signal_direction == "buy" and can_buy) or
                 (signal_direction == "sell" and can_sell)
             )
+
+            # Check if Cramer Mode can trade the INVERSE direction
+            # Cramer buys when signal says sell, and vice versa
+            cramer_can_trade = False
+            if self.cramer_client and not self._cramer_mode_disabled:
+                cramer_quote = self.cramer_client.get_balance(self._quote_currency).available
+                cramer_base = self.cramer_client.get_balance(self._base_currency).available
+                min_quote = Decimal(str(self.position_sizer.config.min_trade_quote))
+                min_base = Decimal(str(self.position_sizer.config.min_trade_base))
+                cramer_can_buy = cramer_quote > min_quote
+                cramer_can_sell = cramer_base > min_base
+                # Cramer trades INVERSE: signal=sell means Cramer buys, signal=buy means Cramer sells
+                cramer_can_trade = (
+                    (signal_direction == "sell" and cramer_can_buy) or
+                    (signal_direction == "buy" and cramer_can_sell)
+                )
+
             direction_is_tradeable = (
                 normal_can_trade or
+                cramer_can_trade or
                 signal_direction is None  # Neutral score, no direction
             )
 
             if not direction_is_tradeable:
+                # Neither normal nor Cramer can trade this direction
+                if signal_direction == "sell":
+                    reason = "no_position_either_bot" if self.cramer_client else "no_position"
+                else:
+                    reason = "fully_allocated_both_bots" if self.cramer_client else "fully_allocated"
                 logger.info(
                     "ai_review_skipped",
                     signal_direction=signal_direction,
-                    reason="no_position" if signal_direction == "sell" else "fully_allocated",
+                    reason=reason,
                 )
             else:
                 should_review, review_type = self.trade_reviewer.should_review(
@@ -2044,8 +2066,17 @@ class TradingDaemon:
                         reason=f"insufficient_balance_or_position_limit (quote={quote_balance}, position={position_percent:.1f}%)",
                         signal_score=signal_result.score,
                     )
-                # Cramer Mode only acts when judge approves AND normal bot executes
-                # (removed independent trade logic for cleaner comparison)
+                # Cramer Mode can act independently when judge approved (or AI disabled)
+                # If we reached here, AI either approved, reduced, or wasn't needed
+                # (inverse trade: signal=buy means Cramer sells)
+                if self.cramer_client:
+                    self._execute_cramer_trade(
+                        side="sell",  # Opposite of buy
+                        candles=candles,
+                        current_price=current_price,
+                        signal_score=signal_result.score,
+                        safety_multiplier=safety_multiplier,
+                    )
 
         elif effective_action == "sell":
             normal_bot_blocked_by_cooldown = False
@@ -2101,8 +2132,17 @@ class TradingDaemon:
                         reason=f"insufficient_base_balance ({base_balance})",
                         signal_score=signal_result.score,
                     )
-                # Cramer Mode only acts when judge approves AND normal bot executes
-                # (removed independent trade logic for cleaner comparison)
+                # Cramer Mode can act independently when judge approved (or AI disabled)
+                # If we reached here, AI either approved, reduced, or wasn't needed
+                # (inverse trade: signal=sell means Cramer buys)
+                if self.cramer_client:
+                    self._execute_cramer_trade(
+                        side="buy",  # Opposite of sell
+                        candles=candles,
+                        current_price=current_price,
+                        signal_score=signal_result.score,
+                        safety_multiplier=safety_multiplier,
+                    )
 
     def _execute_buy(
         self,
