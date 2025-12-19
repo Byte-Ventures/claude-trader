@@ -960,7 +960,7 @@ class TradingDaemon:
         current_price: Decimal,
         htf_bias: str,
         daily_trend: str,
-        four_hour_trend: str,
+        four_hour_trend: Optional[str],
         threshold: int,
         trade_executed: bool = False,
     ) -> Optional[int]:
