@@ -803,7 +803,12 @@ Trading style: POSITION TRADING (long-term)
         try:
             # Use first reviewer model for holds
             prompt = self._build_hold_prompt(context)
-            response = await self._call_api(self.reviewer_models[0], SYSTEM_PROMPT_HOLD, prompt)
+            response = await self._call_api(
+                self.reviewer_models[0],
+                SYSTEM_PROMPT_HOLD,
+                prompt,
+                use_research_tokens=False  # Hold decisions are brief
+            )
             data = self._extract_json(response)
 
             reasoning = data.get("reasoning", "No analysis")
@@ -861,7 +866,12 @@ Trading style: POSITION TRADING (long-term)
         system_prompt = f"{system_prompts[stance]}\n\n{trading_mechanics}"
 
         prompt = self._build_reviewer_prompt(context)
-        response = await self._call_api(model, system_prompt, prompt)
+        response = await self._call_api(
+            model,
+            system_prompt,
+            prompt,
+            use_research_tokens=False  # Trade reviews are brief
+        )
         data = self._extract_json(response)
 
         # Parse response
@@ -902,7 +912,12 @@ Trading style: POSITION TRADING (long-term)
         judge_prompt = f"{base_prompt}\n\n{trading_mechanics}"
 
         prompt = self._build_judge_prompt(reviews, context)
-        response = await self._call_api(self.judge_model, judge_prompt, prompt)
+        response = await self._call_api(
+            self.judge_model,
+            judge_prompt,
+            prompt,
+            use_research_tokens=False  # Judge decisions are brief
+        )
         data = self._extract_json(response)
 
         approved_raw = data.get("approved", True)
