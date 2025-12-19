@@ -497,8 +497,17 @@ function updateDashboard(state) {
             if (isThrottled) {
                 // Schedule trailing update to ensure final price is captured
                 // This prevents losing the close price if updates stop arriving
+                // Capture current timestamp to detect stale updates after reconnect
+                const scheduledAt = now;
                 pendingCandleUpdate = setTimeout(() => {
                     pendingCandleUpdate = null;
+                    // Staleness check: ensure this update is still relevant
+                    // If WebSocket reconnected, lastCandleUpdate will have jumped ahead
+                    const currentTime = Date.now();
+                    const isStale = (currentTime - scheduledAt) > (CANDLE_UPDATE_THROTTLE_MS * 2);
+                    if (isStale) {
+                        return;  // Discard stale update from before reconnect
+                    }
                     if (currentCandle && currentCandle.time === candleTime) {
                         currentCandle.high = Math.max(currentCandle.high, price);
                         currentCandle.low = Math.min(currentCandle.low, price);

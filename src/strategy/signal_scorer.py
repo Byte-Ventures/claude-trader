@@ -129,11 +129,13 @@ class SignalScorer:
     the total score exceeds the threshold.
     """
 
-    # Price tolerance for validating OHLC data consistency (relative to price magnitude)
+    # Price tolerance for validating OHLC data consistency (relative to candle range)
     # Financial data can have minor discrepancies due to bid/ask spreads, timestamp
-    # differences, or exchange rounding. Use 0.0001% tolerance (1e-6) which allows
-    # $0.05 difference on $50,000 BTC while catching real data quality issues.
-    PRICE_TOLERANCE_EPSILON = 1e-6
+    # differences between close/high/low, or exchange rounding. Use 0.001% tolerance
+    # (1e-5) which allows $0.50 difference on $50,000 BTC candle range while catching
+    # real data quality issues. Increased from 1e-6 to reduce false positives from
+    # microsecond-level timestamp differences in exchange feeds.
+    PRICE_TOLERANCE_EPSILON = 1e-5
 
     def __init__(
         self,
@@ -712,7 +714,7 @@ class SignalScorer:
                                 # Verify price is within expected range before calculation
                                 # Data inconsistency can occur when close/high/low come from slightly
                                 # different timestamps or feeds. This indicates data quality issues.
-                                # Use relative epsilon based on candle range (0.0001% tolerance)
+                                # Use relative epsilon based on candle range (0.001% tolerance)
                                 # This scales with actual volatility, not absolute price level
                                 # Better handles assets at any price point (micro-cap to high-value)
                                 # candle_range > 0 guaranteed by if-condition on line 693
