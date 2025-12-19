@@ -234,7 +234,16 @@ async function loadInitialData() {
     isInitialized = false;
 
     try {
-        // Load candles
+        // Load config FIRST - CRITICAL for candleIntervalSeconds before any candle processing
+        const configResponse = await fetch('/api/config');
+        if (configResponse.ok) {
+            const config = await configResponse.json();
+            updateConfig(config);
+        } else {
+            console.error('Failed to load config - candle bucketing will use default 60s interval');
+        }
+
+        // Load candles (now using correct candleIntervalSeconds from config)
         const candlesResponse = await fetch('/api/candles?limit=100');
         if (candlesResponse.ok) {
             const candles = await candlesResponse.json();
@@ -286,16 +295,7 @@ async function loadInitialData() {
             updateDailyStats(stats);
         }
 
-        // Load config FIRST - CRITICAL for candleIntervalSeconds before state loading
-        const configResponse = await fetch('/api/config');
-        if (configResponse.ok) {
-            const config = await configResponse.json();
-            updateConfig(config);
-        } else {
-            console.error('Failed to load config - candle bucketing may use incorrect default 60s interval');
-        }
-
-        // Load current state (uses candleIntervalSeconds set above)
+        // Load current state
         const stateResponse = await fetch('/api/state');
         if (stateResponse.ok) {
             const state = await stateResponse.json();

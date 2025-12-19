@@ -20,12 +20,15 @@ sudo ./scripts/update.sh
 
 ## Testing Requirements
 
-**CRITICAL: Never create a PR without running all tests first.**
+**CRITICAL: All tests must pass. Always. No exceptions.**
 
-Before creating any pull request:
 1. Run the full test suite: `python3 -m pytest tests/ -v`
-2. Ensure all tests pass (no failures)
-3. If tests fail due to your changes, fix them before creating the PR
+2. If any test fails, **fix it immediately** before proceeding
+3. Never create a PR with failing tests
+4. Never ignore failing tests - they indicate real bugs that must be fixed
+5. If your changes break existing tests, fix the tests or fix your code
+
+The 12 Coinbase integration test "errors" are expected - they refuse to run without test credentials (security feature). These are not failures.
 
 ## Architecture
 
