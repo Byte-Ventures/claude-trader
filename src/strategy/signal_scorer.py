@@ -648,10 +648,11 @@ class SignalScorer:
                                 # Data inconsistency can occur when close/high/low come from slightly
                                 # different timestamps or feeds. This indicates data quality issues.
                                 # Use relative epsilon based on price magnitude (0.0001% tolerance)
-                                # Use separate epsilons for upper and lower bounds for accuracy
-                                epsilon_high = candle_high * self.PRICE_TOLERANCE_EPSILON
-                                epsilon_low = abs(candle_low) * self.PRICE_TOLERANCE_EPSILON
-                                if current_price < (candle_low - epsilon_low) or current_price > (candle_high + epsilon_high):
+                                # Use max of candle bounds for consistent tolerance across the range
+                                # This handles low-priced assets better and avoids zero-epsilon edge cases
+                                price_magnitude = max(abs(candle_low), abs(candle_high))
+                                epsilon = price_magnitude * self.PRICE_TOLERANCE_EPSILON if price_magnitude > 0 else 1e-6
+                                if current_price < (candle_low - epsilon) or current_price > (candle_high + epsilon):
                                     # Data inconsistency detected - log warning with context and treat as unknown
                                     # Price data unreliable - skip all direction calculations for safety
                                     price_diff = min(abs(current_price - candle_high), abs(candle_low - current_price))
@@ -714,7 +715,7 @@ class SignalScorer:
                                     else:
                                         # Conservative: treat as neutral if either:
                                         # 1) Missing data (close_position is None)
-                                        # 2) Ambiguous range (between bearish_threshold and 0.5)
+                                        # 2) Ambiguous range (bearish_threshold <= close_position <= 0.5)
                                         # Both cases lack conviction for a directional signal
                                         breakdown["_whale_direction"] = "neutral"
                                 else:
