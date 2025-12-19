@@ -174,6 +174,13 @@ def mock_settings():
     settings.low_volume_penalty = 10
     settings.trend_filter_penalty = 20
 
+    # Momentum Mode parameters
+    settings.momentum_rsi_threshold = 60.0
+    settings.momentum_rsi_candles = 3
+    settings.momentum_price_candles = 12
+    settings.momentum_penalty_reduction = 0.5
+    settings.momentum_trend_strength_cap = 5.0
+
     return settings
 
 

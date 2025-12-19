@@ -263,6 +263,16 @@ class Settings(BaseSettings):
         description="Signal boost multiplier for high volume (0.20 = 20%)"
     )
 
+    # Momentum Mode Parameters
+    # Minimum 1.0: Values below 1.0 would make even tiny EMA gaps (<1%) reach max strength,
+    # causing overly aggressive penalty reduction and potentially late exits during reversals
+    momentum_trend_strength_cap: float = Field(
+        default=5.0,
+        ge=1.0,
+        le=20.0,
+        description="EMA gap percentage cap for trend strength normalization (5.0 = 5% gap is maximum strength)"
+    )
+
     # Volume Analysis Parameters
     volume_sma_window: int = Field(
         default=20,

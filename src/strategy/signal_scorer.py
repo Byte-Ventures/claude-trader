@@ -154,6 +154,7 @@ class SignalScorer:
         momentum_rsi_candles: int = 3,
         momentum_price_candles: int = 12,
         momentum_penalty_reduction: float = 0.5,
+        momentum_trend_strength_cap: float = 5.0,
         candle_interval: Optional[str] = None,
         trading_pair: Optional[str] = None,
         whale_volume_threshold: float = 3.0,
@@ -184,6 +185,9 @@ class SignalScorer:
             momentum_rsi_candles: Number of candles RSI must stay elevated (default: 3)
             momentum_price_candles: Number of candles to check for higher lows (default: 12)
             momentum_penalty_reduction: Factor to reduce overbought penalties (default: 0.5 = 50%)
+            momentum_trend_strength_cap: EMA gap percentage cap for trend strength normalization (default: 5.0)
+                                        Stronger trends (wider EMA gap) get more penalty reduction.
+                                        Increase for volatile markets (10-15%), decrease for stable (3%)
             candle_interval: Candle interval for adaptive MACD scaling
                             (e.g., "FIFTEEN_MINUTE", "ONE_HOUR")
             trading_pair: Trading pair symbol (e.g., "BTC-USD") for logging context
@@ -220,6 +224,7 @@ class SignalScorer:
         self.momentum_rsi_candles = momentum_rsi_candles
         self.momentum_price_candles = momentum_price_candles
         self.momentum_penalty_reduction = momentum_penalty_reduction
+        self.momentum_trend_strength_cap = momentum_trend_strength_cap
 
         # Whale detection parameters
         self.whale_volume_threshold = whale_volume_threshold
@@ -465,6 +470,11 @@ class SignalScorer:
         """
         Calculate composite signal score from OHLCV data.
 
+        Combines multiple technical indicators (RSI, MACD, Bollinger, EMA, Volume) into
+        a unified signal. When momentum mode is active, overbought penalties are reduced
+        proportionally to trend strength (EMA gap) to enable riding strong trends while
+        maintaining responsiveness during weakening trends.
+
         Args:
             df: DataFrame with columns: open, high, low, close, volume
             current_price: Current price (uses latest close if not provided)
@@ -547,20 +557,56 @@ class SignalScorer:
         ema_score = int(ema_signal * self.weights.ema)
 
         # Momentum mode: reduce overbought penalties during sustained uptrends
+        # Penalty reduction is proportional to trend strength (measured by EMA gap)
+        # to enable more responsive exits during genuine reversals
         momentum_active, momentum_reason = self.is_momentum_mode(df, rsi)
         if momentum_active:
             original_rsi = rsi_score
             original_bb = bb_score
-            # Reduce overbought penalties by configured factor (only negative scores)
-            # Use int() instead of // for symmetric rounding behavior
-            reduction = self.momentum_penalty_reduction
+
+            # Calculate trend strength factor from EMA gap (0.0 to 1.0)
+            # Stronger trends (wider EMA gap) get more penalty reduction
+            # Weaker trends (narrower EMA gap) get less reduction for faster exits
+            # When EMAs are unavailable, trend_strength defaults to 0.0 (minimal reduction)
+            trend_strength = 0.0
+            ema_gap_percent = 0.0
+            if (indicators.ema_fast and indicators.ema_slow and
+                indicators.ema_slow != 0 and indicators.ema_fast != 0 and
+                self.momentum_trend_strength_cap > 0.0):
+                # Convert to float for calculation
+                ema_slow_float = float(indicators.ema_slow)
+                ema_fast_float = float(indicators.ema_fast)
+                ema_gap_percent = abs((ema_fast_float - ema_slow_float) / ema_slow_float) * 100
+                # Cap at configured percentage for normalization
+                # Linear scaling: 0% gap = 0.0 strength, cap% gap = 1.0 strength
+                trend_strength = min(1.0, ema_gap_percent / self.momentum_trend_strength_cap)
+
+            # Scale the penalty reduction by trend strength
+            # Base reduction is configured value (default 0.5), scaled by trend strength
+            # Weak trend (0.0 strength): minimal reduction (near full penalty = more responsive)
+            # Strong trend (1.0 strength): full reduction (configured value)
+            # Formula: new_penalty = old_penalty * (1 - reduction)
+            # - reduction=0.0 → keep 100% of penalty (no change)
+            # - reduction=0.5 → keep 50% of penalty (half the overbought signal)
+            reduction = self.momentum_penalty_reduction * trend_strength
+
+            # Reduce overbought penalties by scaled factor (only negative scores)
+            # Use (1 - reduction) to keep the remaining portion of the penalty
+            # Example with default 0.5 max reduction:
+            # - Strong trend (1.0): reduction=0.5, keep 50% → -25 becomes -12
+            # - Moderate trend (0.5): reduction=0.25, keep 75% → -25 becomes -18
+            # - Weak trend (0.1): reduction=0.05, keep 95% → -25 becomes -23
+            # - No trend (0.0): reduction=0.0, keep 100% → -25 stays -25
             if rsi_score < 0:
-                rsi_score = int(rsi_score * reduction)
+                rsi_score = int(rsi_score * (1 - reduction))
             if bb_score < 0:
-                bb_score = int(bb_score * reduction)
+                bb_score = int(bb_score * (1 - reduction))
             logger.info(
                 "momentum_mode_active",
                 reason=momentum_reason,
+                ema_gap_percent=round(ema_gap_percent, 3),
+                trend_strength=round(trend_strength, 3),
+                penalty_reduction=round(reduction, 3),
                 rsi_original=original_rsi,
                 rsi_adjusted=rsi_score,
                 bb_original=original_bb,
