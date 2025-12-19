@@ -20,12 +20,15 @@ sudo ./scripts/update.sh
 
 ## Testing Requirements
 
-**CRITICAL: Never create a PR without running all tests first.**
+**CRITICAL: All tests must pass. Always. No exceptions.**
 
-Before creating any pull request:
 1. Run the full test suite: `python3 -m pytest tests/ -v`
-2. Ensure all tests pass (no failures)
-3. If tests fail due to your changes, fix them before creating the PR
+2. If any test fails, **fix it immediately** before proceeding
+3. Never create a PR with failing tests
+4. Never ignore failing tests - they indicate real bugs that must be fixed
+5. If your changes break existing tests, fix the tests or fix your code
+
+The 12 Coinbase integration test "errors" are expected - they refuse to run without test credentials (security feature). These are not failures.
 
 ## Architecture
 
@@ -143,15 +146,6 @@ When creating new configuration parameters:
 3. Push and create PR to `develop`
 4. After review, merge to `develop`
 5. When ready for release, create PR from `develop` to `main`
-6. **After every PR merge to `main`**, reset `develop` to `main`:
-   ```bash
-   git checkout develop
-   git fetch origin main
-   git reset --hard origin/main
-   git push --force-with-lease origin develop
-   ```
-
-**Why reset instead of rebase?** PRs to main are squash-merged (cleaner main history). Rebasing would try to replay the original commits that are already in main (as squash commits), causing conflicts. Reset is safe because all work is already merged.
 
 ### Creating PRs to Main
 
@@ -172,8 +166,6 @@ This ensures the PR only shows commits that are actually new.
 - Direct commits to `main` are not allowed
 - **NEVER delete the `develop` branch** - feature branches depend on it. Do NOT use `--delete-branch` when merging PRs from develop to main.
 - **ALWAYS check that a PR is still OPEN before pushing commits to it** - use `gh pr view {NUMBER} --json state`
-- **NEVER push additional commits to `develop` after a PR is merged** - reset develop to main first, then create a new PR for any additional fixes
-- **After ANY PR merge to `main`**: immediately reset `develop` to `main` before doing anything else
 
 ## Pull Request Reviews (CRITICAL)
 
@@ -235,7 +227,9 @@ The `claude[bot]` automatically reviews PRs. Its comments appear under `/issues/
 
 ### Handling Identified Issues
 
-**All issues identified in PR reviews MUST be handled.**
+**All issues identified in PR reviews MUST be handled. Do NOT ignore or dismiss issues.**
+
+This is a financial trading system. Every identified issue could affect money or data integrity. Ignoring issues is unacceptable.
 
 First, **verify the issue** - Check if the issue actually exists in the code (bot reviews can be wrong).
 
@@ -247,6 +241,11 @@ Then, do ONE of the following:
 4. **Explicitly decline** - Document in PR comments why the suggestion won't be implemented
 
 No issue should be left unacknowledged. When summarizing PR reviews, create a checklist showing how each issue was handled.
+
+**Priority levels:**
+- 🔴 Critical - MUST fix before merge
+- 🟡 High/Medium - MUST fix before merge (financial system requirement)
+- 🟢 Low - Fix if straightforward, otherwise create GitHub issue
 
 ### Deferred Issues MUST Become GitHub Issues
 
