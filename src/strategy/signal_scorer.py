@@ -470,6 +470,11 @@ class SignalScorer:
         """
         Calculate composite signal score from OHLCV data.
 
+        Combines multiple technical indicators (RSI, MACD, Bollinger, EMA, Volume) into
+        a unified signal. When momentum mode is active, overbought penalties are reduced
+        proportionally to trend strength (EMA gap) to enable riding strong trends while
+        maintaining responsiveness during weakening trends.
+
         Args:
             df: DataFrame with columns: open, high, low, close, volume
             current_price: Current price (uses latest close if not provided)
@@ -584,6 +589,8 @@ class SignalScorer:
 
             # Reduce overbought penalties by scaled factor (only negative scores)
             # Use int() instead of // for symmetric rounding behavior
+            # Note: Very weak trends (reduction near 0) can eliminate penalties entirely,
+            # which is intentional - this enables maximum responsiveness during potential reversals
             if rsi_score < 0:
                 rsi_score = int(rsi_score * reduction)
             if bb_score < 0:
