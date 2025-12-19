@@ -690,7 +690,7 @@ class SignalScorer:
                                 else:
                                     # Conservative: treat as neutral if either:
                                     # 1) Missing data (close_position is None)
-                                    # 2) Ambiguous range (threshold <= close_position <= 0.5)
+                                    # 2) Ambiguous range (bearish_threshold <= close_position <= 0.5)
                                     # Both cases lack conviction for a directional signal
                                     breakdown["_whale_direction"] = "neutral"
                             else:
