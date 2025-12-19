@@ -1055,10 +1055,11 @@ class TradingDaemon:
                 self._signal_history_failures > 10
                 and (self._signal_history_failures - 10) % 50 == 0
             ):
-                error_msg = str(e)[:200]
+                error_str = str(e)
+                error_msg = error_str[:200]
                 self.notifier.notify_error(
                     f"Signal history storage failing ({self._signal_history_failures} consecutive failures)",
-                    context=f"Last error: {error_msg}{'...' if len(str(e)) > 200 else ''}",
+                    context=f"Last error: {error_msg}{'...' if len(error_str) > 200 else ''}",
                 )
             return None
 
