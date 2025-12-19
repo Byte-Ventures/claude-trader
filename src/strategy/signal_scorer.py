@@ -606,25 +606,60 @@ class SignalScorer:
                     breakdown["_volume_ratio"] = volume_ratio
 
                     # Determine whale direction based on price movement during volume spike
+                    # Enhanced with candle structure analysis for directional confirmation
                     if len(close) >= 2:
                         prev_price = close.iloc[-2]
                         current_price = close.iloc[-1]
                         if prev_price > 0 and not pd.isna(current_price) and current_price > 0:
                             price_change_pct = (current_price - prev_price) / prev_price
                             breakdown["_price_change_pct"] = round(price_change_pct, 6)
+
+                            # Analyze candle structure to confirm direction
+                            # Check if candle closed near its high (bullish) or low (bearish)
+                            candle_high = high.iloc[-1]
+                            candle_low = low.iloc[-1]
+                            candle_range = candle_high - candle_low
+
+                            # Calculate where the close is within the candle range (0 = low, 1 = high)
+                            if candle_range > 0 and not pd.isna(candle_high) and not pd.isna(candle_low):
+                                close_position = (current_price - candle_low) / candle_range
+                                breakdown["_candle_close_position"] = round(close_position, 3)
+                            else:
+                                close_position = None
+                                breakdown["_candle_close_position"] = None
+
+                            # Determine direction with candle structure confirmation
+                            # close_position > 0.7 = closed near high (bullish confirmation)
+                            # close_position < 0.3 = closed near low (bearish confirmation)
                             if price_change_pct > self.whale_direction_threshold:
-                                breakdown["_whale_direction"] = "bullish"
+                                # Price moved up - check candle structure for confirmation
+                                if close_position is not None and close_position > 0.7:
+                                    breakdown["_whale_direction"] = "bullish"
+                                elif close_position is not None and close_position < 0.5:
+                                    # Closed in lower half despite price increase - fighting/rejection
+                                    breakdown["_whale_direction"] = "neutral"
+                                else:
+                                    breakdown["_whale_direction"] = "bullish"
                             elif price_change_pct < -self.whale_direction_threshold:
-                                breakdown["_whale_direction"] = "bearish"
+                                # Price moved down - check candle structure for confirmation
+                                if close_position is not None and close_position < 0.3:
+                                    breakdown["_whale_direction"] = "bearish"
+                                elif close_position is not None and close_position > 0.5:
+                                    # Closed in upper half despite price decrease - fighting/support
+                                    breakdown["_whale_direction"] = "neutral"
+                                else:
+                                    breakdown["_whale_direction"] = "bearish"
                             else:
                                 breakdown["_whale_direction"] = "neutral"
                         else:
                             # Zero/negative prev price - can't calculate direction
                             breakdown["_whale_direction"] = "unknown"
                             breakdown["_price_change_pct"] = None
+                            breakdown["_candle_close_position"] = None
                     else:
                         breakdown["_whale_direction"] = "unknown"
                         breakdown["_price_change_pct"] = None
+                        breakdown["_candle_close_position"] = None
                 elif volume_ratio > self.high_volume_threshold:
                     # High volume: boost signal by configurable percentage (default 20%)
                     volume_boost = int(abs(total_score) * self.high_volume_boost_percent)
