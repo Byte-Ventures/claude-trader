@@ -588,8 +588,9 @@ class SignalScorer:
             reduction = self.momentum_penalty_reduction * trend_strength
 
             # Only apply penalty reduction if trend strength is meaningful (>= 4%)
-            # This prevents integer truncation discontinuity where very weak trends
-            # would result in zero penalty (e.g., int(-25 * 0.01) = 0)
+            # This prevents integer truncation where very weak trends would result in zero
+            # penalty being applied (e.g., int(-25 * 0.01) = 0), which would incorrectly
+            # allow full signal strength during weak trends that may be reversing.
             # With this threshold:
             # - EMA gap < 0.2% (for default 5.0 cap): momentum mode inactive
             # - EMA gap >= 0.2%: momentum mode active with proportional reduction
@@ -601,8 +602,7 @@ class SignalScorer:
                     rsi_score = int(rsi_score * reduction)
                 if bb_score < 0:
                     bb_score = int(bb_score * reduction)
-            # Use debug level for detailed breakdown to reduce log volume in high-frequency trading
-            logger.debug(
+            logger.info(
                 "momentum_mode_active",
                 reason=momentum_reason,
                 ema_gap_percent=round(ema_gap_percent, 3),

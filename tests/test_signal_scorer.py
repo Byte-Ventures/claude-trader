@@ -1763,8 +1763,9 @@ def test_trend_strength_calculation_directly():
         result_low_cap.breakdown.get('_momentum_active')):
 
         # If both have negative RSI scores (overbought penalties)
-        rsi_high_cap = result_high_cap.breakdown.get('rsi', 0)
-        rsi_low_cap = result_low_cap.breakdown.get('rsi', 0)
+        rsi_high_cap = result_high_cap.breakdown.get('rsi')
+        rsi_low_cap = result_low_cap.breakdown.get('rsi')
+        assert rsi_high_cap is not None and rsi_low_cap is not None, "RSI scores must be present"
 
         if rsi_high_cap < 0 and rsi_low_cap < 0:
             # Key insight: adjusted_score = int(original_score * reduction)
