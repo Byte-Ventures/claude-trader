@@ -1113,10 +1113,10 @@ Trading style: POSITION TRADING (long-term)
             whale_activity_line = f"\n⚠️ WHALE ACTIVITY ({whale_direction}): Volume {breakdown.get('_volume_ratio', 0)}x average"
 
         # HTF bias context - always show for full AI context
-        # Use `or` for null safety in case values are explicitly None
-        htf_trend = breakdown.get("_htf_trend") or "neutral"
-        daily = breakdown.get("_htf_daily") or htf_trend
-        four_h = breakdown.get("_htf_4h") or htf_trend
+        # Handle None, "unknown", and actual trend values
+        htf_trend = breakdown.get("_htf_trend") if breakdown.get("_htf_trend") is not None else "unknown"
+        daily = breakdown.get("_htf_daily") if breakdown.get("_htf_daily") is not None else "unknown"
+        four_h = breakdown.get("_htf_4h") if breakdown.get("_htf_4h") is not None else "unknown"
         htf_line = f"\n📊 HIGHER TIMEFRAME BIAS: {htf_trend.upper()} (Daily: {daily}, 4H: {four_h})"
 
         # Build portfolio section (hidden when balance info is None for Cramer Mode comparison)
