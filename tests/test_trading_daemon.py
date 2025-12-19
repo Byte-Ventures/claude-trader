@@ -40,6 +40,7 @@ def mock_settings():
     settings.trading_pair = "BTC-USD"
     settings.is_paper_trading = True
     settings.database_path = ":memory:"
+    settings.signal_history_failure_threshold = 10
     settings.paper_initial_quote = Decimal("10000")
     settings.paper_initial_base = Decimal("0")
     settings.base_order_size_usd = Decimal("100")

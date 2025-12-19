@@ -692,6 +692,12 @@ class Settings(BaseSettings):
         default=Path("data/trading.db"),
         description="Path to SQLite database"
     )
+    signal_history_failure_threshold: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Number of consecutive signal history storage failures before alerting"
+    )
 
     # Logging
     log_level: str = Field(
