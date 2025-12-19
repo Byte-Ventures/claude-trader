@@ -1970,6 +1970,40 @@ def test_invalidate_htf_cache(htf_mock_settings, mock_exchange_client, mock_data
                 assert daemon._4h_last_fetch is None
 
 
+def test_get_timeframe_trend_uses_correct_candle_limits(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test that correct candle limits are passed for each timeframe."""
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Mock signal scorer get_trend
+                daemon.signal_scorer.get_trend = Mock(return_value="bullish")
+
+                # Test ONE_DAY uses mtf_daily_candle_limit (50)
+                daemon._get_timeframe_trend("ONE_DAY", 60)
+                # Verify get_candles was called with correct limit
+                # call_args is a tuple: (args, kwargs) or just args for positional-only
+                args, kwargs = mock_exchange_client.get_candles.call_args
+                assert kwargs.get('limit') == 50 or (len(args) >= 3 and args[2] == 50), \
+                    f"Expected limit=50, got args={args}, kwargs={kwargs}"
+                assert kwargs.get('granularity') == "ONE_DAY" or (len(args) >= 2 and args[1] == "ONE_DAY")
+
+                # Reset mock
+                mock_exchange_client.get_candles.reset_mock()
+
+                # Clear cache to force fresh fetch
+                daemon._4h_last_fetch = None
+
+                # Test FOUR_HOUR uses mtf_4h_candle_limit (84)
+                daemon._get_timeframe_trend("FOUR_HOUR", 30)
+                # Verify get_candles was called with correct limit
+                args, kwargs = mock_exchange_client.get_candles.call_args
+                assert kwargs.get('limit') == 84 or (len(args) >= 3 and args[2] == 84), \
+                    f"Expected limit=84, got args={args}, kwargs={kwargs}"
+                assert kwargs.get('granularity') == "FOUR_HOUR" or (len(args) >= 2 and args[1] == "FOUR_HOUR")
+
+
 def test_store_signal_history_returns_id(htf_mock_settings, mock_exchange_client, mock_database):
     """Test signal history storage returns the record ID."""
     from src.strategy.signal_scorer import SignalResult, IndicatorValues
