@@ -2166,7 +2166,7 @@ class TradingDaemon:
         #   - Action determination (buy/sell decision)
         #
         # Applied BEFORE:
-        #   - Layer 4: Dual-extreme blocking (line ~2021)
+        #   - Layer 4: Dual-extreme blocking (line ~2059)
         #   - Order execution
         #
         # Final position calculation:
