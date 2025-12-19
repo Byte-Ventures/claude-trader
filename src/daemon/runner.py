@@ -3233,9 +3233,16 @@ class TradingDaemon:
 
         # Only alert when we first cross the threshold
         if self._sentiment_fetch_failures == threshold:
-            time_since_success = "never" if self._last_sentiment_fetch_success is None else (
-                f"{(datetime.now(timezone.utc) - self._last_sentiment_fetch_success).total_seconds() / 60:.0f} minutes ago"
-            )
+            # Calculate time since last success with error handling
+            try:
+                if self._last_sentiment_fetch_success is None:
+                    time_since_success = "none (check API connectivity)"
+                else:
+                    minutes_ago = (datetime.now(timezone.utc) - self._last_sentiment_fetch_success).total_seconds() / 60
+                    time_since_success = f"{minutes_ago:.0f} minutes ago"
+            except Exception:
+                # If time calculation fails (e.g., system clock issues), use fallback
+                time_since_success = "unknown"
 
             logger.error(
                 "sentiment_fetch_failure_threshold_exceeded",
@@ -3531,8 +3538,19 @@ class TradingDaemon:
                     if sentiment_result and sentiment_result.value:
                         sentiment_value = sentiment_result.value
                         sentiment_class = sentiment_result.classification or "Unknown"
+                        # Reset failure counter on success
+                        self._sentiment_fetch_failures = 0
+                        self._last_sentiment_fetch_success = datetime.now(timezone.utc)
+                    else:
+                        logger.debug("sentiment_fetch_skipped", reason="no_value")
+                        # Increment failure counter
+                        self._sentiment_fetch_failures += 1
+                        self._check_sentiment_failure_threshold()
                 except Exception as e:
                     logger.debug("sentiment_fetch_skipped", error=str(e))
+                    # Increment failure counter
+                    self._sentiment_fetch_failures += 1
+                    self._check_sentiment_failure_threshold()
 
             # Calculate price changes from candles
             price_change_1h = None

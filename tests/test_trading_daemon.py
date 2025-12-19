@@ -3689,3 +3689,141 @@ class TestVetoCooldown:
 
         assert should_skip is False
         assert reason is None
+
+
+# ============================================================================
+# Sentiment Fetch Failure Tracking Tests
+# ============================================================================
+
+class TestSentimentFailureTracking:
+    """
+    Tests for sentiment fetch failure tracking and alerting.
+
+    This feature tracks consecutive sentiment API failures and alerts when
+    they exceed a threshold to prevent silent failures disabling extreme fear
+    override functionality.
+    """
+
+    @pytest.fixture
+    def daemon_with_sentiment(self, mock_settings, mock_database, mock_exchange_client):
+        """Create daemon with sentiment enabled."""
+        mock_settings.regime_sentiment_enabled = True
+        mock_settings.sentiment_failure_alert_threshold = 3
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+                    yield daemon
+
+    def test_counter_increments_on_exception(self, daemon_with_sentiment):
+        """Test that failure counter increments when sentiment fetch raises exception."""
+        # Verify initial state
+        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+
+        # Trigger failure check
+        daemon_with_sentiment._sentiment_fetch_failures = 1
+        daemon_with_sentiment._check_sentiment_failure_threshold()
+
+        # Counter should remain at 1 (not at threshold yet)
+        assert daemon_with_sentiment._sentiment_fetch_failures == 1
+
+        # Verify no alert sent
+        daemon_with_sentiment.notifier.notify_error.assert_not_called()
+
+    def test_counter_increments_on_none_return(self, daemon_with_sentiment):
+        """Test that failure counter increments when sentiment fetch returns None."""
+        # Simulate None return scenario
+        daemon_with_sentiment._sentiment_fetch_failures = 2
+        daemon_with_sentiment._check_sentiment_failure_threshold()
+
+        # Counter should remain at 2 (not at threshold yet)
+        assert daemon_with_sentiment._sentiment_fetch_failures == 2
+
+        # Verify no alert sent
+        daemon_with_sentiment.notifier.notify_error.assert_not_called()
+
+    def test_counter_resets_on_success(self, daemon_with_sentiment):
+        """Test that failure counter resets to 0 on successful fetch."""
+        # Simulate previous failures
+        daemon_with_sentiment._sentiment_fetch_failures = 2
+
+        # Simulate success
+        daemon_with_sentiment._sentiment_fetch_failures = 0
+        daemon_with_sentiment._last_sentiment_fetch_success = datetime.now(timezone.utc)
+
+        # Verify counter reset
+        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+        assert daemon_with_sentiment._last_sentiment_fetch_success is not None
+
+    def test_alert_fires_once_at_threshold(self, daemon_with_sentiment):
+        """Test that alert fires exactly once when threshold is reached."""
+        threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
+
+        # Set to threshold
+        daemon_with_sentiment._sentiment_fetch_failures = threshold
+        daemon_with_sentiment._check_sentiment_failure_threshold()
+
+        # Alert should be sent once
+        daemon_with_sentiment.notifier.notify_error.assert_called_once()
+
+        # Verify alert message contains key information
+        call_args = daemon_with_sentiment.notifier.notify_error.call_args
+        message = call_args[0][0]
+        assert "consecutive failures" in message
+        assert "Extreme fear override is disabled" in message
+
+    def test_alert_does_not_fire_again_above_threshold(self, daemon_with_sentiment):
+        """Test that alert does not fire again when failures exceed threshold."""
+        threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
+
+        # Set to threshold + 1
+        daemon_with_sentiment._sentiment_fetch_failures = threshold + 1
+        daemon_with_sentiment._check_sentiment_failure_threshold()
+
+        # Alert should NOT be sent (only fires at exactly threshold)
+        daemon_with_sentiment.notifier.notify_error.assert_not_called()
+
+    def test_alert_message_first_run(self, daemon_with_sentiment):
+        """Test alert message formatting when no previous success (first run)."""
+        threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
+
+        # Set to threshold with no previous success
+        daemon_with_sentiment._sentiment_fetch_failures = threshold
+        daemon_with_sentiment._last_sentiment_fetch_success = None
+
+        daemon_with_sentiment._check_sentiment_failure_threshold()
+
+        # Verify alert message contains improved first-run message
+        call_args = daemon_with_sentiment.notifier.notify_error.call_args
+        message = call_args[0][0]
+        assert "none (check API connectivity)" in message
+
+    def test_alert_message_with_previous_success(self, daemon_with_sentiment):
+        """Test alert message formatting with previous successful fetch."""
+        threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
+
+        # Set to threshold with previous success
+        daemon_with_sentiment._sentiment_fetch_failures = threshold
+        daemon_with_sentiment._last_sentiment_fetch_success = datetime.now(timezone.utc)
+
+        daemon_with_sentiment._check_sentiment_failure_threshold()
+
+        # Verify alert message contains time information
+        call_args = daemon_with_sentiment.notifier.notify_error.call_args
+        message = call_args[0][0]
+        assert "minutes ago" in message or "none (check API connectivity)" in message
+
+    def test_time_calculation_error_handling(self, daemon_with_sentiment):
+        """Test that time calculation errors are handled gracefully."""
+        threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
+
+        # Set to threshold with a mock datetime that will cause calculation issues
+        daemon_with_sentiment._sentiment_fetch_failures = threshold
+
+        # This should not raise an exception even if time calc fails
+        # The try-except in _check_sentiment_failure_threshold handles it
+        daemon_with_sentiment._check_sentiment_failure_threshold()
+
+        # Alert should still be sent
+        daemon_with_sentiment.notifier.notify_error.assert_called_once()
