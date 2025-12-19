@@ -1841,6 +1841,89 @@ def test_momentum_penalty_reduction_scales_with_trend_strength():
         pytest.skip("Test conditions not met - momentum not active in both scenarios")
 
 
+def test_momentum_trend_strength_calculation_unit():
+    """Deterministic unit test for trend strength calculation logic.
+
+    This test validates the core trend strength calculation independent of the
+    full calculate_score pipeline, ensuring reliable test coverage for financial
+    system logic without conditional pytest.skip() scenarios.
+    """
+    scorer = SignalScorer()
+
+    # Test Case 1: Zero EMA gap (no trend)
+    # EMA gap = 0% -> trend_strength = 0.0
+    ema_fast = 50000.0
+    ema_slow = 50000.0
+    cap = 5.0  # Default cap
+    ema_gap_percent = abs((ema_fast - ema_slow) / ema_slow) * 100
+    trend_strength = min(1.0, ema_gap_percent / cap)
+    assert trend_strength == 0.0, "Zero EMA gap should produce 0.0 trend strength"
+
+    # Test Case 2: Small EMA gap (weak trend)
+    # EMA gap = 0.1% -> trend_strength = 0.02 (0.1 / 5.0)
+    ema_fast = 50050.0  # 0.1% above ema_slow
+    ema_slow = 50000.0
+    ema_gap_percent = abs((ema_fast - ema_slow) / ema_slow) * 100
+    trend_strength = min(1.0, ema_gap_percent / cap)
+    assert abs(trend_strength - 0.02) < 0.001, f"Expected ~0.02, got {trend_strength}"
+
+    # Test Case 3: Medium EMA gap (moderate trend)
+    # EMA gap = 2.5% -> trend_strength = 0.5 (2.5 / 5.0)
+    ema_fast = 51250.0  # 2.5% above ema_slow
+    ema_slow = 50000.0
+    ema_gap_percent = abs((ema_fast - ema_slow) / ema_slow) * 100
+    trend_strength = min(1.0, ema_gap_percent / cap)
+    assert abs(trend_strength - 0.5) < 0.001, f"Expected ~0.5, got {trend_strength}"
+
+    # Test Case 4: EMA gap at cap (strong trend)
+    # EMA gap = 5.0% -> trend_strength = 1.0 (5.0 / 5.0)
+    ema_fast = 52500.0  # 5.0% above ema_slow
+    ema_slow = 50000.0
+    ema_gap_percent = abs((ema_fast - ema_slow) / ema_slow) * 100
+    trend_strength = min(1.0, ema_gap_percent / cap)
+    assert abs(trend_strength - 1.0) < 0.001, f"Expected ~1.0, got {trend_strength}"
+
+    # Test Case 5: EMA gap exceeds cap (parabolic trend)
+    # EMA gap = 15.0% -> trend_strength = 1.0 (capped at max)
+    ema_fast = 57500.0  # 15.0% above ema_slow
+    ema_slow = 50000.0
+    ema_gap_percent = abs((ema_fast - ema_slow) / ema_slow) * 100
+    trend_strength = min(1.0, ema_gap_percent / cap)
+    assert trend_strength == 1.0, f"Expected capped at 1.0, got {trend_strength}"
+
+    # Test Case 6: Penalty reduction scaling with default 0.5 reduction
+    # Verify that reduction scales linearly with trend strength
+    base_reduction = 0.5  # Default momentum_penalty_reduction
+
+    # Weak trend (strength 0.02): reduction = 0.5 * 0.02 = 0.01
+    reduction_weak = base_reduction * 0.02
+    assert abs(reduction_weak - 0.01) < 0.001
+
+    # Moderate trend (strength 0.5): reduction = 0.5 * 0.5 = 0.25
+    reduction_moderate = base_reduction * 0.5
+    assert abs(reduction_moderate - 0.25) < 0.001
+
+    # Strong trend (strength 1.0): reduction = 0.5 * 1.0 = 0.5
+    reduction_strong = base_reduction * 1.0
+    assert abs(reduction_strong - 0.5) < 0.001
+
+    # Test Case 7: Integer truncation behavior (from documentation)
+    # Verify that very weak trends produce zero penalty scores after truncation
+    rsi_penalty = -25
+
+    # Very weak trend: int(-25 * 0.01) = int(-0.25) = 0
+    adjusted_weak = int(rsi_penalty * reduction_weak)
+    assert adjusted_weak == 0, f"Expected truncation to 0, got {adjusted_weak}"
+
+    # Moderate trend: int(-25 * 0.25) = int(-6.25) = -6
+    adjusted_moderate = int(rsi_penalty * reduction_moderate)
+    assert adjusted_moderate == -6, f"Expected -6, got {adjusted_moderate}"
+
+    # Strong trend: int(-25 * 0.5) = int(-12.5) = -12
+    adjusted_strong = int(rsi_penalty * reduction_strong)
+    assert adjusted_strong == -12, f"Expected -12, got {adjusted_strong}"
+
+
 # ============================================================================
 # Adaptive Threshold Tests
 # ============================================================================

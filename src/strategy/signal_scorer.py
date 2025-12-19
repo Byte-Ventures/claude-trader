@@ -601,8 +601,9 @@ class SignalScorer:
             # issue #54's goal of avoiding delayed exits during trend weakening.
             #
             # Trade-off: During very weak trends (EMA gap < ~0.2% for default 5.0 cap),
-            # momentum mode effectively deactivates, allowing quick exits but potentially
-            # missing continuation of genuine but slow-developing trends.
+            # penalty reduction becomes ineffective due to truncation (though momentum mode
+            # remains technically active for logging/tracking). This allows quick exits but
+            # potentially misses continuation of genuine but slow-developing trends.
             if rsi_score < 0:
                 rsi_score = int(rsi_score * reduction)
             if bb_score < 0:
