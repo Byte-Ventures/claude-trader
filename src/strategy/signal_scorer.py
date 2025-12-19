@@ -546,7 +546,10 @@ class SignalScorer:
         rsi_score = int(rsi_signal * self.weights.rsi)
 
         # MACD component (graduated: returns -1.0 to +1.0, adaptive to candle interval)
-        macd_signal = get_macd_signal_graduated(macd_result, price, self.candle_interval)
+        # Use dynamic ATR-based scaling for better adaptability across assets and volatility regimes
+        macd_signal = get_macd_signal_graduated(
+            macd_result, price, self.candle_interval, atr_result, close
+        )
         macd_score = int(macd_signal * self.weights.macd)
 
         # Bollinger Bands component (graduated: returns -1.0 to +1.0)

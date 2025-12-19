@@ -48,6 +48,8 @@ import pandas as pd
 import numpy as np
 import structlog
 
+from src.indicators.atr import ATRResult, calculate_atr_percent
+
 logger = structlog.get_logger(__name__)
 
 # Valid candle intervals (shared across adaptive functions)
@@ -71,6 +73,21 @@ _HISTOGRAM_SCALE_FACTORS = {
     "ONE_DAY": 75,          # 1.33% of price = full signal
 }
 _DEFAULT_HISTOGRAM_SCALE_FACTOR = 200  # Fallback for unknown intervals
+
+# Interval multipliers for dynamic scaling
+# Shorter intervals need higher sensitivity (larger multipliers)
+# Longer intervals need lower sensitivity (smaller multipliers)
+_INTERVAL_MULTIPLIERS = {
+    "ONE_MINUTE": 2.0,      # Highest sensitivity for 1-minute candles
+    "FIVE_MINUTE": 1.5,     # High sensitivity
+    "FIFTEEN_MINUTE": 1.0,  # Baseline (default)
+    "THIRTY_MINUTE": 0.875, # Slightly reduced
+    "ONE_HOUR": 0.75,       # Reduced sensitivity
+    "TWO_HOUR": 0.625,      # Lower sensitivity
+    "SIX_HOUR": 0.5,        # Much lower sensitivity
+    "ONE_DAY": 0.375,       # Lowest sensitivity for daily candles
+}
+_DEFAULT_INTERVAL_MULTIPLIER = 1.0  # Fallback for unknown intervals
 
 _HISTOGRAM_DEAD_ZONE = 0.1  # Minimum normalized histogram for signal
 _BASE_SIGNAL_CLAMP = 0.8  # Max base signal before relationship boost
@@ -102,6 +119,68 @@ def get_histogram_scale_factor(candle_interval: Optional[str] = None) -> float:
             valid_intervals=list(VALID_CANDLE_INTERVALS)
         )
     return _HISTOGRAM_SCALE_FACTORS.get(candle_interval, _DEFAULT_HISTOGRAM_SCALE_FACTOR)
+
+
+def get_dynamic_histogram_scale(
+    atr_result: ATRResult,
+    close: pd.Series,
+    candle_interval: Optional[str] = None,
+) -> float:
+    """
+    Calculate dynamic histogram scale factor based on actual market volatility.
+
+    This function makes the MACD indicator robust to different assets and
+    volatility regimes by using ATR instead of hardcoded scale factors.
+
+    The base scale is calculated so that a histogram equal to 2x ATR produces
+    a full signal. This is then adjusted by an interval multiplier to account
+    for the fact that shorter candles need higher sensitivity.
+
+    Args:
+        atr_result: ATR calculation result (used to measure current volatility)
+        close: Series of closing prices (used to calculate ATR as % of price)
+        candle_interval: Candle interval for baseline adjustment
+                        (e.g., "FIFTEEN_MINUTE", "ONE_HOUR")
+
+    Returns:
+        Dynamic scale factor for histogram normalization.
+    """
+    # Calculate ATR as percentage of price
+    atr_percent_series = calculate_atr_percent(atr_result, close)
+
+    if len(atr_percent_series) < 1 or pd.isna(atr_percent_series.iloc[-1]):
+        # Fallback to static scale factor if ATR is unavailable
+        return get_histogram_scale_factor(candle_interval)
+
+    atr_percent = atr_percent_series.iloc[-1]
+
+    # Base calculation: full signal when histogram = 2x ATR
+    # If ATR is 2% of price, then histogram of 4% produces full signal
+    # So scale factor = 100 / (2 * atr_percent) = 50 / atr_percent
+    if atr_percent > 0:
+        base_scale = 50.0 / atr_percent
+    else:
+        # Fallback to static scale factor if ATR is zero
+        return get_histogram_scale_factor(candle_interval)
+
+    # Apply interval adjustment (shorter intervals need higher sensitivity)
+    interval_multiplier = _INTERVAL_MULTIPLIERS.get(
+        candle_interval or "FIFTEEN_MINUTE",
+        _DEFAULT_INTERVAL_MULTIPLIER
+    )
+
+    dynamic_scale = base_scale * interval_multiplier
+
+    logger.debug(
+        "dynamic_macd_scale",
+        atr_percent=round(atr_percent, 3),
+        base_scale=round(base_scale, 1),
+        interval_multiplier=interval_multiplier,
+        dynamic_scale=round(dynamic_scale, 1),
+        candle_interval=candle_interval,
+    )
+
+    return dynamic_scale
 
 
 @dataclass
@@ -158,6 +237,8 @@ def get_macd_signal_graduated(
     macd_result: MACDResult,
     price: float,
     candle_interval: Optional[str] = None,
+    atr_result: Optional[ATRResult] = None,
+    close: Optional[pd.Series] = None,
 ) -> float:
     """
     Get graduated trading signal from MACD (-1.0 to +1.0).
@@ -168,9 +249,16 @@ def get_macd_signal_graduated(
     - MACD above signal line adds +0.2 boost
     - MACD below signal line adds -0.2 boost
 
-    The scale factor is ADAPTIVE to candle interval:
-    - Shorter candles (1-15 min): Higher scale factors for smaller price moves
-    - Longer candles (6h-1d): Lower scale factors for larger price moves
+    The scale factor is ADAPTIVE and can use two methods:
+
+    1. DYNAMIC (preferred): Uses ATR-based volatility calculation
+       - Robust to different assets and volatility regimes
+       - Automatically adjusts to market conditions
+       - Requires atr_result and close parameters
+
+    2. STATIC (fallback): Uses hardcoded interval-based scale factors
+       - Calibrated for typical BTC volatility patterns
+       - Used when ATR data is not available
 
     A dead zone filters out noise when histogram is very small.
 
@@ -179,6 +267,8 @@ def get_macd_signal_graduated(
         price: Current price (used for normalization)
         candle_interval: Optional candle interval for adaptive scaling
                         (e.g., "FIFTEEN_MINUTE", "ONE_HOUR")
+        atr_result: Optional ATR result for dynamic volatility-based scaling
+        close: Optional close price series (required if using atr_result)
 
     Returns:
         Float from -1.0 to +1.0
@@ -193,8 +283,11 @@ def get_macd_signal_graduated(
     if pd.isna(histogram) or pd.isna(macd_line) or pd.isna(signal_line):
         return 0.0
 
-    # Get adaptive scale factor based on candle interval
-    scale_factor = get_histogram_scale_factor(candle_interval)
+    # Get scale factor: prefer dynamic (ATR-based) over static (interval-based)
+    if atr_result is not None and close is not None:
+        scale_factor = get_dynamic_histogram_scale(atr_result, close, candle_interval)
+    else:
+        scale_factor = get_histogram_scale_factor(candle_interval)
 
     # Normalize histogram by price using adaptive scale factor
     hist_normalized = (histogram / price) * scale_factor

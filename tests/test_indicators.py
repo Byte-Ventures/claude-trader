@@ -29,6 +29,7 @@ from src.indicators.macd import (
     calculate_macd,
     get_macd_signal_graduated,
     get_histogram_scale_factor,
+    get_dynamic_histogram_scale,
     VALID_CANDLE_INTERVALS,
 )
 from src.indicators.bollinger import (
@@ -164,6 +165,62 @@ def test_macd_signal_graduated(sample_ohlcv_data):
 
     signal = get_macd_signal_graduated(result, current_price)
     assert -1.0 <= signal <= 1.0
+
+
+def test_macd_signal_with_dynamic_scaling(sample_ohlcv_data):
+    """Test MACD signal with dynamic ATR-based scaling."""
+    df = sample_ohlcv_data(length=100, base_price=50000.0, volatility=0.02)
+    macd_result = calculate_macd(df['close'])
+    atr_result = calculate_atr(df['high'], df['low'], df['close'])
+    current_price = df['close'].iloc[-1]
+
+    # Test with dynamic scaling
+    signal_dynamic = get_macd_signal_graduated(
+        macd_result, current_price, "FIFTEEN_MINUTE", atr_result, df['close']
+    )
+    assert -1.0 <= signal_dynamic <= 1.0
+
+    # Test without dynamic scaling (fallback to static)
+    signal_static = get_macd_signal_graduated(
+        macd_result, current_price, "FIFTEEN_MINUTE"
+    )
+    assert -1.0 <= signal_static <= 1.0
+
+
+def test_get_dynamic_histogram_scale(sample_ohlcv_data):
+    """Test dynamic histogram scale factor calculation."""
+    df = sample_ohlcv_data(length=100, base_price=50000.0, volatility=0.02)
+    atr_result = calculate_atr(df['high'], df['low'], df['close'])
+
+    # Test dynamic scale factor
+    scale = get_dynamic_histogram_scale(atr_result, df['close'], "FIFTEEN_MINUTE")
+    assert scale > 0
+
+    # Test that scale adjusts with volatility
+    # Higher volatility should produce lower scale factor
+    df_high_vol = sample_ohlcv_data(length=100, base_price=50000.0, volatility=0.05)
+    atr_high_vol = calculate_atr(df_high_vol['high'], df_high_vol['low'], df_high_vol['close'])
+    scale_high_vol = get_dynamic_histogram_scale(atr_high_vol, df_high_vol['close'], "FIFTEEN_MINUTE")
+
+    # Higher volatility (higher ATR %) should give lower scale factor
+    atr_pct_normal = calculate_atr_percent(atr_result, df['close']).iloc[-1]
+    atr_pct_high = calculate_atr_percent(atr_high_vol, df_high_vol['close']).iloc[-1]
+    if atr_pct_high > atr_pct_normal:
+        assert scale_high_vol < scale
+
+
+def test_dynamic_scale_interval_adjustment(sample_ohlcv_data):
+    """Test that dynamic scale adjusts properly for different candle intervals."""
+    df = sample_ohlcv_data(length=100, base_price=50000.0, volatility=0.02)
+    atr_result = calculate_atr(df['high'], df['low'], df['close'])
+
+    # Shorter intervals should have higher scale factors
+    scale_1m = get_dynamic_histogram_scale(atr_result, df['close'], "ONE_MINUTE")
+    scale_15m = get_dynamic_histogram_scale(atr_result, df['close'], "FIFTEEN_MINUTE")
+    scale_1d = get_dynamic_histogram_scale(atr_result, df['close'], "ONE_DAY")
+
+    # Verify interval multipliers are applied correctly
+    assert scale_1m > scale_15m > scale_1d
 
 
 # ============================================================================
