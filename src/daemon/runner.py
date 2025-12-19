@@ -116,8 +116,8 @@ class TradingDaemon:
         # Multi-Timeframe state (for HTF bias caching)
         self._daily_trend: str = "neutral"
         self._daily_last_fetch: Optional[datetime] = None
-        self._6h_trend: str = "neutral"
-        self._6h_last_fetch: Optional[datetime] = None
+        self._4h_trend: str = "neutral"
+        self._4h_last_fetch: Optional[datetime] = None
 
         # Signal history tracking for marking executed trades.
         # Thread-safety note: This is safe because TradingDaemon runs single-threaded.
@@ -860,9 +860,9 @@ class TradingDaemon:
         if granularity == "ONE_DAY":
             last_fetch = self._daily_last_fetch
             cached_trend = self._daily_trend
-        else:  # SIX_HOUR
-            last_fetch = self._6h_last_fetch
-            cached_trend = self._6h_trend
+        else:  # FOUR_HOUR
+            last_fetch = self._4h_last_fetch
+            cached_trend = self._4h_trend
 
         now = datetime.now(timezone.utc)
         if last_fetch and (now - last_fetch) < timedelta(minutes=cache_minutes):
@@ -892,8 +892,8 @@ class TradingDaemon:
                 self._daily_trend = trend
                 self._daily_last_fetch = now
             else:
-                self._6h_trend = trend
-                self._6h_last_fetch = now
+                self._4h_trend = trend
+                self._4h_last_fetch = now
 
             logger.info("htf_trend_updated", timeframe=granularity, trend=trend)
             return trend
@@ -951,7 +951,7 @@ class TradingDaemon:
         the next iteration uses fresh data with the new parameters.
         """
         self._daily_last_fetch = None
-        self._6h_last_fetch = None
+        self._4h_last_fetch = None
         logger.info("htf_cache_invalidated")
 
     def _store_signal_history(
