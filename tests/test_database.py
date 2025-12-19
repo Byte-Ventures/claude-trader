@@ -1131,8 +1131,8 @@ def test_record_rates_bulk_atomic_rollback(db):
     on exception, so if an error occurs, NO candles from this batch will be
     committed. This ensures atomic operation - all or nothing."
 
-    This test verifies that guarantee holds. Uses SQL UPSERT under the hood,
-    so we mock session.execute to simulate mid-batch failure.
+    This test verifies that guarantee holds. Uses bulk SQL UPSERT, so we
+    mock session.execute to simulate failure during the bulk operation.
     """
     from unittest.mock import patch, MagicMock
 
@@ -1152,23 +1152,15 @@ def test_record_rates_bulk_atomic_rollback(db):
         for i in range(5)
     ]
 
-    # Mock session.execute to raise an exception after 3 successful executes
-    execute_count = [0]
-    original_execute = None
-
+    # Mock session.execute to raise an exception on the bulk insert
     def failing_execute(sql, params=None):
-        execute_count[0] += 1
-        if execute_count[0] > 3:
-            raise RuntimeError("Simulated database error mid-batch")
-        return original_execute(sql, params)
+        raise RuntimeError("Simulated database error during bulk insert")
 
-    # Patch the session's execute method to fail partway through
+    # Patch the session's execute method to fail
     with patch.object(db, 'session') as mock_session_ctx:
         mock_session = MagicMock()
         mock_session_ctx.return_value.__enter__ = MagicMock(return_value=mock_session)
         mock_session_ctx.return_value.__exit__ = MagicMock(return_value=False)
-
-        original_execute = mock_session.execute
         mock_session.execute = failing_execute
 
         # This should raise an exception

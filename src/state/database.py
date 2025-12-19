@@ -1768,51 +1768,53 @@ class Database:
                 logger.warning("rate_history_naive_timestamp", timestamp=str(dt))
             return dt
 
-        count = 0
         now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+        # Prepare all values for bulk insert
+        values_list = []
+        for candle in candles:
+            normalized_ts = to_datetime(candle["timestamp"])
+            vol = candle.get("volume")
+            values_list.append({
+                "symbol": symbol,
+                "exchange": exchange,
+                "interval": interval,
+                "timestamp": normalized_ts,
+                "open_price": str(candle["open"]),
+                "high_price": str(candle["high"]),
+                "low_price": str(candle["low"]),
+                "close_price": str(candle["close"]),
+                "volume": str(vol) if vol is not None else "0",
+                "is_paper": is_paper,
+                "created_at": now,
+            })
+
         try:
             with self.session() as session:
-                for candle in candles:
-                    normalized_ts = to_datetime(candle["timestamp"])
-                    vol = candle.get("volume")
+                # Use SQLAlchemy's bulk insert with UPSERT for all candles at once
+                # This is much more efficient than individual inserts (O(1) vs O(n) queries)
+                stmt = sqlite_insert(RateHistory).values(values_list)
 
-                    # Use SQLAlchemy's dialect-specific UPSERT for atomic operation
-                    # This properly handles type conversion unlike raw text()
-                    stmt = sqlite_insert(RateHistory).values(
-                        symbol=symbol,
-                        exchange=exchange,
-                        interval=interval,
-                        timestamp=normalized_ts,
-                        open_price=str(candle["open"]),
-                        high_price=str(candle["high"]),
-                        low_price=str(candle["low"]),
-                        close_price=str(candle["close"]),
-                        volume=str(vol) if vol is not None else "0",
-                        is_paper=is_paper,
-                        created_at=now,
-                    )
+                # On conflict: preserve open, use max/min for high/low, update close/volume
+                # open_price is NOT in set_, so it's preserved (SQLAlchemy only updates listed columns)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=['symbol', 'exchange', 'interval', 'timestamp', 'is_paper'],
+                    set_={
+                        'high_price': func.max(
+                            func.cast(RateHistory.high_price, Float),
+                            func.cast(stmt.excluded.high_price, Float)
+                        ),
+                        'low_price': func.min(
+                            func.cast(RateHistory.low_price, Float),
+                            func.cast(stmt.excluded.low_price, Float)
+                        ),
+                        'close_price': stmt.excluded.close_price,
+                        'volume': stmt.excluded.volume,
+                    }
+                )
+                session.execute(stmt)
 
-                    # On conflict: preserve open, use max/min for high/low, update close/volume
-                    # Note: SQLite doesn't support expressions in DO UPDATE, so we use
-                    # a subquery-style approach with func.max/min
-                    stmt = stmt.on_conflict_do_update(
-                        index_elements=['symbol', 'exchange', 'interval', 'timestamp', 'is_paper'],
-                        set_={
-                            'high_price': func.max(
-                                func.cast(RateHistory.high_price, Float),
-                                func.cast(stmt.excluded.high_price, Float)
-                            ),
-                            'low_price': func.min(
-                                func.cast(RateHistory.low_price, Float),
-                                func.cast(stmt.excluded.low_price, Float)
-                            ),
-                            'close_price': stmt.excluded.close_price,
-                            'volume': stmt.excluded.volume,
-                        }
-                    )
-                    session.execute(stmt)
-                    count += 1
-
+            count = len(candles)
             if count > 0:
                 logger.info(
                     "rates_recorded",
@@ -1827,7 +1829,6 @@ class Database:
                 "rate_bulk_upsert_failed",
                 error=str(e),
                 total_candles=len(candles),
-                processed_before_error=count,
             )
             raise  # Re-raise to signal failure to caller
 
