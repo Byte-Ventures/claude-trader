@@ -182,6 +182,9 @@ def mock_settings():
     settings.momentum_penalty_reduction = 0.5
     settings.momentum_trend_strength_cap = 5.0
 
+    # MACD Dynamic Scaling
+    settings.macd_interval_multipliers = None  # Use default hardcoded multipliers
+
     return settings
 
 

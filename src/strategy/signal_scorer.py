@@ -175,6 +175,7 @@ class SignalScorer:
         extreme_rsi_lower: int = 25,
         extreme_rsi_upper: int = 75,
         trend_filter_penalty: int = 20,
+        macd_interval_multipliers: Optional[dict[str, float]] = None,
     ):
         """
         Initialize signal scorer.
@@ -253,6 +254,9 @@ class SignalScorer:
 
         # Trend filter parameters
         self.trend_filter_penalty = trend_filter_penalty
+
+        # MACD dynamic scaling parameters
+        self.macd_interval_multipliers = macd_interval_multipliers
 
     def update_settings(
         self,
@@ -547,9 +551,17 @@ class SignalScorer:
 
         # MACD component (graduated: returns -1.0 to +1.0, adaptive to candle interval)
         # Use dynamic ATR-based scaling for better adaptability across assets and volatility regimes
-        macd_signal = get_macd_signal_graduated(
-            macd_result, price, self.candle_interval, atr_result, close
-        )
+        # Enhanced validation: ensure ATR data is valid before using dynamic scaling
+        if atr_result is not None and len(atr_result.atr) > 0 and not atr_result.atr.empty:
+            macd_signal = get_macd_signal_graduated(
+                macd_result, price, self.candle_interval, atr_result, close, self.macd_interval_multipliers
+            )
+        else:
+            # Explicit fallback logging when ATR unavailable
+            logger.debug("atr_unavailable_using_static_macd_scale", candle_interval=self.candle_interval)
+            macd_signal = get_macd_signal_graduated(
+                macd_result, price, self.candle_interval, None, None, self.macd_interval_multipliers
+            )
         macd_score = int(macd_signal * self.weights.macd)
 
         # Bollinger Bands component (graduated: returns -1.0 to +1.0)

@@ -101,7 +101,8 @@ _DEFAULT_INTERVAL_MULTIPLIER = 1.0  # Fallback for unknown intervals
 _HISTOGRAM_DEAD_ZONE = 0.1  # Minimum normalized histogram for signal
 _BASE_SIGNAL_CLAMP = 0.8  # Max base signal before relationship boost
 _RELATIONSHIP_BOOST = 0.2  # Boost for MACD/signal line relationship
-_MAX_SCALE_FACTOR = 1000  # Maximum scale factor cap to prevent oversensitivity in low volatility
+_MAX_SCALE_FACTOR = 1000  # Cap prevents oversensitivity in <0.05% ATR markets (stablecoins, extreme low liquidity)
+_MIN_ATR_PERCENT = 0.1  # Minimum ATR (0.1% of price) to prevent extreme scaling in ultra-low volatility
 
 
 def get_histogram_scale_factor(candle_interval: Optional[str] = None) -> float:
@@ -135,6 +136,7 @@ def get_dynamic_histogram_scale(
     atr_result: ATRResult,
     close: pd.Series,
     candle_interval: Optional[str] = None,
+    interval_multipliers: Optional[dict[str, float]] = None,
 ) -> float:
     """
     Calculate dynamic histogram scale factor based on actual market volatility.
@@ -151,6 +153,8 @@ def get_dynamic_histogram_scale(
         close: Series of closing prices (used to calculate ATR as % of price)
         candle_interval: Candle interval for baseline adjustment
                         (e.g., "FIFTEEN_MINUTE", "ONE_HOUR")
+        interval_multipliers: Optional custom interval multipliers from config.
+                             If None, uses hardcoded defaults (_INTERVAL_MULTIPLIERS)
 
     Returns:
         Dynamic scale factor for histogram normalization.
@@ -160,22 +164,45 @@ def get_dynamic_histogram_scale(
 
     # ATR needs at least 14 periods to be reliable (default ATR period)
     # Fallback to static scale factor if ATR has insufficient data or is unavailable
-    if len(atr_percent_series) < 14 or pd.isna(atr_percent_series.iloc[-1]):
+    if len(atr_percent_series) < 14:
         return get_histogram_scale_factor(candle_interval)
 
-    atr_percent = atr_percent_series.iloc[-1]
+    # Enhanced validation: Check data quality across recent ATR values
+    # ATR uses 14-period EMA, so validate last 14 values for reliability
+    recent_atr = atr_percent_series.tail(14)
+    if recent_atr.isna().any() or (recent_atr <= 0).any():
+        logger.warning(
+            "atr_data_quality_insufficient",
+            nan_count=int(recent_atr.isna().sum()),
+            zero_or_negative_count=int((recent_atr <= 0).sum()),
+            using="static_scale_factor",
+            candle_interval=candle_interval,
+        )
+        return get_histogram_scale_factor(candle_interval)
+
+    atr_percent = recent_atr.iloc[-1]
+
+    # Prevent extreme scaling in ultra-low volatility markets (stablecoins, low liquidity)
+    # When ATR < 0.1%, fallback to static scaling to avoid oversensitivity
+    if atr_percent < _MIN_ATR_PERCENT:
+        logger.warning(
+            "atr_too_low_for_dynamic_scaling",
+            atr_percent=round(atr_percent, 4),
+            min_threshold=_MIN_ATR_PERCENT,
+            using="static_scale_factor",
+            candle_interval=candle_interval,
+        )
+        return get_histogram_scale_factor(candle_interval)
 
     # Base calculation: full signal when histogram = 2x ATR
     # If ATR is 2% of price, then histogram of 4% produces full signal
     # So scale factor = 100 / (2 * atr_percent) = 50 / atr_percent
-    if atr_percent > 0:
-        base_scale = 50.0 / atr_percent
-    else:
-        # Fallback to static scale factor if ATR is zero
-        return get_histogram_scale_factor(candle_interval)
+    base_scale = 50.0 / atr_percent
 
     # Apply interval adjustment (shorter intervals need higher sensitivity)
-    interval_multiplier = _INTERVAL_MULTIPLIERS.get(
+    # Use custom multipliers from config if provided, otherwise use defaults
+    multipliers_to_use = interval_multipliers if interval_multipliers is not None else _INTERVAL_MULTIPLIERS
+    interval_multiplier = multipliers_to_use.get(
         candle_interval or "FIFTEEN_MINUTE",
         _DEFAULT_INTERVAL_MULTIPLIER
     )
@@ -253,6 +280,7 @@ def get_macd_signal_graduated(
     candle_interval: Optional[str] = None,
     atr_result: Optional[ATRResult] = None,
     close: Optional[pd.Series] = None,
+    interval_multipliers: Optional[dict[str, float]] = None,
 ) -> float:
     """
     Get graduated trading signal from MACD (-1.0 to +1.0).
@@ -283,6 +311,8 @@ def get_macd_signal_graduated(
                         (e.g., "FIFTEEN_MINUTE", "ONE_HOUR")
         atr_result: Optional ATR result for dynamic volatility-based scaling
         close: Optional close price series (required if using atr_result)
+        interval_multipliers: Optional custom interval multipliers from config.
+                             If None, uses hardcoded defaults
 
     Returns:
         Float from -1.0 to +1.0
@@ -299,7 +329,7 @@ def get_macd_signal_graduated(
 
     # Get scale factor: prefer dynamic (ATR-based) over static (interval-based)
     if atr_result is not None and close is not None:
-        scale_factor = get_dynamic_histogram_scale(atr_result, close, candle_interval)
+        scale_factor = get_dynamic_histogram_scale(atr_result, close, candle_interval, interval_multipliers)
     else:
         scale_factor = get_histogram_scale_factor(candle_interval)
 

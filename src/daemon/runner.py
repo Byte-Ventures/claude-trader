@@ -386,6 +386,7 @@ class TradingDaemon:
             extreme_rsi_lower=settings.extreme_rsi_lower,
             extreme_rsi_upper=settings.extreme_rsi_upper,
             trend_filter_penalty=settings.trend_filter_penalty,
+            macd_interval_multipliers=settings.macd_interval_multipliers,
         )
 
         self.position_sizer = PositionSizer(
