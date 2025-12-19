@@ -850,7 +850,7 @@ class TradingDaemon:
         Get trend for a specific timeframe with caching.
 
         Args:
-            granularity: Candle granularity (e.g., "ONE_DAY", "SIX_HOUR")
+            granularity: Candle granularity ("ONE_DAY" or "FOUR_HOUR")
             cache_minutes: Cache TTL in minutes
 
         Returns:
@@ -1424,8 +1424,11 @@ class TradingDaemon:
             )
 
         # Get HTF bias for multi-timeframe confirmation
-        # NOTE: _get_htf_bias() handles MTF-disabled case by returning ("neutral", "neutral", "neutral")
-        # These variables are used later in signal calculation AND dashboard state, ensuring consistency
+        # NOTE: _get_htf_bias() handles MTF configuration:
+        # - MTF disabled: returns ("neutral", "neutral", "neutral")
+        # - MTF enabled, 4H disabled: returns (daily, daily, None)
+        # - MTF fully enabled: returns (combined, daily, four_hour)
+        # These variables are used in signal calculation AND dashboard state, ensuring consistency
         htf_bias, daily_trend, four_hour_trend = self._get_htf_bias()
 
         # Fetch sentiment before signal calculation to enable extreme fear override in MTF logic.
