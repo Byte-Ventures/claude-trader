@@ -925,13 +925,13 @@ def test_whale_candle_structure_price_outside_range():
     """Test handling when close price is outside high/low range (data inconsistency)."""
     scorer = SignalScorer()
 
-    # Close price above high (data inconsistency)
-    closes = [50000] * 99 + [51100]  # Close > high
+    # Close price above high (data inconsistency) - only on last candle
+    closes = [50500] * 99 + [51100]  # Last close > high
     df = pd.DataFrame({
-        'open': [50000] * 100,
-        'high': [51000] * 100,  # high = 51000
-        'low': [50000] * 100,
-        'close': closes,  # close = 51100 (!)
+        'open': [50000] * 99 + [50000],
+        'high': [51000] * 99 + [51000],  # high = 51000
+        'low': [50000] * 99 + [50000],
+        'close': closes,  # Last close = 51100 (!)
         'volume': [10000] * 99 + [50000]  # 5x spike = whale activity
     })
 
@@ -943,24 +943,24 @@ def test_whale_candle_structure_price_outside_range():
     # But candle close position should be None due to data inconsistency
     assert result.breakdown.get("_candle_close_position") is None
 
-    # Whale direction should be unknown (can't trust inconsistent data)
+    # Whale direction should be unknown (can't trust inconsistent candle structure)
     assert result.breakdown.get("_whale_direction") == "unknown"
 
-    # Price change percentage should also be None (unreliable data)
-    assert result.breakdown.get("_price_change_pct") is None
+    # Price change percentage should still be valid (calculated from consecutive closes)
+    assert result.breakdown.get("_price_change_pct") is not None
 
 
 def test_whale_candle_structure_price_below_low():
     """Test handling when close price is below low (data inconsistency)."""
     scorer = SignalScorer()
 
-    # Close price below low (data inconsistency)
-    closes = [50000] * 99 + [49900]  # Close < low
+    # Close price below low (data inconsistency) - only on last candle
+    closes = [50500] * 99 + [49900]  # Last close < low
     df = pd.DataFrame({
-        'open': [50000] * 100,
-        'high': [51000] * 100,
-        'low': [50000] * 100,  # low = 50000
-        'close': closes,  # close = 49900 (!)
+        'open': [50000] * 99 + [50000],
+        'high': [51000] * 99 + [51000],
+        'low': [50000] * 99 + [50000],  # low = 50000
+        'close': closes,  # Last close = 49900 (!)
         'volume': [10000] * 99 + [50000]  # 5x spike = whale activity
     })
 
@@ -972,11 +972,11 @@ def test_whale_candle_structure_price_below_low():
     # But candle close position should be None due to data inconsistency
     assert result.breakdown.get("_candle_close_position") is None
 
-    # Whale direction should be unknown (can't trust inconsistent data)
+    # Whale direction should be unknown (can't trust inconsistent candle structure)
     assert result.breakdown.get("_whale_direction") == "unknown"
 
-    # Price change percentage should also be None (unreliable data)
-    assert result.breakdown.get("_price_change_pct") is None
+    # Price change percentage should still be valid (calculated from consecutive closes)
+    assert result.breakdown.get("_price_change_pct") is not None
 
 
 # ============================================================================

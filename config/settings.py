@@ -770,12 +770,8 @@ class Settings(BaseSettings):
                 f"whale_candle_bullish_threshold ({self.whale_candle_bullish_threshold}) must be > 0.5"
             )
 
-        # Validate relationship between thresholds
-        if self.whale_candle_bearish_threshold >= self.whale_candle_bullish_threshold:
-            raise ValueError(
-                f"whale_candle_bearish_threshold ({self.whale_candle_bearish_threshold}) must be less than "
-                f"whale_candle_bullish_threshold ({self.whale_candle_bullish_threshold})"
-            )
+        # Note: Third check (bearish < bullish) is mathematically guaranteed by the above two checks
+        # and is therefore redundant (bearish < 0.5 < bullish)
 
         return self
 

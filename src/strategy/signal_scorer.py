@@ -647,14 +647,14 @@ class SignalScorer:
                                 # Verify price is within expected range before calculation
                                 # Data inconsistency can occur when close/high/low come from slightly
                                 # different timestamps or feeds. This indicates data quality issues.
-                                # Use relative epsilon based on price magnitude (0.0001% tolerance)
-                                # Use max of candle bounds for consistent tolerance across the range
-                                # This handles low-priced assets better and avoids zero-epsilon edge cases
-                                price_magnitude = max(abs(candle_low), abs(candle_high))
-                                epsilon = price_magnitude * self.PRICE_TOLERANCE_EPSILON if price_magnitude > 0 else 1e-6
+                                # Use relative epsilon based on candle range (0.0001% tolerance)
+                                # This scales with actual volatility, not absolute price level
+                                # Better handles assets at any price point (micro-cap to high-value)
+                                epsilon = candle_range * self.PRICE_TOLERANCE_EPSILON if candle_range > 0 else 1e-6
                                 if current_price < (candle_low - epsilon) or current_price > (candle_high + epsilon):
                                     # Data inconsistency detected - log warning with context and treat as unknown
-                                    # Price data unreliable - skip all direction calculations for safety
+                                    # Candle structure (close/high/low) is inconsistent, but price_change_pct
+                                    # (calculated from consecutive closes) remains valid and useful
                                     price_diff = min(abs(current_price - candle_high), abs(candle_low - current_price))
                                     logger.warning(
                                         f"[{self.trading_pair}] Price {current_price:.2f} outside candle range "
@@ -664,12 +664,12 @@ class SignalScorer:
                                     close_position = None
                                     breakdown["_candle_close_position"] = None
                                     breakdown["_whale_direction"] = "unknown"
-                                    breakdown["_price_change_pct"] = None
+                                    # Note: _price_change_pct is kept (already set on line 634) - it's still valid
                                     data_inconsistency = True
                                 else:
                                     # Division by zero protection: candle_range > 0 guaranteed by if-condition above (line 643)
                                     close_position = (current_price - candle_low) / candle_range
-                                    # Rounded for display only; actual threshold comparisons use full precision
+                                    # Store rounded value for display only; close_position remains unrounded for threshold comparisons
                                     breakdown["_candle_close_position"] = round(close_position, 3)
                             else:
                                 # Zero-range candle (doji/flat) or missing data:
