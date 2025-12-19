@@ -585,23 +585,22 @@ class SignalScorer:
             # Base reduction is configured value (default 0.5), scaled by trend strength
             # Weak trend (0.0 strength): minimal reduction (near full penalty = more responsive)
             # Strong trend (1.0 strength): full reduction (configured value)
+            # Formula: new_penalty = old_penalty * (1 - reduction)
+            # - reduction=0.0 → keep 100% of penalty (no change)
+            # - reduction=0.5 → keep 50% of penalty (half the overbought signal)
             reduction = self.momentum_penalty_reduction * trend_strength
 
-            # Only apply penalty reduction if trend strength is meaningful (>= 4%)
-            # This prevents integer truncation where very weak trends would result in zero
-            # penalty being applied (e.g., int(-25 * 0.01) = 0), which would incorrectly
-            # allow full signal strength during weak trends that may be reversing.
-            # With this threshold:
-            # - EMA gap < 0.2% (for default 5.0 cap): momentum mode inactive
-            # - EMA gap >= 0.2%: momentum mode active with proportional reduction
-            # This ensures predictable behavior and avoids false momentum signals
-            if trend_strength >= 0.04:
-                # Reduce overbought penalties by scaled factor (only negative scores)
-                # Use int() instead of // for symmetric rounding behavior
-                if rsi_score < 0:
-                    rsi_score = int(rsi_score * reduction)
-                if bb_score < 0:
-                    bb_score = int(bb_score * reduction)
+            # Reduce overbought penalties by scaled factor (only negative scores)
+            # Use (1 - reduction) to keep the remaining portion of the penalty
+            # Example with default 0.5 max reduction:
+            # - Strong trend (1.0): reduction=0.5, keep 50% → -25 becomes -12
+            # - Moderate trend (0.5): reduction=0.25, keep 75% → -25 becomes -18
+            # - Weak trend (0.1): reduction=0.05, keep 95% → -25 becomes -23
+            # - No trend (0.0): reduction=0.0, keep 100% → -25 stays -25
+            if rsi_score < 0:
+                rsi_score = int(rsi_score * (1 - reduction))
+            if bb_score < 0:
+                bb_score = int(bb_score * (1 - reduction))
             logger.info(
                 "momentum_mode_active",
                 reason=momentum_reason,

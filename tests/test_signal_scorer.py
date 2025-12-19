@@ -1717,7 +1717,7 @@ def test_trend_strength_calculation_directly():
     Formula tested:
     - trend_strength = min(1.0, ema_gap_percent / momentum_trend_strength_cap)
     - reduction = momentum_penalty_reduction * trend_strength
-    - adjusted_score = int(original_score * reduction)
+    - adjusted_score = int(original_score * (1 - reduction))
     """
     # Create momentum data that should trigger momentum mode
     np.random.seed(123)
@@ -1743,16 +1743,17 @@ def test_trend_strength_calculation_directly():
     })
 
     # Test with two different caps but same base reduction
-    # Lower cap = higher trend strength for same EMA gap = higher reduction value = MORE penalty (more negative)
-    # Higher cap = lower trend strength for same EMA gap = lower reduction value = LESS penalty (closer to zero)
+    # Formula: adjusted = int(original * (1 - reduction))
+    # Lower cap = higher trend strength = higher reduction = MORE penalty removed = LESS negative
+    # Higher cap = lower trend strength = lower reduction = LESS penalty removed = MORE negative
     scorer_high_cap = SignalScorer(
         momentum_penalty_reduction=0.5,
-        momentum_trend_strength_cap=10.0,  # High cap: harder to reach 1.0 strength, lower reduction values
+        momentum_trend_strength_cap=10.0,  # High cap: harder to reach 1.0 strength, keeps more penalty
     )
 
     scorer_low_cap = SignalScorer(
         momentum_penalty_reduction=0.5,
-        momentum_trend_strength_cap=2.0,   # Low cap: easier to reach 1.0 strength, higher reduction values
+        momentum_trend_strength_cap=2.0,   # Low cap: easier to reach 1.0 strength, removes more penalty
     )
 
     result_high_cap = scorer_high_cap.calculate_score(df)
@@ -1768,16 +1769,16 @@ def test_trend_strength_calculation_directly():
         assert rsi_high_cap is not None and rsi_low_cap is not None, "RSI scores must be present"
 
         if rsi_high_cap < 0 and rsi_low_cap < 0:
-            # Key insight: adjusted_score = int(original_score * reduction)
-            # For negative scores: HIGHER reduction = MORE negative (less reduced penalty)
-            # For negative scores: LOWER reduction = LESS negative (more reduced penalty)
+            # Key insight: adjusted_score = int(original_score * (1 - reduction))
+            # For negative scores: HIGHER reduction = LESS negative (more penalty removed)
+            # For negative scores: LOWER reduction = MORE negative (less penalty removed)
             #
-            # High cap (10.0) with same EMA gap: lower trend_strength, lower reduction, LESS negative
-            # Low cap (2.0) with same EMA gap: higher trend_strength, higher reduction, MORE negative
+            # High cap (10.0) with same EMA gap: lower trend_strength, lower reduction, MORE negative
+            # Low cap (2.0) with same EMA gap: higher trend_strength, higher reduction, LESS negative
             #
-            # Therefore: rsi_high_cap should be CLOSER to zero (less negative) than rsi_low_cap
-            assert rsi_high_cap >= rsi_low_cap, \
-                f"High cap should give less negative penalty: {rsi_high_cap} >= {rsi_low_cap}"
+            # Therefore: rsi_low_cap should be CLOSER to zero (less negative) than rsi_high_cap
+            assert rsi_low_cap >= rsi_high_cap, \
+                f"Low cap should give less negative penalty: {rsi_low_cap} >= {rsi_high_cap}"
 
             # Additionally, both should be affected by momentum mode
             # (not the full -25 penalty, since reduction is applied)
@@ -1908,20 +1909,22 @@ def test_momentum_trend_strength_calculation_unit():
     reduction_strong = base_reduction * 1.0
     assert abs(reduction_strong - 0.5) < 0.001
 
-    # Test Case 7: Integer truncation behavior (from documentation)
-    # Verify that very weak trends produce zero penalty scores after truncation
+    # Test Case 7: Penalty adjustment with (1 - reduction) formula
+    # Formula: adjusted = int(original * (1 - reduction))
+    # This ensures weak trends keep most of the penalty (fast exit)
+    # and strong trends get maximum reduction (ride the trend)
     rsi_penalty = -25
 
-    # Very weak trend: int(-25 * 0.01) = int(-0.25) = 0
-    adjusted_weak = int(rsi_penalty * reduction_weak)
-    assert adjusted_weak == 0, f"Expected truncation to 0, got {adjusted_weak}"
+    # Very weak trend: int(-25 * (1 - 0.01)) = int(-25 * 0.99) = int(-24.75) = -24
+    adjusted_weak = int(rsi_penalty * (1 - reduction_weak))
+    assert adjusted_weak == -24, f"Expected -24, got {adjusted_weak}"
 
-    # Moderate trend: int(-25 * 0.25) = int(-6.25) = -6
-    adjusted_moderate = int(rsi_penalty * reduction_moderate)
-    assert adjusted_moderate == -6, f"Expected -6, got {adjusted_moderate}"
+    # Moderate trend: int(-25 * (1 - 0.25)) = int(-25 * 0.75) = int(-18.75) = -18
+    adjusted_moderate = int(rsi_penalty * (1 - reduction_moderate))
+    assert adjusted_moderate == -18, f"Expected -18, got {adjusted_moderate}"
 
-    # Strong trend: int(-25 * 0.5) = int(-12.5) = -12
-    adjusted_strong = int(rsi_penalty * reduction_strong)
+    # Strong trend: int(-25 * (1 - 0.5)) = int(-25 * 0.5) = int(-12.5) = -12
+    adjusted_strong = int(rsi_penalty * (1 - reduction_strong))
     assert adjusted_strong == -12, f"Expected -12, got {adjusted_strong}"
 
 
