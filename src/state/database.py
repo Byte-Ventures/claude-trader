@@ -1687,7 +1687,8 @@ class Database:
                 existing.high_price = str(max(existing_high, high_price))
                 existing.low_price = str(min(existing_low, low_price))
                 existing.close_price = str(close_price)
-                existing.volume = str(volume)  # Exchange provides cumulative volume
+                # Handle NULL/None volume gracefully (historical data may have missing volume)
+                existing.volume = str(volume) if volume is not None else "0"
                 return existing
 
             rate = RateHistory(
@@ -1699,7 +1700,7 @@ class Database:
                 high_price=str(high_price),
                 low_price=str(low_price),
                 close_price=str(close_price),
-                volume=str(volume),
+                volume=str(volume) if volume is not None else "0",
                 is_paper=is_paper,
             )
             session.add(rate)
@@ -1738,6 +1739,14 @@ class Database:
                       automatically handles rollback on exception, so if an error
                       occurs, NO candles from this batch will be committed.
                       This ensures atomic operation - all or nothing.
+
+        Concurrency Note:
+            This read-modify-write pattern assumes single-threaded access or
+            serializable isolation. SQLite's default DEFERRED isolation may allow
+            lost updates in concurrent scenarios. For this trading bot, database
+            writes are serialized through the daemon's main loop, so this is safe.
+            For multi-threaded use, consider using SQL UPSERT (INSERT ... ON CONFLICT)
+            or database-level locking.
         """
         if not candles:
             return 0
@@ -1800,10 +1809,13 @@ class Database:
                         existing.high_price = str(max(existing_high, new_high))
                         existing.low_price = str(min(existing_low, new_low))
                         existing.close_price = str(candle["close"])
-                        existing.volume = str(candle["volume"])  # Exchange provides cumulative volume
+                        # Handle NULL/None volume gracefully (historical data may have missing volume)
+                        vol = candle.get("volume")
+                        existing.volume = str(vol) if vol is not None else "0"
                         updated += 1
                     else:
                         # Insert new candle
+                        vol = candle.get("volume")
                         rate = RateHistory(
                             symbol=symbol,
                             exchange=exchange,
@@ -1813,7 +1825,7 @@ class Database:
                             high_price=str(candle["high"]),
                             low_price=str(candle["low"]),
                             close_price=str(candle["close"]),
-                            volume=str(candle["volume"]),
+                            volume=str(vol) if vol is not None else "0",
                             is_paper=is_paper,
                         )
                         session.add(rate)

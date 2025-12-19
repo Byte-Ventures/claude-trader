@@ -42,8 +42,10 @@ env/
 # Claude Code
 .claude/settings.local.json
 
-# Database
-*.db
+# Database (scoped to known locations)
+data/*.db
+tests/*.db
+trading_bot.db
 *.db-journal
 
 # Logs

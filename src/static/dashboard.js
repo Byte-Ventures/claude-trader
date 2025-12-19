@@ -286,11 +286,13 @@ async function loadInitialData() {
             updateDailyStats(stats);
         }
 
-        // Load config FIRST - must be before state loading so candleIntervalSeconds is correct
+        // Load config FIRST - CRITICAL for candleIntervalSeconds before state loading
         const configResponse = await fetch('/api/config');
         if (configResponse.ok) {
             const config = await configResponse.json();
             updateConfig(config);
+        } else {
+            console.error('Failed to load config - candle bucketing may use incorrect default 60s interval');
         }
 
         // Load current state (uses candleIntervalSeconds set above)
@@ -486,6 +488,8 @@ function updateDashboard(state) {
 
             if (currentCandle && currentCandle.time === candleTime) {
                 // Same candle period - update high/low/close (open is preserved as first price)
+                // Note: JS Math.max/min on floats may introduce minor precision errors (~1e-15).
+                // This is acceptable for chart display; backend uses Decimal for exact values.
                 currentCandle.high = Math.max(currentCandle.high, price);
                 currentCandle.low = Math.min(currentCandle.low, price);
                 currentCandle.close = price;
@@ -502,7 +506,8 @@ function updateDashboard(state) {
                 candleSeries.update(currentCandle);
             } else {
                 // candleTime < currentCandle.time - skip stale update to avoid chart error
-                console.warn(`Skipping stale candle update: new=${candleTime} (${new Date(candleTime * 1000).toISOString()}), current=${currentCandle.time} (${new Date(currentCandle.time * 1000).toISOString()}), interval=${candleIntervalSeconds}s`);
+                // This can happen due to WebSocket reconnect lag or minor clock skew between server/client
+                console.warn(`Skipping stale candle update (reconnect lag or clock skew): new=${candleTime} (${new Date(candleTime * 1000).toISOString()}), current=${currentCandle.time} (${new Date(currentCandle.time * 1000).toISOString()}), interval=${candleIntervalSeconds}s`);
             }
 
             // Update price line (only if we updated the candle)
