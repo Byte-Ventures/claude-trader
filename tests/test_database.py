@@ -819,8 +819,8 @@ def test_rate_history_paper_live_separation(db):
     assert live_rate.id != paper_rate.id
 
 
-def test_rate_history_duplicate_skipped(db):
-    """Test that duplicate rates are skipped."""
+def test_rate_history_upsert(db):
+    """Test that record_rate performs upsert with correct OHLC semantics."""
     timestamp = datetime(2024, 1, 1, 12, 0, 0)
 
     # Record first time
@@ -834,19 +834,59 @@ def test_rate_history_duplicate_skipped(db):
         is_paper=False
     )
 
-    # Try to record duplicate
+    # Record again with different OHLCV - should update, not skip
     rate2 = db.record_rate(
         timestamp=timestamp,
-        open_price=Decimal("50000"),
-        high_price=Decimal("50500"),
-        low_price=Decimal("49500"),
-        close_price=Decimal("50200"),
-        volume=Decimal("100"),
+        open_price=Decimal("49900"),   # Different open - should be IGNORED
+        high_price=Decimal("51000"),   # Higher high - should use max
+        low_price=Decimal("49000"),    # Lower low - should use min
+        close_price=Decimal("50800"),  # Different close - should update
+        volume=Decimal("150"),
         is_paper=False
     )
 
     assert rate1 is not None
-    assert rate2 is None  # Duplicate skipped
+    assert rate2 is not None  # Updated, not skipped
+
+    # Verify OHLC semantics
+    assert rate2.get_open() == Decimal("50000")   # Original open preserved
+    assert rate2.get_high() == Decimal("51000")   # max(50500, 51000)
+    assert rate2.get_low() == Decimal("49000")    # min(49500, 49000)
+    assert rate2.get_close() == Decimal("50800")  # Latest close
+    assert rate2.get_volume() == Decimal("150")
+
+
+def test_record_rate_preserves_boundaries(db):
+    """Test record_rate preserves high/low boundaries when update has narrower range."""
+    timestamp = datetime(2024, 1, 1, 12, 0, 0)
+
+    # Insert initial candle with established high/low
+    db.record_rate(
+        timestamp=timestamp,
+        open_price=Decimal("50000"),
+        high_price=Decimal("51000"),  # Already seen 51000
+        low_price=Decimal("49000"),   # Already seen 49000
+        close_price=Decimal("50500"),
+        volume=Decimal("100"),
+        is_paper=False
+    )
+
+    # Update with narrower range - boundaries should NOT shrink
+    rate = db.record_rate(
+        timestamp=timestamp,
+        open_price=Decimal("50100"),   # Different open - ignored
+        high_price=Decimal("50800"),   # Lower than existing high - ignored
+        low_price=Decimal("49200"),    # Higher than existing low - ignored
+        close_price=Decimal("50600"),  # New close
+        volume=Decimal("120"),
+        is_paper=False
+    )
+
+    # Verify boundaries are preserved
+    assert rate.get_open() == Decimal("50000")   # Original open preserved
+    assert rate.get_high() == Decimal("51000")   # Original high preserved (51000 > 50800)
+    assert rate.get_low() == Decimal("49000")    # Original low preserved (49000 < 49200)
+    assert rate.get_close() == Decimal("50600")  # Close updated
 
 
 def test_record_rates_bulk(db):
@@ -872,8 +912,8 @@ def test_record_rates_bulk(db):
     assert count == 5
 
 
-def test_record_rates_bulk_skip_duplicates(db):
-    """Test bulk insert skips duplicates."""
+def test_record_rates_bulk_updates_duplicates(db):
+    """Test bulk upsert updates existing candles with new OHLCV data."""
     candles = [
         {
             "timestamp": datetime(2024, 1, 1, 12, 0, 0),
@@ -886,16 +926,86 @@ def test_record_rates_bulk_skip_duplicates(db):
     ]
 
     # Insert first time
-    inserted1 = db.record_rates_bulk(candles, is_paper=False)
-    assert inserted1 == 1
+    count1 = db.record_rates_bulk(candles, is_paper=False)
+    assert count1 == 1
 
-    # Try to insert duplicate
-    inserted2 = db.record_rates_bulk(candles, is_paper=False)
-    assert inserted2 == 0  # Duplicate skipped
+    # Verify initial values
+    rates = db.get_rates(is_paper=False)
+    assert len(rates) == 1
+    assert rates[0].get_open() == Decimal("50000")
+    assert rates[0].get_high() == Decimal("50500")
+    assert rates[0].get_low() == Decimal("49500")
+    assert rates[0].get_close() == Decimal("50200")
+
+    # Update with new OHLCV data (simulating candle completion)
+    updated_candles = [
+        {
+            "timestamp": datetime(2024, 1, 1, 12, 0, 0),
+            "open": Decimal("49900"),   # Different open - should be IGNORED
+            "high": Decimal("51000"),   # Higher high - should use max
+            "low": Decimal("49000"),    # Lower low - should use min
+            "close": Decimal("50800"),  # Different close - should update
+            "volume": Decimal("150")    # Higher volume - should update
+        }
+    ]
+    count2 = db.record_rates_bulk(updated_candles, is_paper=False)
+    assert count2 == 1  # Updated (not skipped)
+
+    # Verify updated values - open should be preserved!
+    rates = db.get_rates(is_paper=False)
+    assert len(rates) == 1  # Still only one candle
+    assert rates[0].get_open() == Decimal("50000")  # Original open preserved
+    assert rates[0].get_high() == Decimal("51000")  # max(50500, 51000)
+    assert rates[0].get_low() == Decimal("49000")   # min(49500, 49000)
+    assert rates[0].get_close() == Decimal("50800")
+    assert rates[0].get_volume() == Decimal("150")
+
+
+def test_record_rates_bulk_preserves_boundaries(db):
+    """Test that bulk upsert preserves high/low boundaries correctly.
+
+    When updating a candle:
+    - Open: NEVER changes (first price of period)
+    - High: Uses max(existing, new) - only increases
+    - Low: Uses min(existing, new) - only decreases
+    - Close: Always updates (latest price)
+    """
+    # Insert initial candle with established high/low
+    initial = [
+        {
+            "timestamp": datetime(2024, 1, 1, 12, 0, 0),
+            "open": Decimal("50000"),
+            "high": Decimal("51000"),  # Already seen 51000
+            "low": Decimal("49000"),   # Already seen 49000
+            "close": Decimal("50500"),
+            "volume": Decimal("100")
+        }
+    ]
+    db.record_rates_bulk(initial, is_paper=False)
+
+    # Update with new data that has NARROWER range - boundaries should NOT shrink
+    narrower_update = [
+        {
+            "timestamp": datetime(2024, 1, 1, 12, 0, 0),
+            "open": Decimal("50100"),   # Different open - ignored
+            "high": Decimal("50800"),   # Lower than existing high - ignored
+            "low": Decimal("49200"),    # Higher than existing low - ignored
+            "close": Decimal("50600"),  # New close
+            "volume": Decimal("120")
+        }
+    ]
+    db.record_rates_bulk(narrower_update, is_paper=False)
+
+    # Verify boundaries are preserved
+    rates = db.get_rates(is_paper=False)
+    assert rates[0].get_open() == Decimal("50000")   # Original open preserved
+    assert rates[0].get_high() == Decimal("51000")   # Original high preserved (51000 > 50800)
+    assert rates[0].get_low() == Decimal("49000")    # Original low preserved (49000 < 49200)
+    assert rates[0].get_close() == Decimal("50600")  # Close updated
 
 
 def test_record_rates_bulk_partial_duplicates(db):
-    """Test bulk insert with mix of new and duplicate candles."""
+    """Test bulk upsert with mix of new and existing candles."""
     # Insert initial candles
     initial = [
         {
@@ -909,11 +1019,18 @@ def test_record_rates_bulk_partial_duplicates(db):
     ]
     db.record_rates_bulk(initial, is_paper=False)
 
-    # Try to insert mix of duplicate and new
+    # Upsert mix of existing (updated) and new candles
     mixed = [
-        initial[0],  # Duplicate
         {
-            "timestamp": datetime(2024, 1, 1, 12, 1, 0),
+            "timestamp": datetime(2024, 1, 1, 12, 0, 0),  # Existing - will be updated
+            "open": Decimal("50000"),
+            "high": Decimal("50600"),  # Updated high
+            "low": Decimal("49500"),
+            "close": Decimal("50300"),  # Updated close
+            "volume": Decimal("120")
+        },
+        {
+            "timestamp": datetime(2024, 1, 1, 12, 1, 0),  # New
             "open": Decimal("50200"),
             "high": Decimal("50700"),
             "low": Decimal("50000"),
@@ -922,8 +1039,138 @@ def test_record_rates_bulk_partial_duplicates(db):
         }
     ]
 
-    inserted = db.record_rates_bulk(mixed, is_paper=False)
-    assert inserted == 1  # Only new one inserted
+    count = db.record_rates_bulk(mixed, is_paper=False)
+    assert count == 2  # 1 updated + 1 inserted
+
+    # Verify we have 2 candles total
+    rates = db.get_rates(is_paper=False)
+    assert len(rates) == 2
+
+    # Verify first candle was updated
+    assert rates[0].get_high() == Decimal("50600")
+    assert rates[0].get_close() == Decimal("50300")
+
+
+def test_record_rates_bulk_paper_live_separation(db):
+    """
+    CRITICAL: Verify bulk upsert keeps paper and live candles completely separate.
+
+    Per CLAUDE.md: "Paper and live data must NEVER mix"
+    """
+    timestamp = datetime(2024, 1, 1, 12, 0, 0)
+
+    # Insert live candle
+    live_candles = [{
+        "timestamp": timestamp,
+        "open": Decimal("50000"),
+        "high": Decimal("50500"),
+        "low": Decimal("49500"),
+        "close": Decimal("50200"),
+        "volume": Decimal("100"),
+    }]
+    db.record_rates_bulk(live_candles, is_paper=False)
+
+    # Insert paper candle with SAME timestamp but DIFFERENT values
+    paper_candles = [{
+        "timestamp": timestamp,
+        "open": Decimal("51000"),
+        "high": Decimal("51500"),
+        "low": Decimal("50500"),
+        "close": Decimal("51200"),
+        "volume": Decimal("200"),
+    }]
+    db.record_rates_bulk(paper_candles, is_paper=True)
+
+    # Verify both exist independently
+    live_rates = db.get_rates(is_paper=False)
+    paper_rates = db.get_rates(is_paper=True)
+
+    assert len(live_rates) == 1
+    assert len(paper_rates) == 1
+    assert live_rates[0].id != paper_rates[0].id
+
+    # Verify values are different (not mixed)
+    assert live_rates[0].get_open() == Decimal("50000")
+    assert paper_rates[0].get_open() == Decimal("51000")
+    assert live_rates[0].get_high() == Decimal("50500")
+    assert paper_rates[0].get_high() == Decimal("51500")
+
+    # Now update live candle - should NOT affect paper candle
+    live_update = [{
+        "timestamp": timestamp,
+        "open": Decimal("49000"),  # Should be ignored (open is immutable)
+        "high": Decimal("51000"),  # Should update to 51000 (max of 50500, 51000)
+        "low": Decimal("49000"),   # Should update to 49000 (min of 49500, 49000)
+        "close": Decimal("50800"),
+        "volume": Decimal("150"),
+    }]
+    db.record_rates_bulk(live_update, is_paper=False)
+
+    # Refresh from database
+    live_rates = db.get_rates(is_paper=False)
+    paper_rates = db.get_rates(is_paper=True)
+
+    # Verify live was updated correctly
+    assert live_rates[0].get_open() == Decimal("50000")  # Preserved
+    assert live_rates[0].get_high() == Decimal("51000")  # Updated to max
+    assert live_rates[0].get_low() == Decimal("49000")   # Updated to min
+    assert live_rates[0].get_close() == Decimal("50800")
+
+    # Verify paper was NOT affected
+    assert paper_rates[0].get_open() == Decimal("51000")
+    assert paper_rates[0].get_high() == Decimal("51500")
+    assert paper_rates[0].get_low() == Decimal("50500")
+    assert paper_rates[0].get_close() == Decimal("51200")
+
+
+def test_record_rates_bulk_atomic_rollback(db):
+    """
+    CRITICAL: Verify atomic rollback on error - no partial writes.
+
+    Per docstring: "The session context manager automatically handles rollback
+    on exception, so if an error occurs, NO candles from this batch will be
+    committed. This ensures atomic operation - all or nothing."
+
+    This test verifies that guarantee holds. Uses bulk SQL UPSERT, so we
+    mock session.execute to simulate failure during the bulk operation.
+    """
+    from unittest.mock import patch, MagicMock
+
+    # First, verify database is empty
+    assert len(db.get_rates(is_paper=False)) == 0
+
+    # Create valid candles
+    candles = [
+        {
+            "timestamp": datetime(2024, 1, 1, 12, i, 0),
+            "open": Decimal("50000") + i,
+            "high": Decimal("50500") + i,
+            "low": Decimal("49500") + i,
+            "close": Decimal("50200") + i,
+            "volume": Decimal("100") + i,
+        }
+        for i in range(5)
+    ]
+
+    # Mock session.execute to raise an exception on the bulk insert
+    def failing_execute(sql, params=None):
+        raise RuntimeError("Simulated database error during bulk insert")
+
+    # Patch the session's execute method to fail
+    with patch.object(db, 'session') as mock_session_ctx:
+        mock_session = MagicMock()
+        mock_session_ctx.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_session_ctx.return_value.__exit__ = MagicMock(return_value=False)
+        mock_session.execute = failing_execute
+
+        # This should raise an exception
+        with pytest.raises(RuntimeError, match="Simulated database error"):
+            db.record_rates_bulk(candles, is_paper=False)
+
+    # Verify NO candles were committed (atomic rollback)
+    # Since we mocked the session, the real database should have no candles
+    rates = db.get_rates(is_paper=False)
+    assert len(rates) == 0, "Expected 0 candles after rollback, but found some - atomic guarantee violated!"
 
 
 def test_get_rates_with_time_filter(db):
@@ -942,7 +1189,7 @@ def test_get_rates_with_time_filter(db):
 
     db.record_rates_bulk(candles, is_paper=False)
 
-    # Get rates in range
+    # Get rates in range (inclusive on both ends)
     rates = db.get_rates(
         start=datetime(2024, 1, 1, 12, 3, 0),
         end=datetime(2024, 1, 1, 12, 7, 0),

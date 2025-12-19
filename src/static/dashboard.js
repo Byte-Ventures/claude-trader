@@ -10,10 +10,73 @@ let cramerSeries = null;
 let ws = null;
 let reconnectAttempts = 0;
 let seenNotificationIds = new Set();
+/**
+ * Current candle being built from real-time WebSocket updates.
+ * Tracks OHLC state within a single candle period:
+ * - open: First price when candle started (immutable within period)
+ * - high: Maximum price seen (monotonically increasing)
+ * - low: Minimum price seen (monotonically decreasing)
+ * - close: Latest price (always updated)
+ * - time: Unix timestamp of candle start, aligned to interval boundary
+ * @type {{time: number, open: number, high: number, low: number, close: number}|null}
+ */
+let currentCandle = null;
+
+/** Candle interval in seconds, loaded from backend config */
+let candleIntervalSeconds = 60;
+
+/** Flag to defer WebSocket candle updates until initial data loads */
+let isInitialized = false;
+
+/** Timestamp of last candle update, for throttling */
+let lastCandleUpdate = 0;
+
 const MAX_RECONNECT_ATTEMPTS = 10;
+const CANDLE_UPDATE_THROTTLE_MS = 1000;  // Throttle candle updates to 1/second
 const BASE_RECONNECT_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 30000;
 const MAX_SEEN_NOTIFICATIONS = 100;  // Prevent memory leak from unbounded Set
+
+/**
+ * Convert candle interval string to seconds.
+ *
+ * Supports two formats:
+ * - Backend format: "ONE_MINUTE", "FIFTEEN_MINUTE", "ONE_HOUR", etc.
+ * - Short format: "1m", "15m", "1h", etc.
+ *
+ * @param {string} interval - Interval string from backend config
+ * @returns {number} Interval duration in seconds (defaults to 60 if unknown)
+ */
+function parseIntervalToSeconds(interval) {
+    if (!interval) {
+        console.warn('parseIntervalToSeconds: null/undefined interval, defaulting to 60s');
+        return 60;
+    }
+    const intervalMap = {
+        'ONE_MINUTE': 60,
+        'FIVE_MINUTE': 300,
+        'FIFTEEN_MINUTE': 900,
+        'THIRTY_MINUTE': 1800,
+        'ONE_HOUR': 3600,
+        'TWO_HOUR': 7200,
+        'SIX_HOUR': 21600,
+        'ONE_DAY': 86400,
+        '1m': 60,
+        '5m': 300,
+        '15m': 900,
+        '30m': 1800,
+        '1h': 3600,
+        '2h': 7200,
+        '6h': 21600,
+        '1d': 86400,
+    };
+    const seconds = intervalMap[interval];
+    if (!seconds) {
+        console.warn(`parseIntervalToSeconds: unknown interval "${interval}", defaulting to 60s`);
+        return 60;
+    }
+    return seconds;
+}
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
@@ -167,8 +230,20 @@ function initPerformanceChart() {
 
 // Load initial data from REST API
 async function loadInitialData() {
+    // Reset flag during reload (e.g., on WebSocket reconnect)
+    isInitialized = false;
+
     try {
-        // Load candles
+        // Load config FIRST - CRITICAL for candleIntervalSeconds before any candle processing
+        const configResponse = await fetch('/api/config');
+        if (configResponse.ok) {
+            const config = await configResponse.json();
+            updateConfig(config);
+        } else {
+            console.error('Failed to load config - candle bucketing will use default 60s interval');
+        }
+
+        // Load candles (now using correct candleIntervalSeconds from config)
         const candlesResponse = await fetch('/api/candles?limit=100');
         if (candlesResponse.ok) {
             const candles = await candlesResponse.json();
@@ -193,6 +268,10 @@ async function loadInitialData() {
                 });
             if (chartData.length > 0) {
                 candleSeries.setData(chartData);
+
+                // Initialize currentCandle from the last loaded candle
+                const lastCandle = chartData[chartData.length - 1];
+                currentCandle = { ...lastCandle };
 
                 // Set price line data and color based on price direction
                 const lineData = chartData.map(c => ({ time: c.time, value: c.close }));
@@ -225,13 +304,6 @@ async function loadInitialData() {
             }
         }
 
-        // Load config
-        const configResponse = await fetch('/api/config');
-        if (configResponse.ok) {
-            const config = await configResponse.json();
-            updateConfig(config);
-        }
-
         // Load notifications
         const notificationsResponse = await fetch('/api/notifications?limit=10');
         if (notificationsResponse.ok) {
@@ -245,6 +317,9 @@ async function loadInitialData() {
             const performance = await performanceResponse.json();
             updatePerformanceChart(performance);
         }
+
+        // Mark initialization complete - WebSocket updates can now update candles
+        isInitialized = true;
     } catch (error) {
         console.error('Failed to load initial data:', error);
     }
@@ -259,6 +334,16 @@ function connectWebSocket() {
         console.log('WebSocket connected');
         document.getElementById('connection-status').textContent = 'Connected';
         document.getElementById('connection-status').className = 'status connected';
+
+        // On reconnect, reload all data to catch up on missed updates.
+        // Race condition prevention: loadInitialData() sets isInitialized=false at start,
+        // which causes updateDashboard() to skip chart updates. This prevents WebSocket
+        // messages from corrupting currentCandle while REST APIs are still fetching.
+        // Once all data is loaded, isInitialized=true allows chart updates again.
+        if (reconnectAttempts > 0) {
+            console.log('Reconnected - reloading data to catch up');
+            loadInitialData();
+        }
         reconnectAttempts = 0;
     };
 
@@ -368,21 +453,66 @@ function updateDashboard(state) {
     updateBreakdownBar('breakdown-volume', breakdown.volume || 0);
 
     // Update chart with new price (if we have valid data)
-    if (state.timestamp && candleSeries && !isNaN(price) && price > 0) {
+    //
+    // Guards:
+    // - Skip until initial data loads (prevents race condition with loadInitialData)
+    // - Throttle to 1 update/second (prevents hammering chart library)
+    //
+    // Candle Bucketing Algorithm:
+    // 1. Align timestamp to interval boundary: floor(time / interval) * interval
+    //    Example: 23:47:15 with 15-min interval → 23:45:00
+    // 2. If same bucket as currentCandle: update H/L/C, preserve O
+    // 3. If newer bucket: start new candle with O=H=L=C=price
+    // 4. If older bucket: skip (stale data from reconnect/lag)
+    //
+    // Throttling: Only throttle updates WITHIN the same candle period.
+    // New candle periods always update immediately to ensure accurate open price.
+    //
+    // This matches exchange OHLC bucketing (Unix epoch aligned, 24/7 crypto markets).
+    if (isInitialized && state.timestamp && candleSeries && !isNaN(price) && price > 0) {
         // Don't add 'Z' - state timestamps already have timezone info (+00:00)
         const time = Math.floor(new Date(state.timestamp).getTime() / 1000);
         if (!isNaN(time) && time > 0) {
-            candleSeries.update({
-                time: time,
-                open: price,
-                high: price,
-                low: price,
-                close: price,
-            });
+            const candleTime = Math.floor(time / candleIntervalSeconds) * candleIntervalSeconds;
+            const now = Date.now();
+            const isNewCandlePeriod = !currentCandle || candleTime > currentCandle.time;
+            const isThrottled = !isNewCandlePeriod &&
+                (now - lastCandleUpdate < CANDLE_UPDATE_THROTTLE_MS);
 
-            // Update price line with same data point
-            if (priceLine) {
-                priceLine.update({ time: time, value: price });
+            if (isThrottled) {
+                // Skip this update - throttling within same candle period
+                return;
+            }
+
+            lastCandleUpdate = now;
+
+            if (currentCandle && currentCandle.time === candleTime) {
+                // Same candle period - update high/low/close (open is preserved as first price)
+                // Note: JS Math.max/min on floats may introduce minor precision errors (~1e-15).
+                // This is acceptable for chart display; backend uses Decimal for exact values.
+                currentCandle.high = Math.max(currentCandle.high, price);
+                currentCandle.low = Math.min(currentCandle.low, price);
+                currentCandle.close = price;
+                candleSeries.update(currentCandle);
+            } else if (isNewCandlePeriod) {
+                // New candle period (must be newer) - start fresh
+                currentCandle = {
+                    time: candleTime,
+                    open: price,
+                    high: price,
+                    low: price,
+                    close: price,
+                };
+                candleSeries.update(currentCandle);
+            } else {
+                // candleTime < currentCandle.time - skip stale update to avoid chart error
+                // This can happen due to WebSocket reconnect lag or minor clock skew between server/client
+                console.warn(`Skipping stale candle update (reconnect lag or clock skew): new=${candleTime} (${new Date(candleTime * 1000).toISOString()}), current=${currentCandle.time} (${new Date(currentCandle.time * 1000).toISOString()}), interval=${candleIntervalSeconds}s`);
+            }
+
+            // Update price line (only if we updated the candle)
+            if (priceLine && currentCandle && candleTime >= currentCandle.time) {
+                priceLine.update({ time: currentCandle.time, value: price });
             }
         }
     }
@@ -418,6 +548,9 @@ function updateBreakdownBar(id, value) {
 function updateConfig(config) {
     document.getElementById('trading-pair').textContent = config.trading_pair;
     document.getElementById('signal-threshold').textContent = `Threshold: |${config.signal_threshold}|`;
+    if (config.candle_interval) {
+        candleIntervalSeconds = parseIntervalToSeconds(config.candle_interval);
+    }
 }
 
 // Update trades table

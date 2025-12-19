@@ -36,6 +36,7 @@ from sqlalchemy import (
     inspect,
     text,
 )
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 import structlog
@@ -1640,9 +1641,19 @@ class Database:
         is_paper: bool = False,
     ) -> Optional[RateHistory]:
         """
-        Record a single OHLCV candle.
+        Record a single OHLCV candle (upsert - insert or update).
 
-        Uses INSERT OR IGNORE to skip duplicates (same symbol/exchange/interval/timestamp/is_paper).
+        If candle exists for the same symbol/exchange/interval/timestamp/is_paper,
+        updates high/low/close/volume while preserving the original open price.
+        Otherwise inserts a new candle.
+
+        OHLC semantics:
+        - Open: First price of period (immutable once set)
+        - High: Highest price seen (use max of existing and new)
+        - Low: Lowest price seen (use min of existing and new)
+        - Close: Latest price (always update)
+        - Volume: Total for period (exchanges like Kraken/Coinbase provide cumulative
+                  total volume for the candle period, not incremental updates)
         """
         with self.session() as session:
             # Check if candle already exists
@@ -1659,7 +1670,30 @@ class Database:
             )
 
             if existing:
-                return None  # Skip duplicate
+                # Update existing candle - preserve open, use max/min for high/low
+                # open_price is NOT updated - it's the first price of the period
+                try:
+                    existing_high = Decimal(existing.high_price)
+                    existing_low = Decimal(existing.low_price)
+                except (ValueError, TypeError, InvalidOperation) as e:
+                    # CRITICAL: Database corruption detected - should be investigated
+                    # Using incoming value to repair, but this indicates a serious issue
+                    logger.error(
+                        "rate_corrupted_decimal",
+                        error=str(e),
+                        timestamp=str(timestamp),
+                        existing_high=existing.high_price,
+                        existing_low=existing.low_price,
+                        action="repairing_with_incoming_value",
+                    )
+                    existing_high = high_price
+                    existing_low = low_price
+                existing.high_price = str(max(existing_high, high_price))
+                existing.low_price = str(min(existing_low, low_price))
+                existing.close_price = str(close_price)
+                # Handle NULL/None volume gracefully (historical data may have missing volume)
+                existing.volume = str(volume) if volume is not None else "0"
+                return existing
 
             rate = RateHistory(
                 symbol=symbol,
@@ -1670,7 +1704,7 @@ class Database:
                 high_price=str(high_price),
                 low_price=str(low_price),
                 close_price=str(close_price),
-                volume=str(volume),
+                volume=str(volume) if volume is not None else "0",
                 is_paper=is_paper,
             )
             session.add(rate)
@@ -1685,89 +1719,116 @@ class Database:
         is_paper: bool = False,
     ) -> int:
         """
-        Record multiple OHLCV candles efficiently.
+        Record multiple OHLCV candles efficiently (upsert - insert or update).
+
+        For existing candles, updates high/low/close/volume while preserving
+        the original open price.
+
+        OHLC semantics:
+        - Open: First price of period (immutable once set)
+        - High: Highest price seen (use max of existing and new)
+        - Low: Lowest price seen (use min of existing and new)
+        - Close: Latest price (always update)
+        - Volume: Total for period (exchanges like Kraken/Coinbase provide cumulative
+                  total volume for the candle period, not incremental updates)
 
         Args:
             candles: List of dicts with keys: timestamp, open, high, low, close, volume
             is_paper: Whether this is paper trading data
 
         Returns:
-            Number of new candles inserted (skips duplicates)
+            Number of candles inserted or updated
 
         Raises:
-            Exception: Re-raised if batch insert fails. The session context manager
+            Exception: Re-raised if batch operation fails. The session context manager
                       automatically handles rollback on exception, so if an error
                       occurs, NO candles from this batch will be committed.
                       This ensures atomic operation - all or nothing.
+
+        Concurrency:
+            Uses SQL UPSERT (INSERT ... ON CONFLICT DO UPDATE) for atomic operations.
+            Each upsert is a single SQL statement, making it safe for concurrent access
+            without explicit locking. The MAX/MIN for high/low prices are computed
+            atomically within the SQL statement.
         """
         if not candles:
             return 0
 
-        inserted = 0
+        # Normalize timestamps to naive UTC datetime (pandas Timestamp -> datetime)
+        def to_datetime(ts):
+            if hasattr(ts, 'to_pydatetime'):
+                dt = ts.to_pydatetime()
+            else:
+                dt = ts
+            # Convert to UTC before removing tzinfo (SQLite stores naive datetimes)
+            if hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
+                dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+            else:
+                # Naive datetime - assumed to be UTC, warn since this could hide bugs
+                logger.warning("rate_history_naive_timestamp", timestamp=str(dt))
+            return dt
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+        # Prepare all values for bulk insert
+        values_list = []
+        for candle in candles:
+            normalized_ts = to_datetime(candle["timestamp"])
+            vol = candle.get("volume")
+            values_list.append({
+                "symbol": symbol,
+                "exchange": exchange,
+                "interval": interval,
+                "timestamp": normalized_ts,
+                "open_price": str(candle["open"]),
+                "high_price": str(candle["high"]),
+                "low_price": str(candle["low"]),
+                "close_price": str(candle["close"]),
+                "volume": str(vol) if vol is not None else "0",
+                "is_paper": is_paper,
+                "created_at": now,
+            })
+
         try:
             with self.session() as session:
-                # Normalize timestamps to naive UTC datetime (pandas Timestamp -> datetime)
-                def to_datetime(ts):
-                    if hasattr(ts, 'to_pydatetime'):
-                        dt = ts.to_pydatetime()
-                    else:
-                        dt = ts
-                    # Convert to UTC before removing tzinfo (SQLite stores naive datetimes)
-                    if hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
-                        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
-                    else:
-                        # Naive datetime - assumed to be UTC, warn since this could hide bugs
-                        logger.warning("rate_history_naive_timestamp", timestamp=str(dt))
-                    return dt
+                # Use SQLAlchemy's bulk insert with UPSERT for all candles at once
+                # This is much more efficient than individual inserts (O(1) vs O(n) queries)
+                stmt = sqlite_insert(RateHistory).values(values_list)
 
-                candle_timestamps = [to_datetime(c["timestamp"]) for c in candles]
-
-                # Batch fetch existing timestamps in one query for performance
-                existing_timestamps = set(
-                    row[0] for row in session.query(RateHistory.timestamp)
-                    .filter(
-                        RateHistory.symbol == symbol,
-                        RateHistory.exchange == exchange,
-                        RateHistory.interval == interval,
-                        RateHistory.is_paper == is_paper,
-                        RateHistory.timestamp.in_(candle_timestamps),
-                    )
-                    .all()
+                # On conflict: preserve open, use max/min for high/low, update close/volume
+                # open_price is NOT in set_, so it's preserved (SQLAlchemy only updates listed columns)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=['symbol', 'exchange', 'interval', 'timestamp', 'is_paper'],
+                    set_={
+                        'high_price': func.max(
+                            func.cast(RateHistory.high_price, Float),
+                            func.cast(stmt.excluded.high_price, Float)
+                        ),
+                        'low_price': func.min(
+                            func.cast(RateHistory.low_price, Float),
+                            func.cast(stmt.excluded.low_price, Float)
+                        ),
+                        'close_price': stmt.excluded.close_price,
+                        'volume': stmt.excluded.volume,
+                    }
                 )
+                session.execute(stmt)
 
-                # Insert only new candles (batch - flush happens at context exit)
-                for candle, normalized_ts in zip(candles, candle_timestamps):
-                    if normalized_ts not in existing_timestamps:
-                        rate = RateHistory(
-                            symbol=symbol,
-                            exchange=exchange,
-                            interval=interval,
-                            timestamp=normalized_ts,
-                            open_price=str(candle["open"]),
-                            high_price=str(candle["high"]),
-                            low_price=str(candle["low"]),
-                            close_price=str(candle["close"]),
-                            volume=str(candle["volume"]),
-                            is_paper=is_paper,
-                        )
-                        session.add(rate)
-                        inserted += 1
-
-            if inserted > 0:
+            count = len(candles)
+            if count > 0:
                 logger.info(
                     "rates_recorded",
-                    count=inserted,
+                    count=count,
                     symbol=symbol,
                     exchange=exchange,
                     interval=interval,
                 )
-            return inserted
+            return count
         except Exception as e:
             logger.error(
-                "rate_bulk_insert_failed",
+                "rate_bulk_upsert_failed",
                 error=str(e),
-                count=len(candles),
-                inserted_before_error=inserted,
+                total_candles=len(candles),
             )
             raise  # Re-raise to signal failure to caller
 
