@@ -135,6 +135,8 @@ def mock_settings():
     settings.whale_volume_threshold = 5.0
     settings.whale_detection_enabled = False
     settings.whale_direction_threshold = 0.6
+    settings.whale_candle_bullish_threshold = 0.7
+    settings.whale_candle_bearish_threshold = 0.3
     settings.whale_boost_percent = 15.0
     settings.high_volume_boost_percent = 10.0
 
