@@ -127,6 +127,10 @@ class TradingDaemon:
         self._current_signal_id: Optional[int] = None
         self._signal_history_failures: int = 0  # Track consecutive storage failures
 
+        # Sentiment fetch failure tracking
+        self._sentiment_fetch_failures: int = 0  # Track consecutive sentiment fetch failures
+        self._last_sentiment_fetch_success: Optional[datetime] = None  # Last successful fetch time
+
         # Create persistent event loop for async operations (avoids repeated asyncio.run())
         self._loop = asyncio.new_event_loop()
 
@@ -1438,18 +1442,27 @@ class TradingDaemon:
                         category=sentiment_category,
                         value=sentiment.value,
                     )
+                    # Reset failure counter on success
+                    self._sentiment_fetch_failures = 0
+                    self._last_sentiment_fetch_success = datetime.now(timezone.utc)
                 else:
                     logger.warning(
                         "sentiment_unavailable_for_trade_evaluation",
                         reason="fetch_returned_none",
                         impact="extreme_fear_override_disabled",
                     )
+                    # Increment failure counter
+                    self._sentiment_fetch_failures += 1
+                    self._check_sentiment_failure_threshold()
             except Exception as e:
                 logger.warning(
                     "sentiment_fetch_failed_during_trade_evaluation",
                     error=str(e),
                     impact="extreme_fear_override_disabled",
                 )
+                # Increment failure counter
+                self._sentiment_fetch_failures += 1
+                self._check_sentiment_failure_threshold()
 
         # Calculate signal with HTF context and sentiment
         signal_result = self.signal_scorer.calculate_score(
@@ -3213,6 +3226,31 @@ class TradingDaemon:
         except Exception as e:
             logger.warning("cramer_portfolio_fetch_error", error=str(e))
             return None
+
+    def _check_sentiment_failure_threshold(self) -> None:
+        """Check if sentiment fetch failures exceed threshold and alert if needed."""
+        threshold = self.settings.sentiment_failure_alert_threshold
+
+        # Only alert when we first cross the threshold
+        if self._sentiment_fetch_failures == threshold:
+            time_since_success = "never" if self._last_sentiment_fetch_success is None else (
+                f"{(datetime.now(timezone.utc) - self._last_sentiment_fetch_success).total_seconds() / 60:.0f} minutes ago"
+            )
+
+            logger.error(
+                "sentiment_fetch_failure_threshold_exceeded",
+                consecutive_failures=self._sentiment_fetch_failures,
+                threshold=threshold,
+                last_success=time_since_success,
+                impact="extreme_fear_override_disabled",
+            )
+
+            self.notifier.notify_error(
+                f"Sentiment API failing: {self._sentiment_fetch_failures} consecutive failures. "
+                f"Last success: {time_since_success}. "
+                f"Extreme fear override is disabled until sentiment API recovers.",
+                "Sentiment Fetch Failure Alert"
+            )
 
     def _check_daily_report(self) -> None:
         """Check if we should generate daily performance report (UTC)."""
