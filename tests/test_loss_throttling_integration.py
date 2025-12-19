@@ -13,10 +13,8 @@ behavior in realistic scenarios with multiple safety systems active.
 """
 
 import pytest
-from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from freezegun import freeze_time
-from unittest.mock import MagicMock
 
 from src.safety.loss_limiter import (
     LossLimiter,
