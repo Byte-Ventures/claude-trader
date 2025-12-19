@@ -48,7 +48,10 @@ const MAX_SEEN_NOTIFICATIONS = 100;  // Prevent memory leak from unbounded Set
  * @returns {number} Interval duration in seconds (defaults to 60 if unknown)
  */
 function parseIntervalToSeconds(interval) {
-    if (!interval) return 60;
+    if (!interval) {
+        console.warn('parseIntervalToSeconds: null/undefined interval, defaulting to 60s');
+        return 60;
+    }
     const intervalMap = {
         'ONE_MINUTE': 60,
         'FIVE_MINUTE': 300,
@@ -67,7 +70,12 @@ function parseIntervalToSeconds(interval) {
         '6h': 21600,
         '1d': 86400,
     };
-    return intervalMap[interval] || 60;
+    const seconds = intervalMap[interval];
+    if (!seconds) {
+        console.warn(`parseIntervalToSeconds: unknown interval "${interval}", defaulting to 60s`);
+        return 60;
+    }
+    return seconds;
 }
 
 // Initialize on page load
@@ -325,7 +333,11 @@ function connectWebSocket() {
         document.getElementById('connection-status').textContent = 'Connected';
         document.getElementById('connection-status').className = 'status connected';
 
-        // On reconnect, reload all data to catch up on missed updates
+        // On reconnect, reload all data to catch up on missed updates.
+        // Race condition prevention: loadInitialData() sets isInitialized=false at start,
+        // which causes updateDashboard() to skip chart updates. This prevents WebSocket
+        // messages from corrupting currentCandle while REST APIs are still fetching.
+        // Once all data is loaded, isInitialized=true allows chart updates again.
         if (reconnectAttempts > 0) {
             console.log('Reconnected - reloading data to catch up');
             loadInitialData();
@@ -451,17 +463,26 @@ function updateDashboard(state) {
     // 3. If newer bucket: start new candle with O=H=L=C=price
     // 4. If older bucket: skip (stale data from reconnect/lag)
     //
+    // Throttling: Only throttle updates WITHIN the same candle period.
+    // New candle periods always update immediately to ensure accurate open price.
+    //
     // This matches exchange OHLC bucketing (Unix epoch aligned, 24/7 crypto markets).
-    const now = Date.now();
-    const shouldUpdateChart = isInitialized &&
-        (now - lastCandleUpdate >= CANDLE_UPDATE_THROTTLE_MS);
-
-    if (shouldUpdateChart && state.timestamp && candleSeries && !isNaN(price) && price > 0) {
-        lastCandleUpdate = now;
+    if (isInitialized && state.timestamp && candleSeries && !isNaN(price) && price > 0) {
         // Don't add 'Z' - state timestamps already have timezone info (+00:00)
         const time = Math.floor(new Date(state.timestamp).getTime() / 1000);
         if (!isNaN(time) && time > 0) {
             const candleTime = Math.floor(time / candleIntervalSeconds) * candleIntervalSeconds;
+            const now = Date.now();
+            const isNewCandlePeriod = !currentCandle || candleTime > currentCandle.time;
+            const isThrottled = !isNewCandlePeriod &&
+                (now - lastCandleUpdate < CANDLE_UPDATE_THROTTLE_MS);
+
+            if (isThrottled) {
+                // Skip this update - throttling within same candle period
+                return;
+            }
+
+            lastCandleUpdate = now;
 
             if (currentCandle && currentCandle.time === candleTime) {
                 // Same candle period - update high/low/close (open is preserved as first price)
@@ -469,7 +490,7 @@ function updateDashboard(state) {
                 currentCandle.low = Math.min(currentCandle.low, price);
                 currentCandle.close = price;
                 candleSeries.update(currentCandle);
-            } else if (!currentCandle || candleTime > currentCandle.time) {
+            } else if (isNewCandlePeriod) {
                 // New candle period (must be newer) - start fresh
                 currentCandle = {
                     time: candleTime,

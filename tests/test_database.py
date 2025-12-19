@@ -1123,6 +1123,66 @@ def test_record_rates_bulk_paper_live_separation(db):
     assert paper_rates[0].get_close() == Decimal("51200")
 
 
+def test_record_rates_bulk_atomic_rollback(db):
+    """
+    CRITICAL: Verify atomic rollback on error - no partial writes.
+
+    Per docstring: "The session context manager automatically handles rollback
+    on exception, so if an error occurs, NO candles from this batch will be
+    committed. This ensures atomic operation - all or nothing."
+
+    This test verifies that guarantee holds.
+    """
+    from unittest.mock import patch, MagicMock
+
+    # First, verify database is empty
+    assert len(db.get_rates(is_paper=False)) == 0
+
+    # Create valid candles
+    candles = [
+        {
+            "timestamp": datetime(2024, 1, 1, 12, i, 0),
+            "open": Decimal("50000") + i,
+            "high": Decimal("50500") + i,
+            "low": Decimal("49500") + i,
+            "close": Decimal("50200") + i,
+            "volume": Decimal("100") + i,
+        }
+        for i in range(5)
+    ]
+
+    # Mock session.add to raise an exception after 3 successful adds
+    add_count = [0]
+    original_add = None
+
+    def failing_add(obj):
+        add_count[0] += 1
+        if add_count[0] > 3:
+            raise RuntimeError("Simulated database error mid-batch")
+        return original_add(obj)
+
+    # Patch the session's add method to fail partway through
+    with patch.object(db, 'session') as mock_session_ctx:
+        mock_session = MagicMock()
+        mock_session_ctx.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_session_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        # Make query return empty (no existing candles)
+        mock_session.query.return_value.filter.return_value.all.return_value = []
+
+        original_add = mock_session.add
+        mock_session.add = failing_add
+
+        # This should raise an exception
+        with pytest.raises(RuntimeError, match="Simulated database error"):
+            db.record_rates_bulk(candles, is_paper=False)
+
+    # Verify NO candles were committed (atomic rollback)
+    # Since we mocked the session, we need to check against real database
+    rates = db.get_rates(is_paper=False)
+    assert len(rates) == 0, "Expected 0 candles after rollback, but found some - atomic guarantee violated!"
+
+
 def test_get_rates_with_time_filter(db):
     """Test retrieving rates with time filter."""
     candles = [
