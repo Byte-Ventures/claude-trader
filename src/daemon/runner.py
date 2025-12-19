@@ -929,8 +929,10 @@ class TradingDaemon:
             # Daily-only mode: simpler, fewer API calls
             return daily, daily, None
 
-        # Use FOUR_HOUR instead of SIX_HOUR for broader exchange compatibility
-        # (Kraken doesn't support 6-hour candles, only 4-hour)
+        # Using FOUR_HOUR instead of SIX_HOUR because:
+        # - Broader exchange compatibility (Kraken doesn't support 6-hour candles)
+        # - Divides evenly into 24 hours (6 candles/day vs 4 for 6H) for consistent daily alignment
+        # - Provides good intermediate timeframe between daily and hourly trading
         four_hour = self._get_timeframe_trend("FOUR_HOUR", self.settings.mtf_4h_cache_minutes)
 
         # Combine: both must agree for strong bias
