@@ -197,24 +197,25 @@ def test_loss_limit_hit_with_circuit_breaker_yellow(limiter, breaker, validator)
     Both systems can halt trading independently. Loss limit should take priority
     when it's the more restrictive condition.
     """
-    # Trip circuit breaker to YELLOW (allows reduced trading)
-    breaker.trip(BreakerLevel.YELLOW, "Price volatility")
-    assert breaker.can_trade is True
+    with freeze_time("2024-01-01 12:00:00"):
+        # Trip circuit breaker to YELLOW (allows reduced trading)
+        breaker.trip(BreakerLevel.YELLOW, "Price volatility")
+        assert breaker.can_trade is True
 
-    # Hit daily loss limit (10% = $1000)
-    limiter.record_trade(Decimal("-1000"), "buy", Decimal("0.1"), Decimal("50000"))
+        # Hit daily loss limit (10% = $1000)
+        limiter.record_trade(Decimal("-1000"), "buy", Decimal("0.1"), Decimal("50000"))
 
-    loss_status = limiter.get_status()
-    assert loss_status.can_trade is False
-    assert loss_status.daily_limit_hit is True
+        loss_status = limiter.get_status()
+        assert loss_status.can_trade is False
+        assert loss_status.daily_limit_hit is True
 
-    # Validator should reject despite circuit breaker allowing trading
-    result = validator.validate(
-        OrderRequest(side="buy", size=Decimal("0.01"))
-    )
+        # Validator should reject despite circuit breaker allowing trading
+        result = validator.validate(
+            OrderRequest(side="buy", size=Decimal("0.01"))
+        )
 
-    assert result.valid is False
-    assert "loss limit exceeded" in result.reason.lower()
+        assert result.valid is False
+        assert "loss limit exceeded" in result.reason.lower()
 
 
 def test_no_race_conditions_in_state_updates(limiter, breaker):
@@ -369,6 +370,7 @@ def test_throttle_gradually_releases_after_winning_trades(limiter):
         assert status_before.daily_loss_percent == pytest.approx(7.5, abs=0.1)
         mult_before = status_before.position_multiplier
         # 7.5% loss = 75% of 10% limit, should result in moderate throttling
+        # With throttle_at_percent=50% (5% of 10% limit), 7.5% loss should throttle to <0.7
         assert mult_before < 0.7  # Should be throttled
 
         # Win some back - reduce to 5.5% loss
@@ -606,6 +608,7 @@ def test_throttled_position_respects_minimum_trade_size(validator, limiter):
 
         status = limiter.get_status()
         # Verify we're at low multiplier (9.5% loss = 95% of limit → ~30-40% multiplier)
+        # With throttle_min_multiplier=0.3 and throttle_at_percent=50%, 9.5% loss approaches minimum
         assert status.position_multiplier <= 0.5
 
         # Order that would normally be $200 but throttled to ~$60-80
