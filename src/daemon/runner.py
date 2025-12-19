@@ -1755,17 +1755,24 @@ class TradingDaemon:
             # Cramer buys when signal says sell, and vice versa
             cramer_can_trade = False
             if self.cramer_client and not self._cramer_mode_disabled:
-                cramer_quote = self.cramer_client.get_balance(self._quote_currency).available
-                cramer_base = self.cramer_client.get_balance(self._base_currency).available
-                min_quote = Decimal(str(self.position_sizer.config.min_trade_quote))
-                min_base = Decimal(str(self.position_sizer.config.min_trade_base))
-                cramer_can_buy = cramer_quote > min_quote
-                cramer_can_sell = cramer_base > min_base
-                # Cramer trades INVERSE: signal=sell means Cramer buys, signal=buy means Cramer sells
-                cramer_can_trade = (
-                    (signal_direction == "sell" and cramer_can_buy) or
-                    (signal_direction == "buy" and cramer_can_sell)
-                )
+                try:
+                    cramer_quote_balance = self.cramer_client.get_balance(self._quote_currency)
+                    cramer_base_balance = self.cramer_client.get_balance(self._base_currency)
+                    if cramer_quote_balance and cramer_base_balance:
+                        cramer_quote = cramer_quote_balance.available
+                        cramer_base = cramer_base_balance.available
+                        min_quote = Decimal(str(self.position_sizer.config.min_trade_quote))
+                        min_base = Decimal(str(self.position_sizer.config.min_trade_base))
+                        cramer_can_buy = cramer_quote > min_quote
+                        cramer_can_sell = cramer_base > min_base
+                        # Cramer trades INVERSE: signal=sell means Cramer buys, signal=buy means Cramer sells
+                        cramer_can_trade = (
+                            (signal_direction == "sell" and cramer_can_buy) or
+                            (signal_direction == "buy" and cramer_can_sell)
+                        )
+                except Exception as e:
+                    logger.warning("cramer_balance_check_failed", error=str(e))
+                    cramer_can_trade = False
 
             direction_is_tradeable = (
                 normal_can_trade or
