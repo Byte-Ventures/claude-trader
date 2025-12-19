@@ -1942,7 +1942,10 @@ class Database:
         analysis but accumulates ~2,880 records/day at 30-second intervals.
 
         Args:
-            retention_days: Number of days to retain (older records deleted)
+            retention_days: Number of days to retain (older records deleted).
+                Default is 90 days. The SIGNAL_HISTORY_RETENTION_DAYS config
+                parameter is available for reference but must be explicitly
+                passed to this method.
             is_paper: Filter by paper/live mode (None = clean both)
 
         Returns:
@@ -1952,9 +1955,12 @@ class Database:
             ValueError: If retention_days is less than 1
 
         Note:
-            This operation is safe to run during trading - uses indexed timestamp
-            column for efficient deletion. Consider running during low-activity hours
-            and following up with VACUUM for database optimization.
+            This method must be called explicitly (e.g., via admin script or
+            scheduled task). Automated cleanup from the daemon is planned for
+            future implementation. This operation is safe to run during trading -
+            uses indexed timestamp column for efficient deletion. Consider running
+            during low-activity hours and following up with VACUUM for database
+            optimization.
         """
         # Runtime validation for retention_days parameter
         if retention_days < 1:
@@ -1970,23 +1976,24 @@ class Database:
                 if is_paper is not None:
                     query = query.filter(SignalHistory.is_paper == is_paper)
 
-                count = query.count()
-                if count > 0:
-                    query.delete(synchronize_session=False)
+                # Use delete()'s return value to avoid race condition between count() and delete()
+                deleted_count = query.delete(synchronize_session=False)
+                if deleted_count > 0:
                     session.commit()  # Explicit commit for financial system
                     logger.info(
                         "signal_history_cleanup",
-                        deleted=count,
+                        deleted=deleted_count,
                         retention_days=retention_days,
                         cutoff=cutoff.isoformat(),
                         is_paper=is_paper,
                     )
-                return count
+                return deleted_count
 
         except ValueError:
             # Re-raise validation errors without logging
             raise
         except Exception as e:
+            session.rollback()  # Explicit rollback for financial system integrity
             logger.error(
                 "signal_history_cleanup_failed",
                 error=str(e),
