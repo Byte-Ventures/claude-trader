@@ -2117,6 +2117,10 @@ def test_store_signal_history_alerts_after_repeated_failures(htf_mock_settings, 
                 assert "signal history storage" in error_msg
                 assert "10" in error_msg  # Verify failure count is included
 
+                # Verify the context parameter includes the error
+                context = mock_notifier.notify_error.call_args[1].get('context', '')
+                assert "Database locked" in context  # The mocked error message
+
 
 def test_store_signal_history_alerts_every_50_after_initial(htf_mock_settings, mock_exchange_client, mock_database):
     """Test signal history alerts at 10, then every 50 additional failures (60, 110...)."""
