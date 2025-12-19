@@ -2069,7 +2069,8 @@ class TradingDaemon:
                 # Cramer Mode can act independently when judge approved (or AI disabled)
                 # If we reached here, AI either approved, reduced, or wasn't needed
                 # (inverse trade: signal=buy means Cramer sells)
-                if self.cramer_client:
+                # Safety check: verify circuit breaker hasn't blocked trading (multiplier > 0)
+                if self.cramer_client and safety_multiplier > 0:
                     self._execute_cramer_trade(
                         side="sell",  # Opposite of buy
                         candles=candles,
@@ -2077,6 +2078,8 @@ class TradingDaemon:
                         signal_score=signal_result.score,
                         safety_multiplier=safety_multiplier,
                     )
+                elif self.cramer_client and safety_multiplier <= 0:
+                    logger.info("cramer_trade_blocked_by_safety", side="sell", safety_multiplier=safety_multiplier)
 
         elif effective_action == "sell":
             normal_bot_blocked_by_cooldown = False
@@ -2135,7 +2138,8 @@ class TradingDaemon:
                 # Cramer Mode can act independently when judge approved (or AI disabled)
                 # If we reached here, AI either approved, reduced, or wasn't needed
                 # (inverse trade: signal=sell means Cramer buys)
-                if self.cramer_client:
+                # Safety check: verify circuit breaker hasn't blocked trading (multiplier > 0)
+                if self.cramer_client and safety_multiplier > 0:
                     self._execute_cramer_trade(
                         side="buy",  # Opposite of sell
                         candles=candles,
@@ -2143,6 +2147,8 @@ class TradingDaemon:
                         signal_score=signal_result.score,
                         safety_multiplier=safety_multiplier,
                     )
+                elif self.cramer_client and safety_multiplier <= 0:
+                    logger.info("cramer_trade_blocked_by_safety", side="buy", safety_multiplier=safety_multiplier)
 
     def _execute_buy(
         self,

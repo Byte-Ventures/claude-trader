@@ -570,17 +570,21 @@ class SignalScorer:
             # When EMAs are unavailable, trend_strength defaults to 0.0 (minimal reduction)
             trend_strength = 0.0
             ema_gap_percent = 0.0
+            # Minimum EMA value to filter out data quality issues (near-zero noise)
+            # Value of 1.0 covers any real tradeable asset while filtering bad data
+            MIN_EMA_VALUE = 1.0
             if (indicators.ema_fast and indicators.ema_slow and
-                indicators.ema_slow != 0 and indicators.ema_fast != 0 and
                 self.momentum_trend_strength_cap > 0.0):
                 # Convert to float for calculation
                 ema_slow_float = float(indicators.ema_slow)
                 ema_fast_float = float(indicators.ema_fast)
-                ema_gap_percent = abs((ema_fast_float - ema_slow_float) / ema_slow_float) * 100
-                # Cap at configured percentage for normalization
-                # Linear scaling: 0% gap = 0.0 strength, cap% gap = 1.0 strength
-                # Defensive max(0.001) prevents division by zero if cap is somehow 0
-                trend_strength = min(1.0, ema_gap_percent / max(self.momentum_trend_strength_cap, 0.001))
+                # Skip if EMAs are too small (data quality issue or micro-priced assets)
+                if abs(ema_slow_float) >= MIN_EMA_VALUE and abs(ema_fast_float) >= MIN_EMA_VALUE:
+                    ema_gap_percent = abs((ema_fast_float - ema_slow_float) / ema_slow_float) * 100
+                    # Cap at configured percentage for normalization
+                    # Linear scaling: 0% gap = 0.0 strength, cap% gap = 1.0 strength
+                    # Defensive max(0.001) prevents division by zero if cap is somehow 0
+                    trend_strength = min(1.0, ema_gap_percent / max(self.momentum_trend_strength_cap, 0.001))
 
             # Scale the penalty reduction by trend strength
             # Base reduction is configured value (default 0.5), scaled by trend strength
@@ -697,7 +701,7 @@ class SignalScorer:
                                 # Use relative epsilon based on candle range (0.0001% tolerance)
                                 # This scales with actual volatility, not absolute price level
                                 # Better handles assets at any price point (micro-cap to high-value)
-                                # candle_range > 0 guaranteed by if-condition on line 646
+                                # candle_range > 0 guaranteed by if-condition on line 693
                                 epsilon = candle_range * self.PRICE_TOLERANCE_EPSILON
                                 if current_price < (candle_low - epsilon) or current_price > (candle_high + epsilon):
                                     # Data inconsistency detected - log warning with context and treat as unknown
@@ -715,7 +719,7 @@ class SignalScorer:
                                     # Note: _price_change_pct is kept (already set on line 634) - it's still valid
                                     data_inconsistency = True
                                 else:
-                                    # Division by zero protection: candle_range > 0 guaranteed by if-condition above (line 646)
+                                    # Division by zero protection: candle_range > 0 guaranteed by if-condition above (line 693)
                                     close_position = (current_price - candle_low) / candle_range
                                     # Store rounded value for display only; close_position variable remains unrounded for threshold comparisons below
                                     breakdown["_candle_close_position"] = round(close_position, 3)

@@ -365,6 +365,12 @@ function connectWebSocket() {
         document.getElementById('connection-status').textContent = 'Disconnected';
         document.getElementById('connection-status').className = 'status disconnected';
 
+        // Clean up pending candle update timeout to prevent stale updates
+        if (pendingCandleUpdate) {
+            clearTimeout(pendingCandleUpdate);
+            pendingCandleUpdate = null;
+        }
+
         // Attempt to reconnect with exponential backoff and jitter
         if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
             reconnectAttempts++;
