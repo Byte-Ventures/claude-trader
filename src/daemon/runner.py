@@ -2074,11 +2074,14 @@ class TradingDaemon:
                         signal_score=signal_result.score,
                     )
                 # INTENDED BEHAVIOR: Cramer Mode trades independently of normal bot's balance
-                # This is by design for strategy comparison:
+                # This is by design for PAPER MODE strategy comparison only:
+                # - Cramer Mode uses virtual/paper balance, NOT real funds
                 # - Normal bot may be blocked by insufficient balance or position limits
-                # - Cramer should still trade (inversely) if its OWN balance allows
+                # - Cramer should still trade (inversely) if its OWN virtual balance allows
                 # - AI judge approval applies to BOTH bots (if judge vetoes, neither trades)
                 # - This allows fair comparison: "what if we did the opposite?"
+                # NOTE: Cramer Mode is for backtesting/comparison purposes. It does not
+                # affect real funds and is not financially critical.
                 # Safety check: verify circuit breaker hasn't blocked trading (multiplier > 0)
                 if self.cramer_client:
                     if safety_multiplier > 0:
@@ -2152,11 +2155,14 @@ class TradingDaemon:
                         signal_score=signal_result.score,
                     )
                 # INTENDED BEHAVIOR: Cramer Mode trades independently of normal bot's balance
-                # This is by design for strategy comparison:
+                # This is by design for PAPER MODE strategy comparison only:
+                # - Cramer Mode uses virtual/paper balance, NOT real funds
                 # - Normal bot may be blocked by insufficient balance or position limits
-                # - Cramer should still trade (inversely) if its OWN balance allows
+                # - Cramer should still trade (inversely) if its OWN virtual balance allows
                 # - AI judge approval applies to BOTH bots (if judge vetoes, neither trades)
                 # - REDUCE applies to BOTH bots (safety_multiplier includes claude_veto_multiplier)
+                # NOTE: Cramer Mode is for backtesting/comparison purposes. It does not
+                # affect real funds and is not financially critical.
                 # Safety check: verify circuit breaker hasn't blocked trading (multiplier > 0)
                 if self.cramer_client:
                     if safety_multiplier > 0:

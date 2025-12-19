@@ -132,9 +132,10 @@ class SignalScorer:
     # Price tolerance for validating OHLC data consistency (relative to candle range)
     # Financial data can have minor discrepancies due to bid/ask spreads, timestamp
     # differences between close/high/low, or exchange rounding. Use 0.001% tolerance
-    # (1e-5) which allows $0.50 difference on $50,000 BTC candle range while catching
-    # real data quality issues. Increased from 1e-6 to reduce false positives from
-    # microsecond-level timestamp differences in exchange feeds.
+    # (1e-5) which allows ~$0.01 difference on a typical $1,000 BTC candle range.
+    # Example: BTC at $100k with 1% daily volatility = $1,000 range, tolerance = $0.01
+    # This is conservative (tight tolerance), which may cause some false positives on
+    # data inconsistency warnings - monitor logs and adjust if needed.
     PRICE_TOLERANCE_EPSILON = 1e-5
 
     def __init__(
@@ -583,8 +584,10 @@ class SignalScorer:
                     value=self.momentum_trend_strength_cap,
                     action="skipping_trend_strength_calculation",
                 )
-            elif indicators.ema_fast and indicators.ema_slow:
+            elif indicators.ema_fast and indicators.ema_slow and self.momentum_trend_strength_cap > 0:
                 # Convert to float for calculation
+                # Defense-in-depth: cap > 0 check in elif prevents division by zero even if
+                # config validation is bypassed or value changes at runtime
                 ema_slow_float = float(indicators.ema_slow)
                 ema_fast_float = float(indicators.ema_fast)
                 # Skip if EMAs are too small (data quality issue or micro-priced assets)
@@ -592,7 +595,6 @@ class SignalScorer:
                     ema_gap_percent = abs((ema_fast_float - ema_slow_float) / ema_slow_float) * 100
                     # Cap at configured percentage for normalization
                     # Linear scaling: 0% gap = 0.0 strength, cap% gap = 1.0 strength
-                    # Note: cap > 0 guaranteed by elif condition above; max() is extra defense
                     trend_strength = min(1.0, ema_gap_percent / self.momentum_trend_strength_cap)
 
             # Scale the penalty reduction by trend strength
@@ -725,9 +727,13 @@ class SignalScorer:
                                     # (calculated from consecutive closes) remains valid and useful
                                     price_diff = min(abs(current_price - candle_high), abs(candle_low - current_price))
                                     logger.warning(
-                                        f"[{self.trading_pair}] Price {current_price:.2f} outside candle range "
-                                        f"[{candle_low:.2f}, {candle_high:.2f}] (difference: {price_diff:.2f}) - "
-                                        f"possible data feed inconsistency, treating as unknown"
+                                        "price_outside_candle_range",
+                                        trading_pair=self.trading_pair,
+                                        current_price=float(current_price),
+                                        candle_low=float(candle_low),
+                                        candle_high=float(candle_high),
+                                        difference=float(price_diff),
+                                        action="treating_as_unknown",
                                     )
                                     close_position = None
                                     breakdown["_candle_close_position"] = None
