@@ -650,7 +650,8 @@ class SignalScorer:
                                 # Use relative epsilon based on candle range (0.0001% tolerance)
                                 # This scales with actual volatility, not absolute price level
                                 # Better handles assets at any price point (micro-cap to high-value)
-                                epsilon = candle_range * self.PRICE_TOLERANCE_EPSILON if candle_range > 0 else 1e-6
+                                # candle_range > 0 guaranteed by if-condition on line 646
+                                epsilon = candle_range * self.PRICE_TOLERANCE_EPSILON
                                 if current_price < (candle_low - epsilon) or current_price > (candle_high + epsilon):
                                     # Data inconsistency detected - log warning with context and treat as unknown
                                     # Candle structure (close/high/low) is inconsistent, but price_change_pct
@@ -667,9 +668,9 @@ class SignalScorer:
                                     # Note: _price_change_pct is kept (already set on line 634) - it's still valid
                                     data_inconsistency = True
                                 else:
-                                    # Division by zero protection: candle_range > 0 guaranteed by if-condition above (line 643)
+                                    # Division by zero protection: candle_range > 0 guaranteed by if-condition above (line 646)
                                     close_position = (current_price - candle_low) / candle_range
-                                    # Store rounded value for display only; close_position remains unrounded for threshold comparisons
+                                    # Store rounded value for display only; close_position variable remains unrounded for threshold comparisons below
                                     breakdown["_candle_close_position"] = round(close_position, 3)
                             else:
                                 # Zero-range candle (doji/flat) or missing data:
