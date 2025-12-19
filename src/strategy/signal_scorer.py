@@ -129,6 +129,12 @@ class SignalScorer:
     the total score exceeds the threshold.
     """
 
+    # Price tolerance for validating OHLC data consistency (relative to price magnitude)
+    # Financial data can have minor discrepancies due to bid/ask spreads, timestamp
+    # differences, or exchange rounding. Use 0.0001% tolerance (1e-6) which allows
+    # $0.05 difference on $50,000 BTC while catching real data quality issues.
+    PRICE_TOLERANCE_EPSILON = 1e-6
+
     def __init__(
         self,
         weights: Optional[SignalWeights] = None,
@@ -149,6 +155,7 @@ class SignalScorer:
         momentum_price_candles: int = 12,
         momentum_penalty_reduction: float = 0.5,
         candle_interval: Optional[str] = None,
+        trading_pair: Optional[str] = None,
         whale_volume_threshold: float = 3.0,
         whale_direction_threshold: float = 0.003,
         whale_candle_bullish_threshold: float = 0.7,
@@ -179,6 +186,7 @@ class SignalScorer:
             momentum_penalty_reduction: Factor to reduce overbought penalties (default: 0.5 = 50%)
             candle_interval: Candle interval for adaptive MACD scaling
                             (e.g., "FIFTEEN_MINUTE", "ONE_HOUR")
+            trading_pair: Trading pair symbol (e.g., "BTC-USD") for logging context
             *: Other indicator parameters
 
         Recommended thresholds by candle interval:
@@ -205,6 +213,7 @@ class SignalScorer:
         self.ema_slow_period = ema_slow
         self.atr_period = atr_period
         self.candle_interval = candle_interval
+        self.trading_pair = trading_pair or "UNKNOWN"
 
         # Momentum mode parameters
         self.momentum_rsi_threshold = momentum_rsi_threshold
@@ -635,12 +644,14 @@ class SignalScorer:
                                 # Verify price is within expected range before calculation
                                 # Data inconsistency can occur when close/high/low come from slightly
                                 # different timestamps or feeds. This indicates data quality issues.
-                                # Use small epsilon (1e-8) to tolerate floating-point precision differences
-                                EPSILON = 1e-8
-                                if current_price < (candle_low - EPSILON) or current_price > (candle_high + EPSILON):
-                                    # Data inconsistency detected - log warning and treat as neutral
+                                # Use relative epsilon based on price magnitude (0.0001% tolerance)
+                                epsilon = candle_high * self.PRICE_TOLERANCE_EPSILON
+                                if current_price < (candle_low - epsilon) or current_price > (candle_high + epsilon):
+                                    # Data inconsistency detected - log warning with context and treat as neutral
+                                    price_diff = min(abs(current_price - candle_high), abs(candle_low - current_price))
                                     logger.warning(
-                                        f"Price {current_price} outside candle range [{candle_low}, {candle_high}] - "
+                                        f"[{self.trading_pair}] Price {current_price:.2f} outside candle range "
+                                        f"[{candle_low:.2f}, {candle_high:.2f}] (difference: {price_diff:.2f}) - "
                                         f"possible data feed inconsistency"
                                     )
                                     close_position = None

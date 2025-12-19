@@ -921,6 +921,32 @@ def test_whale_volume_boundary_behavior():
     assert result2.breakdown.get("_volume_ratio") > 3.0
 
 
+def test_whale_candle_structure_price_outside_range():
+    """Test handling when close price is outside high/low range (data inconsistency)."""
+    scorer = SignalScorer()
+
+    # Close price above high (data inconsistency)
+    closes = [50000] * 99 + [51100]  # Close > high
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,  # high = 51000
+        'low': [50000] * 100,
+        'close': closes,  # close = 51100 (!)
+        'volume': [10000] * 99 + [50000]  # 5x spike = whale activity
+    })
+
+    result = scorer.calculate_score(df)
+
+    # Should detect whale activity (volume spike)
+    assert result.breakdown.get("_whale_activity") is True
+
+    # But candle close position should be None due to data inconsistency
+    assert result.breakdown.get("_candle_close_position") is None
+
+    # Whale direction should be neutral (can't trust inconsistent data)
+    assert result.breakdown.get("_whale_direction") == "neutral"
+
+
 # ============================================================================
 # Crash Protection Tests
 # ============================================================================

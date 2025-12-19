@@ -747,9 +747,8 @@ class Settings(BaseSettings):
             raise ValueError("rsi_overbought must be greater than rsi_oversold")
         return v
 
-    @field_validator("whale_candle_bullish_threshold", "whale_candle_bearish_threshold")
-    @classmethod
-    def validate_whale_candle_thresholds(cls, v: float, info) -> float:
+    @model_validator(mode="after")
+    def validate_whale_candle_thresholds(self) -> "Settings":
         """Ensure whale candle thresholds are properly configured.
 
         Validates that:
@@ -759,41 +758,26 @@ class Settings(BaseSettings):
         This prevents misconfiguration that would cause all whale signals
         to be classified as neutral.
         """
-        field_name = info.field_name
+        # Validate bearish threshold
+        if self.whale_candle_bearish_threshold >= 0.5:
+            raise ValueError(
+                f"whale_candle_bearish_threshold ({self.whale_candle_bearish_threshold}) must be < 0.5"
+            )
 
-        if field_name == "whale_candle_bullish_threshold":
-            if v <= 0.5:
-                raise ValueError(
-                    f"whale_candle_bullish_threshold ({v}) must be > 0.5"
-                )
-            if "whale_candle_bearish_threshold" in info.data:
-                bearish = info.data["whale_candle_bearish_threshold"]
-                if v <= bearish:
-                    raise ValueError(
-                        f"whale_candle_bullish_threshold ({v}) must be greater than "
-                        f"whale_candle_bearish_threshold ({bearish})"
-                    )
-                if bearish >= 0.5:
-                    raise ValueError(
-                        f"whale_candle_bearish_threshold ({bearish}) must be < 0.5"
-                    )
-        elif field_name == "whale_candle_bearish_threshold":
-            if v >= 0.5:
-                raise ValueError(
-                    f"whale_candle_bearish_threshold ({v}) must be < 0.5"
-                )
-            if "whale_candle_bullish_threshold" in info.data:
-                bullish = info.data["whale_candle_bullish_threshold"]
-                if v >= bullish:
-                    raise ValueError(
-                        f"whale_candle_bearish_threshold ({v}) must be less than "
-                        f"whale_candle_bullish_threshold ({bullish})"
-                    )
-                if bullish <= 0.5:
-                    raise ValueError(
-                        f"whale_candle_bullish_threshold ({bullish}) must be > 0.5"
-                    )
-        return v
+        # Validate bullish threshold
+        if self.whale_candle_bullish_threshold <= 0.5:
+            raise ValueError(
+                f"whale_candle_bullish_threshold ({self.whale_candle_bullish_threshold}) must be > 0.5"
+            )
+
+        # Validate relationship between thresholds
+        if self.whale_candle_bearish_threshold >= self.whale_candle_bullish_threshold:
+            raise ValueError(
+                f"whale_candle_bearish_threshold ({self.whale_candle_bearish_threshold}) must be less than "
+                f"whale_candle_bullish_threshold ({self.whale_candle_bullish_threshold})"
+            )
+
+        return self
 
     @model_validator(mode="after")
     def validate_telegram_config(self) -> "Settings":
