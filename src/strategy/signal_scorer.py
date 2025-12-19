@@ -590,8 +590,9 @@ class SignalScorer:
                 # config validation is bypassed or value changes at runtime
                 ema_slow_float = float(indicators.ema_slow)
                 ema_fast_float = float(indicators.ema_fast)
-                # Skip if EMAs are too small (data quality issue or micro-priced assets)
-                if abs(ema_slow_float) >= MIN_EMA_VALUE and abs(ema_fast_float) >= MIN_EMA_VALUE:
+                # Skip if EMAs are too small or invalid (EMAs for price data should always be positive)
+                # Using >= instead of abs() >= makes the assumption explicit and prevents edge cases
+                if ema_slow_float >= MIN_EMA_VALUE and ema_fast_float >= MIN_EMA_VALUE:
                     ema_gap_percent = abs((ema_fast_float - ema_slow_float) / ema_slow_float) * 100
                     # Cap at configured percentage for normalization
                     # Linear scaling: 0% gap = 0.0 strength, cap% gap = 1.0 strength
@@ -719,7 +720,7 @@ class SignalScorer:
                                 # Use relative epsilon based on candle range (0.001% tolerance)
                                 # This scales with actual volatility, not absolute price level
                                 # Better handles assets at any price point (micro-cap to high-value)
-                                # candle_range > 0 guaranteed by if-condition on line 693
+                                # candle_range > 0 guaranteed by if-condition on line 716
                                 epsilon = candle_range * self.PRICE_TOLERANCE_EPSILON
                                 if current_price < (candle_low - epsilon) or current_price > (candle_high + epsilon):
                                     # Data inconsistency detected - log warning with context and treat as unknown
@@ -741,7 +742,7 @@ class SignalScorer:
                                     # Note: _price_change_pct is kept (already set on line 699) - it's still valid
                                     data_inconsistency = True
                                 else:
-                                    # Division by zero protection: candle_range > 0 guaranteed by if-condition above (line 693)
+                                    # Division by zero protection: candle_range > 0 guaranteed by if-condition above (line 716)
                                     close_position = (current_price - candle_low) / candle_range
                                     # Store rounded value for display only; close_position variable remains unrounded for threshold comparisons below
                                     breakdown["_candle_close_position"] = round(close_position, 3)

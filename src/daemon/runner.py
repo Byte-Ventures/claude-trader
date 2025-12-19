@@ -2073,32 +2073,14 @@ class TradingDaemon:
                         reason=f"insufficient_balance_or_position_limit (quote={quote_balance}, position={position_percent:.1f}%)",
                         signal_score=signal_result.score,
                     )
-                # INTENDED BEHAVIOR: Cramer Mode trades independently of normal bot's balance
-                # This is by design for PAPER MODE strategy comparison only:
-                # - Cramer Mode uses virtual/paper balance, NOT real funds
-                # - Normal bot may be blocked by insufficient balance or position limits
-                # - Cramer should still trade (inversely) if its OWN virtual balance allows
-                # - AI judge approval applies to BOTH bots (if judge vetoes, neither trades)
-                # - This allows fair comparison: "what if we did the opposite?"
-                # NOTE: Cramer Mode is for backtesting/comparison purposes. It does not
-                # affect real funds and is not financially critical.
-                # Safety check: verify circuit breaker hasn't blocked trading (multiplier > 0)
-                if self.cramer_client:
-                    if safety_multiplier > 0:
-                        self._execute_cramer_trade(
-                            side="sell",  # Opposite of buy
-                            candles=candles,
-                            current_price=current_price,
-                            signal_score=signal_result.score,
-                            safety_multiplier=safety_multiplier,
-                        )
-                    else:
-                        logger.warning(
-                            "cramer_trade_blocked_by_safety",
-                            side="sell",
-                            safety_multiplier=safety_multiplier,
-                            reason="circuit_breaker_active",
-                        )
+                # Cramer Mode may trade independently (see _maybe_execute_cramer_independent docstring)
+                self._maybe_execute_cramer_independent(
+                    signal_side="buy",
+                    candles=candles,
+                    current_price=current_price,
+                    signal_score=signal_result.score,
+                    safety_multiplier=safety_multiplier,
+                )
 
         elif effective_action == "sell":
             normal_bot_blocked_by_cooldown = False
@@ -2154,32 +2136,14 @@ class TradingDaemon:
                         reason=f"insufficient_base_balance ({base_balance})",
                         signal_score=signal_result.score,
                     )
-                # INTENDED BEHAVIOR: Cramer Mode trades independently of normal bot's balance
-                # This is by design for PAPER MODE strategy comparison only:
-                # - Cramer Mode uses virtual/paper balance, NOT real funds
-                # - Normal bot may be blocked by insufficient balance or position limits
-                # - Cramer should still trade (inversely) if its OWN virtual balance allows
-                # - AI judge approval applies to BOTH bots (if judge vetoes, neither trades)
-                # - REDUCE applies to BOTH bots (safety_multiplier includes claude_veto_multiplier)
-                # NOTE: Cramer Mode is for backtesting/comparison purposes. It does not
-                # affect real funds and is not financially critical.
-                # Safety check: verify circuit breaker hasn't blocked trading (multiplier > 0)
-                if self.cramer_client:
-                    if safety_multiplier > 0:
-                        self._execute_cramer_trade(
-                            side="buy",  # Opposite of sell
-                            candles=candles,
-                            current_price=current_price,
-                            signal_score=signal_result.score,
-                            safety_multiplier=safety_multiplier,
-                        )
-                    else:
-                        logger.warning(
-                            "cramer_trade_blocked_by_safety",
-                            side="buy",
-                            safety_multiplier=safety_multiplier,
-                            reason="circuit_breaker_active",
-                        )
+                # Cramer Mode may trade independently (see _maybe_execute_cramer_independent docstring)
+                self._maybe_execute_cramer_independent(
+                    signal_side="sell",
+                    candles=candles,
+                    current_price=current_price,
+                    signal_score=signal_result.score,
+                    safety_multiplier=safety_multiplier,
+                )
 
     def _execute_buy(
         self,
@@ -2615,6 +2579,52 @@ class TradingDaemon:
             logger.error("sell_failed", error=result.error)
             self.circuit_breaker.record_order_failure()
             self.notifier.notify_order_failed("sell", size_base, result.error or "Unknown error")
+
+    def _maybe_execute_cramer_independent(
+        self,
+        signal_side: str,
+        candles,
+        current_price: Decimal,
+        signal_score: int,
+        safety_multiplier: float,
+    ) -> None:
+        """
+        Execute Cramer Mode trade (inverse of signal) if conditions allow.
+
+        This is called when the normal bot CANNOT execute (blocked by balance,
+        position limits, or cooldown) but Cramer may still trade independently.
+
+        Cramer Mode is for PAPER MODE strategy comparison only - it uses virtual
+        balance and does not affect real funds.
+
+        Args:
+            signal_side: The direction the normal bot would have traded ("buy" or "sell")
+            candles: OHLCV data for position sizing
+            current_price: Current market price
+            signal_score: Signal strength from scorer
+            safety_multiplier: Combined safety multiplier (circuit breaker, judge, regime)
+        """
+        if not self.cramer_client:
+            return
+
+        # Cramer trades inverse: signal "buy" -> Cramer "sell", and vice versa
+        cramer_side = "sell" if signal_side == "buy" else "buy"
+
+        if safety_multiplier > 0:
+            self._execute_cramer_trade(
+                side=cramer_side,
+                candles=candles,
+                current_price=current_price,
+                signal_score=signal_score,
+                safety_multiplier=safety_multiplier,
+            )
+        else:
+            logger.warning(
+                "cramer_trade_blocked_by_safety",
+                side=cramer_side,
+                safety_multiplier=safety_multiplier,
+                reason="circuit_breaker_active",
+            )
 
     def _execute_cramer_trade(
         self,

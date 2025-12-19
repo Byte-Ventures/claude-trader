@@ -21,7 +21,9 @@ from decimal import Decimal
 from datetime import datetime, timedelta
 from freezegun import freeze_time
 from unittest.mock import MagicMock, patch
+from pydantic import ValidationError
 
+from config.settings import Settings
 from src.strategy.signal_scorer import (
     SignalScorer,
     SignalWeights,
@@ -2655,3 +2657,83 @@ class TestHTFRawIndicatorValues:
         raw = result.breakdown["_raw_score"]
         assert isinstance(raw, int)
         assert -100 <= raw <= 100
+
+
+# ============================================================================
+# Config Validation Tests
+# ============================================================================
+
+class TestConfigValidation:
+    """Tests for configuration parameter validation.
+
+    These tests ensure that invalid configuration values are rejected
+    with appropriate error messages. Critical for financial systems.
+    """
+
+    def test_momentum_trend_strength_cap_below_minimum(self):
+        """Test that momentum_trend_strength_cap below 1.0 raises ValidationError."""
+        with pytest.raises(ValidationError) as exc_info:
+            Settings(momentum_trend_strength_cap=0.5)
+        assert "momentum_trend_strength_cap" in str(exc_info.value).lower()
+
+    def test_momentum_trend_strength_cap_above_maximum(self):
+        """Test that momentum_trend_strength_cap above 20.0 raises ValidationError."""
+        with pytest.raises(ValidationError) as exc_info:
+            Settings(momentum_trend_strength_cap=25.0)
+        assert "momentum_trend_strength_cap" in str(exc_info.value).lower()
+
+    def test_momentum_trend_strength_cap_valid_range(self):
+        """Test that valid momentum_trend_strength_cap values are accepted."""
+        # Minimum valid
+        settings = Settings(momentum_trend_strength_cap=1.0)
+        assert settings.momentum_trend_strength_cap == 1.0
+
+        # Maximum valid
+        settings = Settings(momentum_trend_strength_cap=20.0)
+        assert settings.momentum_trend_strength_cap == 20.0
+
+        # Mid-range
+        settings = Settings(momentum_trend_strength_cap=5.0)
+        assert settings.momentum_trend_strength_cap == 5.0
+
+    def test_whale_candle_bullish_threshold_at_or_below_0_5(self):
+        """Test that whale_candle_bullish_threshold <= 0.5 raises ValidationError."""
+        # Exactly 0.5 should fail (must be > 0.5)
+        with pytest.raises(ValidationError) as exc_info:
+            Settings(whale_candle_bullish_threshold=0.5)
+        assert "whale_candle_bullish_threshold" in str(exc_info.value).lower()
+
+        # Below 0.5 should also fail
+        with pytest.raises(ValidationError) as exc_info:
+            Settings(whale_candle_bullish_threshold=0.3)
+        assert "whale_candle_bullish_threshold" in str(exc_info.value).lower()
+
+    def test_whale_candle_bearish_threshold_at_or_above_0_5(self):
+        """Test that whale_candle_bearish_threshold >= 0.5 raises ValidationError."""
+        # Exactly 0.5 should fail (must be < 0.5)
+        with pytest.raises(ValidationError) as exc_info:
+            Settings(whale_candle_bearish_threshold=0.5)
+        assert "whale_candle_bearish_threshold" in str(exc_info.value).lower()
+
+        # Above 0.5 should also fail
+        with pytest.raises(ValidationError) as exc_info:
+            Settings(whale_candle_bearish_threshold=0.7)
+        assert "whale_candle_bearish_threshold" in str(exc_info.value).lower()
+
+    def test_whale_candle_thresholds_valid_range(self):
+        """Test that valid whale candle threshold values are accepted."""
+        # Valid bullish threshold (> 0.5)
+        settings = Settings(whale_candle_bullish_threshold=0.7)
+        assert settings.whale_candle_bullish_threshold == 0.7
+
+        # Valid bearish threshold (< 0.5)
+        settings = Settings(whale_candle_bearish_threshold=0.3)
+        assert settings.whale_candle_bearish_threshold == 0.3
+
+        # Extreme valid values
+        settings = Settings(
+            whale_candle_bullish_threshold=0.99,
+            whale_candle_bearish_threshold=0.01,
+        )
+        assert settings.whale_candle_bullish_threshold == 0.99
+        assert settings.whale_candle_bearish_threshold == 0.01
