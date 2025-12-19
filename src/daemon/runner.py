@@ -35,7 +35,7 @@ from src.safety.trade_cooldown import TradeCooldown, TradeCooldownConfig
 from src.safety.validator import OrderValidator, OrderRequest, ValidatorConfig
 from sqlalchemy.exc import SQLAlchemyError
 from src.state.database import BotMode, Database, SignalHistory
-from src.strategy.signal_scorer import SignalScorer
+from src.strategy.signal_scorer import SignalScorer, SignalResult
 from src.strategy.weight_profile_selector import (
     WeightProfileSelector,
     ProfileSelectorConfig,
@@ -956,7 +956,7 @@ class TradingDaemon:
 
     def _store_signal_history(
         self,
-        signal_result,
+        signal_result: SignalResult,
         current_price: Decimal,
         htf_bias: str,
         daily_trend: str,
