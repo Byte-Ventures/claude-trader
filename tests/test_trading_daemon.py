@@ -2173,7 +2173,8 @@ def test_store_signal_history_truncates_long_errors(htf_mock_settings, mock_exch
     from sqlalchemy.exc import SQLAlchemyError
 
     # Create error with message > 500 chars (new limit in notify_error)
-    # Smart truncation keeps first 250 + last 250 chars
+    # For non-stack-trace errors: keeps first 400 + last 100 chars
+    # For stack traces: keeps first 250 + last 250 chars
     long_error_msg = "x" * 600
     mock_session = MagicMock()
     mock_session.__enter__ = Mock(side_effect=SQLAlchemyError(long_error_msg))
@@ -2232,7 +2233,7 @@ def test_store_signal_history_short_errors_not_truncated(htf_mock_settings, mock
     from src.strategy.signal_scorer import SignalResult, IndicatorValues
     from sqlalchemy.exc import SQLAlchemyError
 
-    # Create error with message < 200 chars
+    # Create error with message < 500 chars
     short_error_msg = "Database locked"
     mock_session = MagicMock()
     mock_session.__enter__ = Mock(side_effect=SQLAlchemyError(short_error_msg))
