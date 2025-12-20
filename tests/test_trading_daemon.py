@@ -1892,7 +1892,7 @@ def test_get_htf_bias_disabled_returns_neutral(mock_settings, mock_exchange_clie
 
                 assert bias == "neutral"
                 assert daily == "neutral"
-                assert six_h == "neutral"
+                assert six_h is None  # None when MTF disabled, per type signature
 
 
 def test_get_timeframe_trend_caching(htf_mock_settings, mock_exchange_client, mock_database):

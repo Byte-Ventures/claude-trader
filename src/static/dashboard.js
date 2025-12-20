@@ -454,11 +454,16 @@ function updateDashboard(state) {
         const dailyEmoji = htfBias.daily_trend
             ? (trendEmoji[htfBias.daily_trend] || '↔️')
             : '↔️';
-        const fourHourEmoji = htfBias.four_hour_trend
-            ? (trendEmoji[htfBias.four_hour_trend] || '↔️')
-            : '—';
-        document.getElementById('htf-trends').textContent =
-            `Daily: ${dailyEmoji} | 4H: ${fourHourEmoji}`;
+
+        // Only show 4H trend if available (when mtf_4h_enabled=true)
+        if (htfBias.four_hour_trend) {
+            const fourHourEmoji = trendEmoji[htfBias.four_hour_trend] || '↔️';
+            document.getElementById('htf-trends').textContent =
+                `Daily: ${dailyEmoji} | 4H: ${fourHourEmoji}`;
+        } else {
+            // Daily-only mode: hide 4H label for cleaner display
+            document.getElementById('htf-trends').textContent = `Daily: ${dailyEmoji}`;
+        }
     } else {
         htfBiasCard.style.display = 'none';
     }
