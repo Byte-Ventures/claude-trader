@@ -683,8 +683,34 @@ class CoinbaseClient:
             # Fee rates are returned as strings like "0.006" (0.6%)
             if "fee_tier" in response:
                 fee_tier = response["fee_tier"]
-                if "taker_fee_rate" in fee_tier:
-                    return Decimal(fee_tier["taker_fee_rate"])
+                if not isinstance(fee_tier, dict):
+                    logger.warning(
+                        "fee_tier_invalid_type",
+                        product_id=product_id,
+                        fee_tier_type=type(fee_tier).__name__,
+                        message="fee_tier is not a dict, using default",
+                    )
+                elif "taker_fee_rate" in fee_tier:
+                    try:
+                        fee_rate = Decimal(fee_tier["taker_fee_rate"])
+                        # Sanity check: fee should be between 0.001% and 5%
+                        if Decimal("0.00001") <= fee_rate <= Decimal("0.05"):
+                            return fee_rate
+                        else:
+                            logger.warning(
+                                "fee_rate_out_of_range",
+                                product_id=product_id,
+                                fee_rate=str(fee_rate),
+                                message="Fee rate outside reasonable range, using default",
+                            )
+                    except (ValueError, TypeError, ArithmeticError) as e:
+                        logger.warning(
+                            "fee_rate_conversion_failed",
+                            product_id=product_id,
+                            taker_fee_rate=fee_tier.get("taker_fee_rate"),
+                            error=str(e),
+                            message="Failed to convert fee rate to Decimal, using default",
+                        )
 
             # Fallback to default Coinbase Advanced taker fee
             logger.warning(

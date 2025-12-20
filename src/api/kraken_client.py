@@ -796,13 +796,50 @@ class KrakenClient:
             response = self._private_request("TradeVolume", {"pair": kraken_pair})
 
             # Extract fee information from response
-            if "fees" in response and kraken_pair in response["fees"]:
-                fee_info = response["fees"][kraken_pair]
-                # Kraken returns fee as percentage (e.g., 0.26 for 0.26%)
-                # Convert to decimal (0.26 -> 0.0026)
-                if "fee" in fee_info:
-                    fee_percent = Decimal(str(fee_info["fee"]))
-                    return fee_percent / Decimal("100")
+            if "fees" in response:
+                if not isinstance(response["fees"], dict):
+                    logger.warning(
+                        "fees_invalid_type",
+                        product_id=product_id,
+                        fees_type=type(response["fees"]).__name__,
+                        message="fees is not a dict, using default",
+                    )
+                elif kraken_pair in response["fees"]:
+                    fee_info = response["fees"][kraken_pair]
+                    if not isinstance(fee_info, dict):
+                        logger.warning(
+                            "fee_info_invalid_type",
+                            product_id=product_id,
+                            kraken_pair=kraken_pair,
+                            fee_info_type=type(fee_info).__name__,
+                            message="fee_info is not a dict, using default",
+                        )
+                    elif "fee" in fee_info:
+                        try:
+                            # Kraken returns fee as percentage (e.g., 0.26 for 0.26%)
+                            # Convert to decimal (0.26 -> 0.0026)
+                            fee_percent = Decimal(str(fee_info["fee"]))
+                            # Sanity check: fee percentage should be between 0.001 and 5.0
+                            if Decimal("0.001") <= fee_percent <= Decimal("5.0"):
+                                fee_rate = fee_percent / Decimal("100")
+                                return fee_rate
+                            else:
+                                logger.warning(
+                                    "fee_percent_out_of_range",
+                                    product_id=product_id,
+                                    kraken_pair=kraken_pair,
+                                    fee_percent=str(fee_percent),
+                                    message="Fee percentage outside reasonable range (0.001-5.0), using default",
+                                )
+                        except (ValueError, TypeError, ArithmeticError) as e:
+                            logger.warning(
+                                "fee_conversion_failed",
+                                product_id=product_id,
+                                kraken_pair=kraken_pair,
+                                fee_value=fee_info.get("fee"),
+                                error=str(e),
+                                message="Failed to convert fee to Decimal, using default",
+                            )
 
             # Fallback to default Kraken taker fee
             logger.warning(
