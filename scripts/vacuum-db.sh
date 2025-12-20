@@ -7,22 +7,35 @@
 # Options:
 #   --force    Skip confirmation prompt (for automation)
 #
+# IMPORTANT: Consider backing up the database before running in production.
+# While VACUUM is generally safe, extra caution with financial data is prudent.
+#
 # Note: VACUUM requires exclusive lock - run when bot is stopped or during maintenance.
 # This operation rebuilds the database file to reclaim space from deleted records.
 # Particularly useful after signal history cleanup or other large deletions.
+# Requires: Linux (uses readlink -f)
 
 set -e
 
 # Parse arguments
 FORCE_MODE=false
 DB_PATH_ARG=""
+DB_PATH_COUNT=0
 for arg in "$@"; do
     if [ "$arg" = "--force" ]; then
         FORCE_MODE=true
     else
         DB_PATH_ARG="$arg"
+        DB_PATH_COUNT=$((DB_PATH_COUNT + 1))
     fi
 done
+
+# Reject multiple database path arguments to prevent confusion
+if [ $DB_PATH_COUNT -gt 1 ]; then
+    echo "Error: Multiple database paths provided. Please specify only one database path."
+    echo "Usage: ./scripts/vacuum-db.sh [db_path] [--force]"
+    exit 1
+fi
 
 # Check if sqlite3 is installed
 if ! command -v sqlite3 &> /dev/null; then
