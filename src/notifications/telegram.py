@@ -17,6 +17,7 @@ Features:
 
 import asyncio
 import hashlib
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from time import time
@@ -32,6 +33,9 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+# Pre-compiled regex patterns for stack trace detection (performance optimization)
+_PYTHON_STACK_TRACE_PATTERN = re.compile(r'\n  File ".*", line \d+')
+_JS_STACK_TRACE_PATTERN = re.compile(r'\n\s+at ')
 
 # Default cooldown periods for different message types (seconds)
 # These prevent spam - same message won't repeat within cooldown period
@@ -70,6 +74,16 @@ class TelegramNotifier:
     - Deduplication of repeated messages
     - Configurable cooldown per message type
     """
+
+    # Maximum length for error/context messages in notifications
+    # Balance completeness (preserves most error details) vs actionability
+    # (fits on one screen, easier to parse in mobile app)
+    # Telegram API limit is 4096, but shorter messages are more actionable
+    MAX_ERROR_MSG_LENGTH = 500
+
+    # Ellipsis string and length for truncation operations
+    ELLIPSIS = "..."
+    ELLIPSIS_LEN = len(ELLIPSIS)  # 3 characters
 
     def __init__(
         self,
@@ -640,8 +654,87 @@ class TelegramNotifier:
         self.send_message_sync(message)
         self._save_to_dashboard("shutdown", "Bot Stopped", message)
 
+    def _safe_truncate(self, text: str, max_len: int, from_end: bool = False) -> str:
+        """
+        Safely truncate text without breaking unicode characters.
+
+        Args:
+            text: Text to truncate
+            max_len: Maximum length after truncation
+            from_end: If True, take from end; if False, take from start
+
+        Returns:
+            Truncated text with unicode characters intact
+        """
+        if from_end:
+            # Truncate from end
+            candidate = text[-max_len:]
+        else:
+            # Truncate from start
+            candidate = text[:max_len]
+
+        # Only encode/decode if string contains non-ASCII characters (performance optimization)
+        if candidate.isascii():
+            return candidate
+        # Encode and decode to clean up any broken unicode characters at boundaries
+        # errors='ignore' removes broken characters, then decode back to string
+        return candidate.encode('utf-8', errors='ignore').decode('utf-8')
+
+    def _truncate_message_field(self, text: str, max_len: int) -> str:
+        """
+        Truncate error/context field with smart stack trace detection.
+
+        For stack traces: preserves start + end (250 + ... + 250)
+        For regular text: preserves beginning (400 + ... + 100)
+
+        Args:
+            text: Text to truncate
+            max_len: Maximum length (typically MAX_ERROR_MSG_LENGTH = 500)
+
+        Returns:
+            Truncated text (may be up to max_len + ELLIPSIS_LEN = 503 chars)
+        """
+        if len(text) <= max_len:
+            return text
+
+        # Log full text for debugging before truncation
+        logger.debug(f"Truncating long message field ({len(text)} chars)",
+                    text_preview=text[:100])
+
+        # Early exit check - if neither keyword present, skip expensive regex
+        is_stack_trace = False
+        if 'Traceback' in text or 'File "' in text or ' at ' in text:
+            # For stack traces, prioritize start + end (error type at both locations)
+            # For other errors, keep first 400 + last 100 to preserve error message
+            # Improved detection to handle edge cases:
+            # - Multiple consecutive frames indicate stack trace
+            # - Partial stack traces (middle section only)
+            # - Python tracebacks and JavaScript stack traces
+            # Use pre-compiled regex for performance and better accuracy
+            is_stack_trace = (
+                len(_PYTHON_STACK_TRACE_PATTERN.findall(text)) >= 2 or  # Multiple Python frames with line numbers
+                len(_JS_STACK_TRACE_PATTERN.findall(text)) >= 2 or      # Multiple JavaScript frames
+                ('Traceback' in text and 'File "' in text)              # Single frame Python
+            )
+        if is_stack_trace:
+            return self._safe_truncate(text, 250) + self.ELLIPSIS + self._safe_truncate(text, 250, from_end=True)
+        else:
+            return self._safe_truncate(text, 400) + self.ELLIPSIS + self._safe_truncate(text, 100, from_end=True)
+
     def notify_error(self, error: str, context: str = "") -> None:
         """Send notification for system error."""
+        MAX_LEN = self.MAX_ERROR_MSG_LENGTH
+
+        # Truncate error and context fields
+        error = self._truncate_message_field(error, MAX_LEN)
+        context = self._truncate_message_field(context, MAX_LEN)
+
+        # Calculate dedup key AFTER truncation using truncated error text.
+        # This ensures deduplication is based on what the user actually sees.
+        # If two different long errors have identical truncated forms, they will
+        # be deduplicated, preventing duplicate notifications with identical visible content.
+        dedup_key = f"{error}:{context}"
+
         message = (
             f"❌ <b>System Error</b>\n\n"
             f"Error: {error}\n"
@@ -649,8 +742,48 @@ class TelegramNotifier:
             f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
+        # Validate total message length against Telegram's 4096 char limit
+        # This is a defense-in-depth check to ensure message formatting changes
+        # don't accidentally exceed the limit
+        TELEGRAM_MAX_LENGTH = 4096
+        if len(message) > TELEGRAM_MAX_LENGTH:
+            logger.error(
+                f"Message exceeds Telegram limit ({len(message)} chars), "
+                f"truncating more aggressively"
+            )
+            # Calculate overhead (header + footer + formatting)
+            overhead = len(message) - len(error) - len(context)
+            # Split remaining budget equally between error and context
+            # Ensure minimum 10 chars per field for defensive programming
+            per_field_budget = max(10, (TELEGRAM_MAX_LENGTH - overhead) // 2)
+
+            # Re-truncate with aggressive limits using safe truncation
+            if len(error) > per_field_budget:
+                # Remove existing ellipsis if present to avoid "..."..."
+                error_clean = error[:-self.ELLIPSIS_LEN] if error.endswith(self.ELLIPSIS) else error
+                # Only add ellipsis if we actually truncated
+                if len(error_clean) > per_field_budget - self.ELLIPSIS_LEN:
+                    error = self._safe_truncate(error_clean, per_field_budget - self.ELLIPSIS_LEN) + self.ELLIPSIS
+                else:
+                    error = error_clean
+            if len(context) > per_field_budget:
+                # Remove existing ellipsis if present to avoid "..."..."
+                context_clean = context[:-self.ELLIPSIS_LEN] if context.endswith(self.ELLIPSIS) else context
+                # Only add ellipsis if we actually truncated
+                if len(context_clean) > per_field_budget - self.ELLIPSIS_LEN:
+                    context = self._safe_truncate(context_clean, per_field_budget - self.ELLIPSIS_LEN) + self.ELLIPSIS
+                else:
+                    context = context_clean
+
+            # Rebuild message
+            message = (
+                f"❌ <b>System Error</b>\n\n"
+                f"Error: {error}\n"
+                f"Context: {context}\n"
+                f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+
         # Deduplicate error messages
-        dedup_key = f"{error}:{context}"
         if not self._should_send("error", dedup_key):
             return
 

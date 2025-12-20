@@ -349,3 +349,263 @@ def test_disabled_notifier_does_not_send():
 
     # No bot should be initialized
     assert notifier._bot is None
+
+
+# ============================================================================
+# notify_error Truncation Tests
+# ============================================================================
+
+def test_notify_error_truncates_long_error_with_smart_truncation(notifier, mock_bot):
+    """Test that long non-stack-trace error messages use smart truncation (first 400 + last 100)."""
+    # Create error with 600 chars (exceeds 500 char limit)
+    long_error = "A" * 400 + "B" * 200
+
+    notifier.notify_error(
+        error=long_error,
+        context="Test context",
+    )
+
+    mock_bot.send_message.assert_called()
+    call_args = mock_bot.send_message.call_args
+    message = call_args.kwargs.get("text", call_args.args[1] if len(call_args.args) > 1 else "")
+
+    # Verify smart truncation occurred:
+    # - Should have first 400 chars (all A's)
+    # - Should have "..." in the middle
+    # - Should have last 100 chars (all B's)
+    assert "A" * 400 in message
+    assert "..." in message
+    assert "B" * 100 in message
+    # Should NOT contain the full original error
+    assert long_error not in message
+
+
+def test_notify_error_truncates_long_context_with_smart_truncation(notifier, mock_bot):
+    """Test that long context messages use smart truncation (first 400 + last 100)."""
+    # Create context with 600 chars (exceeds 500 char limit)
+    long_context = "X" * 400 + "Y" * 200
+
+    notifier.notify_error(
+        error="Short error",
+        context=long_context,
+    )
+
+    mock_bot.send_message.assert_called()
+    call_args = mock_bot.send_message.call_args
+    message = call_args.kwargs.get("text", call_args.args[1] if len(call_args.args) > 1 else "")
+
+    # Verify smart truncation occurred for context
+    assert "X" * 400 in message
+    assert "..." in message
+    assert "Y" * 100 in message
+    # Should NOT contain the full original context
+    assert long_context not in message
+
+
+def test_notify_error_does_not_truncate_short_messages(notifier, mock_bot):
+    """Test that short error and context messages are not truncated."""
+    short_error = "Database connection failed"
+    short_context = "Main trading loop"
+
+    notifier.notify_error(
+        error=short_error,
+        context=short_context,
+    )
+
+    mock_bot.send_message.assert_called()
+    call_args = mock_bot.send_message.call_args
+    message = call_args.kwargs.get("text", call_args.args[1] if len(call_args.args) > 1 else "")
+
+    # Short messages should appear exactly as provided
+    assert short_error in message
+    assert short_context in message
+    # No truncation indicator
+    assert message.count("...") == 0
+
+
+def test_notify_error_truncates_both_error_and_context(notifier, mock_bot):
+    """Test that both error and context are truncated when both are long."""
+    long_error = "E" * 600
+    long_context = "C" * 600
+
+    notifier.notify_error(
+        error=long_error,
+        context=long_context,
+    )
+
+    mock_bot.send_message.assert_called()
+    call_args = mock_bot.send_message.call_args
+    message = call_args.kwargs.get("text", call_args.args[1] if len(call_args.args) > 1 else "")
+
+    # Both should be truncated
+    # Count the ellipsis - should have 2 (one for error, one for context)
+    assert message.count("...") == 2
+
+
+def test_notify_error_exactly_at_limit(notifier, mock_bot):
+    """Test messages exactly at 500 chars are not truncated."""
+    exactly_500 = "A" * 500
+    notifier.notify_error(error=exactly_500)
+    message = mock_bot.send_message.call_args.kwargs["text"]
+    assert exactly_500 in message
+    assert message.count("...") == 0
+
+
+def test_notify_error_handles_empty_strings(notifier, mock_bot):
+    """Test empty error and context strings don't cause issues."""
+    notifier.notify_error(error="", context="")
+    # Should not raise exceptions
+    mock_bot.send_message.assert_called()
+    message = mock_bot.send_message.call_args.kwargs["text"]
+    # Should contain the error structure but with empty values
+    assert "System Error" in message
+
+
+def test_notify_error_handles_unicode(notifier, mock_bot):
+    """Test truncation works with unicode characters."""
+    long_unicode = "🔥" * 600  # Emoji characters
+    notifier.notify_error(error=long_unicode)
+    # Should not raise exceptions
+    mock_bot.send_message.assert_called()
+
+
+def test_notify_error_handles_unicode_at_boundary(notifier, mock_bot):
+    """Test unicode characters at exact truncation boundaries don't break."""
+    # Test emoji at the 250-char boundary (stack trace truncation)
+    # Create string with emoji at position 249-250 to test slicing doesn't break multi-byte chars
+    stack_trace = "Traceback:\n" + "a" * 238 + "🔥" + "b" * 300
+    notifier.notify_error(error=stack_trace, context="boundary_test")
+
+    # Should not raise exceptions and should successfully send
+    mock_bot.send_message.assert_called()
+
+    # Verify message is valid (no unicode errors)
+    call_args = mock_bot.send_message.call_args
+    message = call_args.kwargs.get("text", call_args.args[1] if len(call_args.args) > 1 else "")
+    assert isinstance(message, str)
+    assert len(message) > 0
+    assert "..." in message  # Truncation occurred
+
+    # Verify no replacement characters (broken unicode) in output
+    assert '\ufffd' not in message, "Message contains broken unicode replacement character"
+    # Verify emoji is preserved (not broken) - it should appear at least once
+    assert '🔥' in message, "Emoji should be preserved (not broken)"
+
+
+def test_notify_error_truncates_stack_traces_with_balanced_split(notifier, mock_bot):
+    """Test stack traces use balanced 250/250 truncation to preserve error type at both ends."""
+    # Create a realistic stack trace with 600 chars
+    stack_trace = (
+        "Traceback (most recent call last):\n"
+        + "  File /app/src/daemon/runner.py, line 1025\n" * 10  # Repeating lines
+        + "sqlalchemy.exc.OperationalError: database is locked"
+    )
+    # Make it longer than 500 chars
+    stack_trace = stack_trace + "X" * (600 - len(stack_trace))
+
+    notifier.notify_error(error=stack_trace, context="Test")
+
+    mock_bot.send_message.assert_called()
+    call_args = mock_bot.send_message.call_args
+    message = call_args.kwargs.get("text", call_args.args[1] if len(call_args.args) > 1 else "")
+
+    # Verify balanced truncation occurred (250/250 for stack traces)
+    assert "Traceback" in message  # Should preserve start
+    assert "..." in message
+
+
+def test_notify_error_deduplication_works_with_truncation(notifier, mock_bot):
+    """Test that identical long errors are still deduplicated after truncation."""
+    # Create identical long errors
+    long_error = "A" * 600
+
+    # Send same error twice
+    notifier.notify_error(error=long_error, context="test")
+    notifier.notify_error(error=long_error, context="test")
+
+    # Should only send once (deduplicated)
+    assert mock_bot.send_message.call_count == 1
+
+
+def test_notify_error_dedup_key_calculated_before_truncation(notifier, mock_bot):
+    """
+    Test that dedup key is calculated BEFORE truncation to prevent collisions.
+
+    This ensures that two different long errors with identical truncated forms
+    but different original content use their full original content for dedup keys.
+    """
+    # Create two errors that:
+    # 1. Are DIFFERENT in their original form
+    # 2. Would have SAME truncated form (first 400 + last 100 chars are identical)
+    # 3. Only differ in the middle 50 chars that get truncated away
+    error1 = "A" * 400 + "X" * 50 + "B" * 100
+    error2 = "A" * 400 + "Y" * 50 + "B" * 100
+
+    # Send first error twice - should deduplicate (same original error)
+    notifier.notify_error(error=error1, context="test")
+    notifier.notify_error(error=error1, context="test")
+
+    # Should only send once because dedup_key uses full original error1
+    assert mock_bot.send_message.call_count == 1
+
+
+def test_notify_error_false_positive_stack_trace_detection(notifier, mock_bot):
+    """
+    Test that regular error messages containing File keyword are NOT treated as stack traces.
+
+    False positives should use 400/100 truncation instead of 250/250 balanced split.
+    """
+    # Create an error message that contains "File" but is NOT a stack trace
+    # Example: "Cannot open File config.json not found"
+    # This should NOT be detected as a stack trace and should use 400/100 truncation
+    false_positive_error = (
+        "Cannot open File config.json not found. " +
+        "X" * 600  # Make it long enough to trigger truncation
+    )
+
+    notifier.notify_error(error=false_positive_error, context="Test")
+
+    mock_bot.send_message.assert_called()
+    call_args = mock_bot.send_message.call_args
+    message = call_args.kwargs.get("text", call_args.args[1] if len(call_args.args) > 1 else "")
+
+    # Should use 400/100 truncation (not 250/250 for stack traces)
+    # The beginning should be preserved (first 400 chars)
+    assert "Cannot open File config.json not found." in message
+    # Should have truncation indicator
+    assert "..." in message
+    # Verify it's treating this as regular error (400/100), not stack trace (250/250)
+    # If it were 250/250, we'd lose more of the beginning
+    assert message.count("X") > 50  # Should have many X's from the beginning preserved
+
+
+def test_notify_error_respects_telegram_total_message_limit(notifier, mock_bot):
+    """
+    Test that total message length never exceeds Telegram's 4096 char limit.
+
+    This is a defense-in-depth check to ensure that even if error and context
+    are both at MAX_ERROR_MSG_LENGTH (500 chars each), the total message
+    with headers, formatting, and timestamp stays under Telegram's limit.
+    """
+    # Create error and context that are each at the max allowed (500 chars)
+    # This should normally be fine (~1050 chars total), but we test the
+    # edge case where both are maxed out
+    max_error = "E" * 500
+    max_context = "C" * 500
+
+    notifier.notify_error(error=max_error, context=max_context)
+
+    mock_bot.send_message.assert_called()
+    call_args = mock_bot.send_message.call_args
+    message = call_args.kwargs.get("text", call_args.args[1] if len(call_args.args) > 1 else "")
+
+    # Total message should never exceed Telegram's limit
+    TELEGRAM_MAX_LENGTH = 4096
+    assert len(message) <= TELEGRAM_MAX_LENGTH, (
+        f"Message length {len(message)} exceeds Telegram limit {TELEGRAM_MAX_LENGTH}"
+    )
+
+    # Message should still contain the error structure
+    assert "System Error" in message
+    assert "Error:" in message
+    assert "Context:" in message

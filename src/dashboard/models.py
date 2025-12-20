@@ -1,7 +1,7 @@
 """Pydantic models for dashboard API responses."""
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -56,6 +56,14 @@ class WeightProfileInfo(BaseModel):
     reasoning: str = ""
 
 
+class HTFBiasInfo(BaseModel):
+    """Higher timeframe bias information."""
+
+    daily_trend: Literal["bullish", "bearish", "neutral"]
+    four_hour_trend: Optional[Literal["bullish", "bearish", "neutral"]]
+    combined_bias: Literal["bullish", "bearish", "neutral"]
+
+
 class DashboardState(BaseModel):
     """Complete dashboard state for WebSocket broadcast."""
 
@@ -67,6 +75,7 @@ class DashboardState(BaseModel):
     cramer_portfolio: Optional[PortfolioInfo] = None
     regime: str
     weight_profile: Optional[WeightProfileInfo] = None
+    htf_bias: Optional[HTFBiasInfo] = None
     safety: SafetyStatus
     trading_pair: str
     is_paper: bool
