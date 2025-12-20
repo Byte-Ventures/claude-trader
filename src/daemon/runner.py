@@ -1451,7 +1451,7 @@ class TradingDaemon:
 
         # Get HTF bias for multi-timeframe confirmation
         # NOTE: _get_htf_bias() handles MTF configuration:
-        # - MTF disabled: returns ("neutral", "neutral", "neutral")
+        # - MTF disabled: returns ("neutral", None, None)
         # - MTF enabled, 4H disabled: returns (daily, daily, None)
         # - MTF fully enabled: returns (combined, daily, four_hour)
         # These variables are used in signal calculation AND dashboard state, ensuring consistency
