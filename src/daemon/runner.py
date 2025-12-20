@@ -943,8 +943,11 @@ class TradingDaemon:
         # to avoid edge cases at candle boundaries
         if not candles.empty:
             candle_timestamp = candles.iloc[-1]["timestamp"]
-            # Type safety check for financial system
-            if not isinstance(candle_timestamp, datetime):
+            # Normalize pd.Timestamp to datetime for consistent handling
+            if isinstance(candle_timestamp, pd.Timestamp):
+                candle_timestamp = candle_timestamp.to_pydatetime()
+            elif not isinstance(candle_timestamp, datetime):
+                # Type safety check for financial system
                 logger.warning(
                     "candle_timestamp_type_mismatch",
                     type=type(candle_timestamp).__name__,
