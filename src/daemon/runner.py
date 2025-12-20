@@ -965,8 +965,8 @@ class TradingDaemon:
             return daily, daily, None
 
         # MTF uses FOUR_HOUR (not SIX_HOUR) because:
-        # - More granular trend changes (6 candles/day vs 4 for 6H)
-        # - More responsive to intraday shifts while still filtering noise
+        # - More frequent data points (6 candles/day vs 4 for 6H)
+        # - More responsive to intraday trend shifts while still filtering hourly noise
         # - Provides good intermediate timeframe between daily and hourly trading
         # Note: SIX_HOUR remains a valid granularity for other uses, just not for MTF
         four_hour = self._get_timeframe_trend("FOUR_HOUR", self.settings.mtf_4h_cache_minutes)
