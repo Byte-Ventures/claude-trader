@@ -3747,11 +3747,10 @@ class TestSentimentFailureTracking:
         # Simulate previous failures
         daemon_with_sentiment._sentiment_fetch_failures = 2
 
-        # Simulate success
-        daemon_with_sentiment._sentiment_fetch_failures = 0
-        daemon_with_sentiment._last_sentiment_fetch_success = datetime.now(timezone.utc)
+        # Call the actual method to record success
+        daemon_with_sentiment._record_sentiment_success()
 
-        # Verify counter reset
+        # Verify counter reset and timestamp updated
         assert daemon_with_sentiment._sentiment_fetch_failures == 0
         assert daemon_with_sentiment._last_sentiment_fetch_success is not None
 
