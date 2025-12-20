@@ -1006,6 +1006,12 @@ class SignalScorer:
             )
 
         breakdown["htf_bias"] = htf_adjustment
+        # Use explicit None checks for null safety (avoid masking empty strings).
+        # HTF values are expected to be: "bullish", "bearish", "neutral", or None.
+        # Empty strings should NOT occur in production (would indicate a bug in get_trend()).
+        # If empty strings appear, they are preserved for debugging (not masked as "unknown").
+        # None values indicate missing/unavailable data and are replaced with "unknown".
+        # See also: src/ai/trade_reviewer.py for similar pattern
         breakdown["_htf_trend"] = htf_bias if htf_bias is not None else "unknown"
         breakdown["_htf_daily"] = htf_daily if htf_daily is not None else "unknown"
         breakdown["_htf_4h"] = htf_4h if htf_4h is not None else "unknown"
