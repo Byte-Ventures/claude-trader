@@ -1978,8 +1978,8 @@ class Database:
 
                 # Use delete()'s return value to avoid race condition between count() and delete()
                 deleted_count = query.delete(synchronize_session=False)
+                session.commit()  # Always commit - explicit transaction boundary
                 if deleted_count > 0:
-                    session.commit()  # Explicit commit for financial system
                     logger.info(
                         "signal_history_cleanup",
                         deleted=deleted_count,
