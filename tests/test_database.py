@@ -25,6 +25,9 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 import pandas as pd
 import os
+import threading
+import random
+import time
 
 from src.state.database import (
     Database,
@@ -2513,9 +2516,6 @@ def test_rate_history_concurrent_updates(db):
     3. No data corruption occurs
     4. Open price is preserved (immutable)
     """
-    import threading
-    import random
-
     timestamp = datetime(2024, 1, 1, 12, 0, 0)
 
     # Define different update scenarios that will execute concurrently
@@ -2567,7 +2567,6 @@ def test_rate_history_concurrent_updates(db):
     def update_candle(scenario):
         """Worker function to update the candle with scenario data."""
         # Add small random delay to increase concurrency chance
-        import time
         time.sleep(random.uniform(0, 0.01))
 
         candles = [{
@@ -2579,17 +2578,9 @@ def test_rate_history_concurrent_updates(db):
             "volume": scenario["volume"],
         }]
 
-        try:
-            db.record_rates_bulk(candles, is_paper=False)
-        except Exception as e:
-            # Log errors but don't fail the test - some errors are expected in concurrent scenarios
-            import structlog
-            logger = structlog.get_logger()
-            logger.warning(
-                "concurrent_update_error",
-                thread_id=scenario["thread_id"],
-                error=str(e)
-            )
+        # No try/except - the database UPSERT should handle concurrency gracefully.
+        # If exceptions occur, they indicate a real bug that must be fixed.
+        db.record_rates_bulk(candles, is_paper=False)
 
     # Create and start threads
     threads = []
