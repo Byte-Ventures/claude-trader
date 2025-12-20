@@ -1,15 +1,28 @@
 #!/bin/bash
 # Reclaim disk space after large database cleanups
 #
-# Usage: ./scripts/vacuum-db.sh [db_path]
+# Usage: ./scripts/vacuum-db.sh [db_path] [--force]
 #
 # Default: data/trading.db
+# Options:
+#   --force    Skip confirmation prompt (for automation)
 #
 # Note: VACUUM requires exclusive lock - run when bot is stopped or during maintenance.
 # This operation rebuilds the database file to reclaim space from deleted records.
 # Particularly useful after signal history cleanup or other large deletions.
 
 set -e
+
+# Parse arguments
+FORCE_MODE=false
+DB_PATH_ARG=""
+for arg in "$@"; do
+    if [ "$arg" = "--force" ]; then
+        FORCE_MODE=true
+    else
+        DB_PATH_ARG="$arg"
+    fi
+done
 
 # Check if sqlite3 is installed
 if ! command -v sqlite3 &> /dev/null; then
@@ -18,7 +31,17 @@ if ! command -v sqlite3 &> /dev/null; then
 fi
 
 # Default database path with absolute path resolution
-DB_PATH="$(readlink -f "${1:-data/trading.db}")"
+DB_PATH="$(readlink -f "${DB_PATH_ARG:-data/trading.db}")"
+
+# Create lock file to prevent concurrent executions
+# This prevents multiple simultaneous VACUUM operations which could cause "database is locked" errors
+LOCK_FILE="/tmp/vacuum-db.lock"
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+    echo "Error: Another vacuum operation is already running"
+    echo "If you're sure no other vacuum is running, remove: $LOCK_FILE"
+    exit 1
+fi
 
 # Check if database file exists
 if [ ! -f "$DB_PATH" ]; then
@@ -35,10 +58,14 @@ if systemctl is-active --quiet claude-trader 2>/dev/null; then
     echo "WARNING: claude-trader service is currently running!"
     echo "Running VACUUM while the bot is active may cause database lock issues."
     echo ""
-    read -p "Do you want to continue anyway? (yes/no): " -r
-    if [[ ! $REPLY =~ ^[Yy][Ee][Ss]$ ]]; then
-        echo "Operation cancelled. Stop the service first with: sudo systemctl stop claude-trader"
-        exit 0
+    if [ "$FORCE_MODE" = true ]; then
+        echo "Force mode enabled - proceeding despite service running"
+    else
+        read -p "Do you want to continue anyway? (yes/no): " -r
+        if [[ ! $REPLY =~ ^[Yy][Ee][Ss]$ ]]; then
+            echo "Operation cancelled. Stop the service first with: sudo systemctl stop claude-trader"
+            exit 0
+        fi
     fi
 fi
 
@@ -53,7 +80,9 @@ echo "Size before: $SIZE_BEFORE"
 # - Database locked (another process has exclusive lock)
 # - Insufficient disk space (needs temp space ~equal to database size)
 # - Database corruption
-if ! sqlite3 "$DB_PATH" "VACUUM;" 2>/tmp/vacuum_error.txt; then
+# Use mktemp for safer temp file handling (handles /tmp being read-only or full)
+ERROR_FILE=$(mktemp)
+if ! sqlite3 "$DB_PATH" "VACUUM;" 2>"$ERROR_FILE"; then
     echo "ERROR: VACUUM operation failed!"
     echo ""
     echo "Common causes:"
@@ -61,14 +90,14 @@ if ! sqlite3 "$DB_PATH" "VACUUM;" 2>/tmp/vacuum_error.txt; then
     echo "  2. Insufficient disk space (VACUUM needs temp space ~equal to DB size)"
     echo "  3. Database corruption (run: sqlite3 $DB_PATH 'PRAGMA integrity_check;')"
     echo ""
-    if [ -s /tmp/vacuum_error.txt ]; then
+    if [ -s "$ERROR_FILE" ]; then
         echo "Error details:"
-        cat /tmp/vacuum_error.txt
+        cat "$ERROR_FILE"
     fi
-    rm -f /tmp/vacuum_error.txt
+    rm -f "$ERROR_FILE"
     exit 1
 fi
-rm -f /tmp/vacuum_error.txt
+rm -f "$ERROR_FILE"
 
 # Get file size after VACUUM
 SIZE_AFTER=$(du -h "$DB_PATH" | cut -f1)
