@@ -758,6 +758,7 @@ class Database:
 
             # Add NOT NULL constraint to signal_history.timestamp column
             # SQLite doesn't support ALTER COLUMN to add NOT NULL, so we recreate the table
+            # This migration is wrapped in a transaction for data integrity
             try:
                 result = conn.execute(
                     text("SELECT sql FROM sqlite_master WHERE type='table' AND name='signal_history'")
@@ -765,81 +766,91 @@ class Database:
                 sh_schema = result.scalar()
                 # Check if table exists and timestamp is nullable (doesn't have NOT NULL constraint)
                 if sh_schema and "timestamp DATETIME" in sh_schema and "timestamp DATETIME NOT NULL" not in sh_schema:
-                    # First, check if there are any NULL timestamps (there shouldn't be)
-                    null_check = conn.execute(text("SELECT COUNT(*) FROM signal_history WHERE timestamp IS NULL")).scalar()
-                    if null_check > 0:
-                        logger.warning(
-                            "signal_history_null_timestamps_found",
-                            count=null_check,
-                            action="setting_to_current_time",
-                        )
-                        # Set NULL timestamps to current time before adding constraint
-                        conn.execute(text("UPDATE signal_history SET timestamp = datetime('now') WHERE timestamp IS NULL"))
+                    # Begin explicit transaction for migration
+                    # SQLite auto-starts transactions, but we make it explicit for clarity
+                    try:
+                        # First, check if there are any NULL timestamps (there shouldn't be)
+                        null_check = conn.execute(text("SELECT COUNT(*) FROM signal_history WHERE timestamp IS NULL")).scalar()
+                        if null_check > 0:
+                            logger.warning(
+                                "signal_history_null_timestamps_found",
+                                count=null_check,
+                                action="setting_to_current_time",
+                            )
+                            # Set NULL timestamps to current time before adding constraint
+                            conn.execute(text("UPDATE signal_history SET timestamp = datetime('now') WHERE timestamp IS NULL"))
 
-                    # Recreate table with NOT NULL constraint
-                    conn.execute(text("ALTER TABLE signal_history RENAME TO signal_history_old"))
-                    conn.execute(text("""
-                        CREATE TABLE signal_history (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            symbol VARCHAR(20) NOT NULL DEFAULT 'BTC-USD',
-                            timestamp DATETIME NOT NULL,
-                            is_paper BOOLEAN DEFAULT 0,
-                            current_price VARCHAR(50) NOT NULL,
-                            rsi_score FLOAT NOT NULL,
-                            macd_score FLOAT NOT NULL,
-                            bollinger_score FLOAT NOT NULL,
-                            ema_score FLOAT NOT NULL,
-                            volume_score FLOAT NOT NULL,
-                            rsi_value FLOAT,
-                            macd_histogram FLOAT,
-                            bb_position FLOAT,
-                            ema_gap_percent FLOAT,
-                            volume_ratio FLOAT,
-                            trend_filter_adj FLOAT DEFAULT 0,
-                            momentum_mode_adj FLOAT DEFAULT 0,
-                            whale_activity_adj FLOAT DEFAULT 0,
-                            htf_bias_adj FLOAT DEFAULT 0,
-                            htf_bias VARCHAR(10),
-                            htf_daily_trend VARCHAR(10),
-                            htf_4h_trend VARCHAR(10),
-                            raw_score FLOAT NOT NULL,
-                            final_score FLOAT NOT NULL,
-                            action VARCHAR(10) NOT NULL,
-                            threshold_used INTEGER NOT NULL,
-                            trade_executed BOOLEAN DEFAULT 0
-                        )
-                    """))
-                    # Copy all data from old table
-                    conn.execute(text("""
-                        INSERT INTO signal_history (id, symbol, timestamp, is_paper, current_price,
-                            rsi_score, macd_score, bollinger_score, ema_score, volume_score,
-                            rsi_value, macd_histogram, bb_position, ema_gap_percent, volume_ratio,
-                            trend_filter_adj, momentum_mode_adj, whale_activity_adj, htf_bias_adj,
-                            htf_bias, htf_daily_trend, htf_4h_trend, raw_score, final_score,
-                            action, threshold_used, trade_executed)
-                        SELECT id, symbol, timestamp, is_paper, current_price,
-                            rsi_score, macd_score, bollinger_score, ema_score, volume_score,
-                            rsi_value, macd_histogram, bb_position, ema_gap_percent, volume_ratio,
-                            trend_filter_adj, momentum_mode_adj, whale_activity_adj, htf_bias_adj,
-                            htf_bias, htf_daily_trend, htf_4h_trend, raw_score, final_score,
-                            action, threshold_used, trade_executed
-                        FROM signal_history_old
-                    """))
-                    # Verify data was copied correctly before dropping old table
-                    old_count = conn.execute(text("SELECT COUNT(*) FROM signal_history_old")).scalar()
-                    new_count = conn.execute(text("SELECT COUNT(*) FROM signal_history")).scalar()
-                    if old_count != new_count:
-                        raise RuntimeError(
-                            f"Migration verification failed: old table has {old_count} rows, "
-                            f"new table has {new_count} rows"
-                        )
-                    conn.execute(text("DROP TABLE signal_history_old"))
-                    # Recreate indexes (IF NOT EXISTS for idempotency)
-                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_signal_history_timestamp ON signal_history (timestamp)"))
-                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_signal_history_paper_timestamp ON signal_history (is_paper, timestamp)"))
-                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_signal_history_symbol_paper_time ON signal_history (symbol, is_paper, timestamp)"))
-                    conn.commit()
-                    logger.info("migrated_signal_history_timestamp_not_null")
+                        # Recreate table with NOT NULL constraint
+                        conn.execute(text("ALTER TABLE signal_history RENAME TO signal_history_old"))
+                        conn.execute(text("""
+                            CREATE TABLE signal_history (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                symbol VARCHAR(20) NOT NULL DEFAULT 'BTC-USD',
+                                timestamp DATETIME NOT NULL,
+                                is_paper BOOLEAN DEFAULT 0,
+                                current_price VARCHAR(50) NOT NULL,
+                                rsi_score FLOAT NOT NULL,
+                                macd_score FLOAT NOT NULL,
+                                bollinger_score FLOAT NOT NULL,
+                                ema_score FLOAT NOT NULL,
+                                volume_score FLOAT NOT NULL,
+                                rsi_value FLOAT,
+                                macd_histogram FLOAT,
+                                bb_position FLOAT,
+                                ema_gap_percent FLOAT,
+                                volume_ratio FLOAT,
+                                trend_filter_adj FLOAT DEFAULT 0,
+                                momentum_mode_adj FLOAT DEFAULT 0,
+                                whale_activity_adj FLOAT DEFAULT 0,
+                                htf_bias_adj FLOAT DEFAULT 0,
+                                htf_bias VARCHAR(10),
+                                htf_daily_trend VARCHAR(10),
+                                htf_4h_trend VARCHAR(10),
+                                raw_score FLOAT NOT NULL,
+                                final_score FLOAT NOT NULL,
+                                action VARCHAR(10) NOT NULL,
+                                threshold_used INTEGER NOT NULL,
+                                trade_executed BOOLEAN DEFAULT 0
+                            )
+                        """))
+                        # Copy all data from old table
+                        conn.execute(text("""
+                            INSERT INTO signal_history (id, symbol, timestamp, is_paper, current_price,
+                                rsi_score, macd_score, bollinger_score, ema_score, volume_score,
+                                rsi_value, macd_histogram, bb_position, ema_gap_percent, volume_ratio,
+                                trend_filter_adj, momentum_mode_adj, whale_activity_adj, htf_bias_adj,
+                                htf_bias, htf_daily_trend, htf_4h_trend, raw_score, final_score,
+                                action, threshold_used, trade_executed)
+                            SELECT id, symbol, timestamp, is_paper, current_price,
+                                rsi_score, macd_score, bollinger_score, ema_score, volume_score,
+                                rsi_value, macd_histogram, bb_position, ema_gap_percent, volume_ratio,
+                                trend_filter_adj, momentum_mode_adj, whale_activity_adj, htf_bias_adj,
+                                htf_bias, htf_daily_trend, htf_4h_trend, raw_score, final_score,
+                                action, threshold_used, trade_executed
+                            FROM signal_history_old
+                        """))
+                        # Verify data was copied correctly before dropping old table
+                        old_count = conn.execute(text("SELECT COUNT(*) FROM signal_history_old")).scalar()
+                        new_count = conn.execute(text("SELECT COUNT(*) FROM signal_history")).scalar()
+                        if old_count != new_count:
+                            raise RuntimeError(
+                                f"Migration verification failed: old table has {old_count} rows, "
+                                f"new table has {new_count} rows"
+                            )
+                        conn.execute(text("DROP TABLE signal_history_old"))
+                        # Recreate indexes matching SignalHistory model definition (IF NOT EXISTS for idempotency)
+                        # These indexes match __table_args__ in the SignalHistory model
+                        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_signal_history_timestamp ON signal_history (timestamp)"))
+                        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_signal_history_paper_timestamp ON signal_history (is_paper, timestamp)"))
+                        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_signal_history_symbol_paper_time ON signal_history (symbol, is_paper, timestamp)"))
+                        # Commit the migration transaction
+                        conn.commit()
+                        logger.info("migrated_signal_history_timestamp_not_null")
+                    except Exception as migration_error:
+                        # Rollback transaction on any error to maintain data integrity
+                        conn.rollback()
+                        logger.error("signal_history_migration_failed", error=str(migration_error))
+                        raise
             except Exception as e:
                 logger.debug("signal_history_timestamp_not_null_migration_skipped", reason=str(e))
 
@@ -2067,8 +2078,11 @@ class Database:
         cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
         with self.session() as session:
-            # Build query - filter by is_paper first for clarity
-            # SQLite's query optimizer will choose the appropriate index
+            # Build query with filters that utilize composite indexes for performance
+            # Index usage:
+            # - When is_paper=None: Uses ix_signal_history_timestamp (single-column index)
+            # - When is_paper specified: Uses ix_signal_history_paper_timestamp (is_paper, timestamp)
+            # SQLite's query optimizer will automatically select the appropriate index
             query = session.query(SignalHistory)
             if is_paper is not None:
                 query = query.filter(SignalHistory.is_paper == is_paper)
