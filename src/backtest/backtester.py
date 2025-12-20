@@ -1,0 +1,503 @@
+"""
+Historical backtesting engine for strategy validation.
+
+Runs SignalScorer against historical OHLCV data with simulated
+trade execution, fees, and slippage to validate strategy performance.
+"""
+
+from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal
+from typing import Optional
+
+import pandas as pd
+import structlog
+
+from src.strategy.signal_scorer import SignalScorer
+from src.strategy.position_sizer import PositionSizer, PositionSizeConfig
+
+logger = structlog.get_logger(__name__)
+
+
+@dataclass
+class BacktestTrade:
+    """Record of a backtest trade execution."""
+
+    timestamp: datetime
+    side: str  # "buy" or "sell"
+    entry_price: Decimal
+    size_base: Decimal
+    size_quote: Decimal
+    fee: Decimal
+    signal_score: int
+    exit_price: Optional[Decimal] = None
+    exit_timestamp: Optional[datetime] = None
+    pnl: Optional[Decimal] = None
+    pnl_percent: Optional[Decimal] = None
+
+
+@dataclass
+class BacktestMetrics:
+    """Performance metrics from a backtest run."""
+
+    # Returns
+    total_return: float  # Total portfolio return (%)
+    sharpe_ratio: float  # Risk-adjusted return
+
+    # Risk
+    max_drawdown: float  # Maximum peak-to-trough decline (%)
+    volatility: float  # Annualized volatility (%)
+
+    # Trade Statistics
+    total_trades: int
+    winning_trades: int
+    losing_trades: int
+    win_rate: float  # Winning trades / total trades (%)
+
+    # Profitability
+    profit_factor: float  # Gross profit / gross loss
+    avg_win: float  # Average winning trade (%)
+    avg_loss: float  # Average losing trade (%)
+    avg_trade_duration_hours: float
+
+    # Portfolio
+    final_value: Decimal
+    initial_value: Decimal
+    total_fees: Decimal
+
+
+@dataclass
+class BacktestResult:
+    """Complete results from a backtest run."""
+
+    metrics: BacktestMetrics
+    trades: list[BacktestTrade]
+    equity_curve: pd.DataFrame  # timestamp, portfolio_value
+    signal_distribution: dict[str, int]  # Count of each signal action
+
+    def summary(self) -> str:
+        """Generate human-readable summary."""
+        m = self.metrics
+        return f"""
+Backtest Results
+================
+Total Return: {m.total_return:.2f}%
+Sharpe Ratio: {m.sharpe_ratio:.2f}
+Max Drawdown: {m.max_drawdown:.2f}%
+Win Rate: {m.win_rate:.1f}%
+Profit Factor: {m.profit_factor:.2f}
+Total Trades: {m.total_trades}
+
+Portfolio:
+  Initial: ${m.initial_value:,.2f}
+  Final: ${m.final_value:,.2f}
+  Fees: ${m.total_fees:,.2f}
+
+Trade Stats:
+  Avg Win: {m.avg_win:.2f}%
+  Avg Loss: {m.avg_loss:.2f}%
+  Avg Duration: {m.avg_trade_duration_hours:.1f}h
+
+Signal Distribution:
+  Buy: {self.signal_distribution.get('buy', 0)}
+  Sell: {self.signal_distribution.get('sell', 0)}
+  Hold: {self.signal_distribution.get('hold', 0)}
+""".strip()
+
+
+class Backtester:
+    """
+    Historical backtesting engine.
+
+    Features:
+    - Sequential candle-by-candle execution
+    - Realistic fill simulation with slippage and fees
+    - Position sizing with ATR-based risk management
+    - Comprehensive performance metrics
+    - Signal distribution analysis
+
+    Example:
+        >>> bt = Backtester(
+        ...     signal_scorer=SignalScorer(threshold=60),
+        ...     position_sizer=PositionSizer(),
+        ...     initial_capital=10000,
+        ...     fee_percent=0.006,
+        ... )
+        >>> results = bt.run(historical_df, start_date="2024-01-01")
+        >>> print(results.summary())
+    """
+
+    def __init__(
+        self,
+        signal_scorer: SignalScorer,
+        position_sizer: Optional[PositionSizer] = None,
+        initial_capital: float = 10000.0,
+        fee_percent: float = 0.006,  # 0.6% (Coinbase Advanced taker)
+        slippage_percent: float = 0.001,  # 0.1%
+        base_currency: str = "BTC",
+        quote_currency: str = "USD",
+    ):
+        """
+        Initialize backtester.
+
+        Args:
+            signal_scorer: SignalScorer instance with strategy parameters
+            position_sizer: PositionSizer for trade sizing (creates default if None)
+            initial_capital: Starting capital in quote currency
+            fee_percent: Trading fee as decimal (0.006 = 0.6%)
+            slippage_percent: Slippage as decimal (0.001 = 0.1%)
+            base_currency: Base currency symbol (e.g., BTC)
+            quote_currency: Quote currency symbol (e.g., USD)
+        """
+        self.signal_scorer = signal_scorer
+        self.position_sizer = position_sizer or PositionSizer(
+            config=PositionSizeConfig(
+                risk_per_trade_percent=0.5,
+                min_trade_base=0.0001,
+            )
+        )
+        self.initial_capital = Decimal(str(initial_capital))
+        self.fee_percent = Decimal(str(fee_percent))
+        self.slippage_percent = Decimal(str(slippage_percent))
+        self.base_currency = base_currency
+        self.quote_currency = quote_currency
+
+    def run(
+        self,
+        data: pd.DataFrame,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> BacktestResult:
+        """
+        Run backtest on historical OHLCV data.
+
+        Args:
+            data: DataFrame with columns: timestamp, open, high, low, close, volume
+                 Must be sorted by timestamp ascending
+            start_date: Optional start date (YYYY-MM-DD) to filter data
+            end_date: Optional end date (YYYY-MM-DD) to filter data
+
+        Returns:
+            BacktestResult with metrics, trades, and equity curve
+
+        Raises:
+            ValueError: If data is missing required columns or is unsorted
+        """
+        # Validate data
+        if data.empty:
+            raise ValueError("Data cannot be empty")
+
+        required_cols = {"timestamp", "open", "high", "low", "close", "volume"}
+        if not required_cols.issubset(data.columns):
+            raise ValueError(f"Data must contain columns: {required_cols}")
+
+        # Filter by date range
+        df = data.copy()
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            df = df.sort_values("timestamp")
+
+            if start_date:
+                # Handle timezone-aware comparisons
+                start_ts = pd.to_datetime(start_date)
+                if df["timestamp"].dt.tz is not None and start_ts.tz is None:
+                    start_ts = start_ts.tz_localize("UTC")
+                df = df[df["timestamp"] >= start_ts]
+            if end_date:
+                # Handle timezone-aware comparisons
+                end_ts = pd.to_datetime(end_date)
+                if df["timestamp"].dt.tz is not None and end_ts.tz is None:
+                    end_ts = end_ts.tz_localize("UTC")
+                df = df[df["timestamp"] <= end_ts]
+
+        if df.empty:
+            raise ValueError("No data after applying date filters")
+
+        logger.info(
+            "backtest_starting",
+            rows=len(df),
+            start=df["timestamp"].iloc[0],
+            end=df["timestamp"].iloc[-1],
+            initial_capital=str(self.initial_capital),
+        )
+
+        # Initialize state
+        quote_balance = self.initial_capital
+        base_balance = Decimal("0")
+        trades: list[BacktestTrade] = []
+        equity_curve = []
+        signal_counts = {"buy": 0, "sell": 0, "hold": 0}
+
+        # For tracking metrics
+        total_fees = Decimal("0")
+        open_position: Optional[BacktestTrade] = None
+
+        # Need minimum candles for indicators
+        min_candles = max(
+            self.signal_scorer.ema_slow_period,
+            self.signal_scorer.bollinger_period,
+            26,  # MACD slow
+        )
+
+        # Run through each candle
+        for idx in range(len(df)):
+            # Need enough history for indicators
+            if idx < min_candles:
+                continue
+
+            # Get current candle and historical window
+            current_idx = idx
+            hist_df = df.iloc[:current_idx + 1].copy()
+            current_candle = df.iloc[current_idx]
+            current_price = Decimal(str(current_candle["close"]))
+            timestamp = current_candle["timestamp"]
+
+            # Calculate signal
+            signal_result = self.signal_scorer.calculate_score(hist_df)
+            signal_counts[signal_result.action] += 1
+
+            # Execute trade logic
+            if signal_result.action == "buy" and open_position is None and quote_balance > 0:
+                # Calculate position size
+                size_result = self.position_sizer.calculate_size(
+                    df=hist_df,
+                    current_price=current_price,
+                    quote_balance=quote_balance,
+                    base_balance=base_balance,
+                    signal_strength=abs(signal_result.score),
+                    side="buy",
+                )
+
+                if size_result.size_quote > Decimal("10"):  # Minimum trade size
+                    # Apply slippage (price goes up for buys)
+                    fill_price = current_price * (Decimal("1") + self.slippage_percent)
+
+                    # Calculate fee and actual cost
+                    fee = size_result.size_quote * self.fee_percent
+                    total_cost = size_result.size_quote + fee
+
+                    # Check sufficient balance
+                    if total_cost <= quote_balance:
+                        # Execute buy
+                        base_received = size_result.size_quote / fill_price
+                        quote_balance -= total_cost
+                        base_balance += base_received
+                        total_fees += fee
+
+                        open_position = BacktestTrade(
+                            timestamp=timestamp,
+                            side="buy",
+                            entry_price=fill_price,
+                            size_base=base_received,
+                            size_quote=size_result.size_quote,
+                            fee=fee,
+                            signal_score=signal_result.score,
+                        )
+
+                        logger.debug(
+                            "backtest_buy",
+                            timestamp=timestamp,
+                            price=str(fill_price),
+                            size_base=str(base_received),
+                            fee=str(fee),
+                        )
+
+            elif signal_result.action == "sell" and open_position is not None:
+                # Close position
+                fill_price = current_price * (Decimal("1") - self.slippage_percent)
+
+                # Calculate proceeds and fee
+                gross_proceeds = base_balance * fill_price
+                fee = gross_proceeds * self.fee_percent
+                net_proceeds = gross_proceeds - fee
+
+                # Execute sell
+                quote_balance += net_proceeds
+                total_fees += fee
+
+                # Calculate P&L
+                pnl = gross_proceeds - open_position.size_quote - fee - open_position.fee
+                pnl_percent = (pnl / open_position.size_quote) * Decimal("100")
+
+                # Update and record trade
+                open_position.exit_price = fill_price
+                open_position.exit_timestamp = timestamp
+                open_position.pnl = pnl
+                open_position.pnl_percent = pnl_percent
+                trades.append(open_position)
+
+                logger.debug(
+                    "backtest_sell",
+                    timestamp=timestamp,
+                    price=str(fill_price),
+                    size_base=str(base_balance),
+                    pnl=str(pnl),
+                    pnl_percent=str(pnl_percent),
+                )
+
+                base_balance = Decimal("0")
+                open_position = None
+
+            # Record equity
+            portfolio_value = quote_balance + (base_balance * current_price)
+            equity_curve.append({
+                "timestamp": timestamp,
+                "portfolio_value": float(portfolio_value),
+            })
+
+        # Close any remaining position at final price
+        if open_position is not None:
+            final_price = Decimal(str(df.iloc[-1]["close"]))
+            final_timestamp = df.iloc[-1]["timestamp"]
+
+            fill_price = final_price * (Decimal("1") - self.slippage_percent)
+            gross_proceeds = base_balance * fill_price
+            fee = gross_proceeds * self.fee_percent
+            net_proceeds = gross_proceeds - fee
+
+            quote_balance += net_proceeds
+            total_fees += fee
+
+            pnl = gross_proceeds - open_position.size_quote - fee - open_position.fee
+            pnl_percent = (pnl / open_position.size_quote) * Decimal("100")
+
+            open_position.exit_price = fill_price
+            open_position.exit_timestamp = final_timestamp
+            open_position.pnl = pnl
+            open_position.pnl_percent = pnl_percent
+            trades.append(open_position)
+
+            base_balance = Decimal("0")
+
+        # Calculate metrics
+        final_value = quote_balance + (base_balance * Decimal(str(df.iloc[-1]["close"])))
+        metrics = self._calculate_metrics(
+            trades=trades,
+            equity_curve_data=equity_curve,
+            initial_value=self.initial_capital,
+            final_value=final_value,
+            total_fees=total_fees,
+        )
+
+        # Create equity curve DataFrame
+        equity_df = pd.DataFrame(equity_curve)
+
+        result = BacktestResult(
+            metrics=metrics,
+            trades=trades,
+            equity_curve=equity_df,
+            signal_distribution=signal_counts,
+        )
+
+        logger.info(
+            "backtest_complete",
+            total_trades=len(trades),
+            total_return=f"{metrics.total_return:.2f}%",
+            sharpe_ratio=f"{metrics.sharpe_ratio:.2f}",
+            max_drawdown=f"{metrics.max_drawdown:.2f}%",
+            win_rate=f"{metrics.win_rate:.1f}%",
+        )
+
+        return result
+
+    def _calculate_metrics(
+        self,
+        trades: list[BacktestTrade],
+        equity_curve_data: list[dict],
+        initial_value: Decimal,
+        final_value: Decimal,
+        total_fees: Decimal,
+    ) -> BacktestMetrics:
+        """Calculate performance metrics from backtest results."""
+
+        if not trades:
+            return BacktestMetrics(
+                total_return=0.0,
+                sharpe_ratio=0.0,
+                max_drawdown=0.0,
+                volatility=0.0,
+                total_trades=0,
+                winning_trades=0,
+                losing_trades=0,
+                win_rate=0.0,
+                profit_factor=0.0,
+                avg_win=0.0,
+                avg_loss=0.0,
+                avg_trade_duration_hours=0.0,
+                final_value=final_value,
+                initial_value=initial_value,
+                total_fees=total_fees,
+            )
+
+        # Total return
+        total_return = float((final_value - initial_value) / initial_value * 100)
+
+        # Trade statistics
+        winning_trades = [t for t in trades if t.pnl and t.pnl > 0]
+        losing_trades = [t for t in trades if t.pnl and t.pnl <= 0]
+        win_rate = (len(winning_trades) / len(trades) * 100) if trades else 0.0
+
+        # Profit factor
+        gross_profit = sum(float(t.pnl_percent or 0) for t in winning_trades)
+        gross_loss = abs(sum(float(t.pnl_percent or 0) for t in losing_trades))
+        profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 0.0
+
+        # Average win/loss
+        avg_win = (gross_profit / len(winning_trades)) if winning_trades else 0.0
+        avg_loss = (gross_loss / len(losing_trades)) if losing_trades else 0.0
+
+        # Average trade duration
+        durations = []
+        for t in trades:
+            if t.exit_timestamp:
+                duration = (t.exit_timestamp - t.timestamp).total_seconds() / 3600
+                durations.append(duration)
+        avg_duration = sum(durations) / len(durations) if durations else 0.0
+
+        # Equity curve analysis
+        equity_df = pd.DataFrame(equity_curve_data)
+        if not equity_df.empty:
+            # Calculate returns
+            equity_df["returns"] = equity_df["portfolio_value"].pct_change()
+
+            # Sharpe ratio (annualized, assuming 365 days)
+            # Simple estimate: mean return / std return * sqrt(periods per year)
+            mean_return = equity_df["returns"].mean()
+            std_return = equity_df["returns"].std()
+            if std_return > 0:
+                # Rough estimate assuming daily candles
+                sharpe_ratio = (mean_return / std_return) * (365 ** 0.5)
+            else:
+                sharpe_ratio = 0.0
+
+            # Volatility (annualized)
+            volatility = std_return * (365 ** 0.5) * 100
+
+            # Max drawdown
+            equity_df["peak"] = equity_df["portfolio_value"].cummax()
+            equity_df["drawdown"] = (
+                (equity_df["portfolio_value"] - equity_df["peak"]) / equity_df["peak"] * 100
+            )
+            max_drawdown = abs(equity_df["drawdown"].min())
+        else:
+            sharpe_ratio = 0.0
+            volatility = 0.0
+            max_drawdown = 0.0
+
+        return BacktestMetrics(
+            total_return=total_return,
+            sharpe_ratio=sharpe_ratio,
+            max_drawdown=max_drawdown,
+            volatility=volatility,
+            total_trades=len(trades),
+            winning_trades=len(winning_trades),
+            losing_trades=len(losing_trades),
+            win_rate=win_rate,
+            profit_factor=profit_factor,
+            avg_win=avg_win,
+            avg_loss=avg_loss,
+            avg_trade_duration_hours=avg_duration,
+            final_value=final_value,
+            initial_value=initial_value,
+            total_fees=total_fees,
+        )
