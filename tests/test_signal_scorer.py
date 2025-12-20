@@ -270,6 +270,20 @@ def test_breakdown_contains_all_components(scorer, sample_df):
     assert "trend_filter" in result.breakdown
 
 
+def test_components_has_all_seven_keys(scorer, sample_df):
+    """Test components dict always has exactly 7 expected keys with integer values."""
+    result = scorer.calculate_score(sample_df)
+
+    # Verify exactly 7 components exist
+    expected_keys = {"rsi", "macd", "bollinger", "ema", "volume", "trend_filter", "htf_bias"}
+    assert set(result.components.keys()) == expected_keys, \
+        f"Expected {expected_keys}, got {set(result.components.keys())}"
+
+    # Verify all values are integers
+    for key, value in result.components.items():
+        assert isinstance(value, int), f"Component '{key}' has non-integer value: {value} (type: {type(value)})"
+
+
 def test_confidence_zero_on_hold(scorer, sample_df):
     """Test confidence is 0.0 when action is hold."""
     scorer.threshold = 95  # Force hold

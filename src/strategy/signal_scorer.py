@@ -1063,7 +1063,8 @@ class SignalScorer:
                 1 for score in components.values()
                 if score != 0
             )
-            confluence_factor = confluence_count / 7  # 7 components: rsi, macd, bollinger, ema, volume, trend_filter, htf_bias
+            # Use actual component count for robustness (typically 7: rsi, macd, bollinger, ema, volume, trend_filter, htf_bias)
+            confluence_factor = confluence_count / len(components) if components else 0
 
             # Combine magnitude and confluence (equally weighted)
             magnitude_confidence = abs(total_score) / 100
