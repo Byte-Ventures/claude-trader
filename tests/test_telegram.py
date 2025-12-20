@@ -356,9 +356,9 @@ def test_disabled_notifier_does_not_send():
 # ============================================================================
 
 def test_notify_error_truncates_long_error_with_smart_truncation(notifier, mock_bot):
-    """Test that long error messages use smart truncation (first 250 + last 250)."""
+    """Test that long non-stack-trace error messages use smart truncation (first 400 + last 100)."""
     # Create error with 600 chars (exceeds 500 char limit)
-    long_error = "A" * 300 + "B" * 300
+    long_error = "A" * 400 + "B" * 200
 
     notifier.notify_error(
         error=long_error,
@@ -370,20 +370,20 @@ def test_notify_error_truncates_long_error_with_smart_truncation(notifier, mock_
     message = call_args.kwargs.get("text", call_args.args[1] if len(call_args.args) > 1 else "")
 
     # Verify smart truncation occurred:
-    # - Should have first 250 chars (all A's)
+    # - Should have first 400 chars (all A's)
     # - Should have "..." in the middle
-    # - Should have last 250 chars (all B's)
-    assert "A" * 250 in message
+    # - Should have last 100 chars (all B's)
+    assert "A" * 400 in message
     assert "..." in message
-    assert "B" * 250 in message
+    assert "B" * 100 in message
     # Should NOT contain the full original error
     assert long_error not in message
 
 
 def test_notify_error_truncates_long_context_with_smart_truncation(notifier, mock_bot):
-    """Test that long context messages use smart truncation (first 250 + last 250)."""
+    """Test that long context messages use smart truncation (first 400 + last 100)."""
     # Create context with 600 chars (exceeds 500 char limit)
-    long_context = "X" * 300 + "Y" * 300
+    long_context = "X" * 400 + "Y" * 200
 
     notifier.notify_error(
         error="Short error",
@@ -395,9 +395,9 @@ def test_notify_error_truncates_long_context_with_smart_truncation(notifier, moc
     message = call_args.kwargs.get("text", call_args.args[1] if len(call_args.args) > 1 else "")
 
     # Verify smart truncation occurred for context
-    assert "X" * 250 in message
+    assert "X" * 400 in message
     assert "..." in message
-    assert "Y" * 250 in message
+    assert "Y" * 100 in message
     # Should NOT contain the full original context
     assert long_context not in message
 
@@ -440,3 +440,54 @@ def test_notify_error_truncates_both_error_and_context(notifier, mock_bot):
     # Both should be truncated
     # Count the ellipsis - should have 2 (one for error, one for context)
     assert message.count("...") == 2
+
+
+def test_notify_error_exactly_at_limit(notifier, mock_bot):
+    """Test messages exactly at 500 chars are not truncated."""
+    exactly_500 = "A" * 500
+    notifier.notify_error(error=exactly_500)
+    message = mock_bot.send_message.call_args.kwargs["text"]
+    assert exactly_500 in message
+    assert message.count("...") == 0
+
+
+def test_notify_error_handles_empty_strings(notifier, mock_bot):
+    """Test empty error and context strings don't cause issues."""
+    notifier.notify_error(error="", context="")
+    # Should not raise exceptions
+    mock_bot.send_message.assert_called()
+    message = mock_bot.send_message.call_args.kwargs["text"]
+    # Should contain the error structure but with empty values
+    assert "System Error" in message
+
+
+def test_notify_error_handles_unicode(notifier, mock_bot):
+    """Test truncation works with unicode characters."""
+    long_unicode = "🔥" * 600  # Emoji characters
+    notifier.notify_error(error=long_unicode)
+    # Should not raise exceptions
+    mock_bot.send_message.assert_called()
+
+
+def test_notify_error_truncates_stack_traces_with_balanced_split(notifier, mock_bot):
+    """Test stack traces use balanced 250/250 truncation to preserve error type at both ends."""
+    # Create a realistic stack trace with 600 chars
+    stack_trace = (
+        "Traceback (most recent call last):\n"
+        + "  File /app/src/daemon/runner.py, line 1025\n" * 10  # Repeating lines
+        + "sqlalchemy.exc.OperationalError: database is locked"
+    )
+    # Make it longer than 500 chars
+    stack_trace = stack_trace + "X" * (600 - len(stack_trace))
+
+    notifier.notify_error(error=stack_trace, context="Test")
+
+    mock_bot.send_message.assert_called()
+    call_args = mock_bot.send_message.call_args
+    message = call_args.kwargs.get("text", call_args.args[1] if len(call_args.args) > 1 else "")
+
+    # Verify balanced truncation occurred (250/250 for stack traces)
+    assert "Traceback" in message  # Should preserve start
+    assert "..." in message
+    # Should preserve end (last 250 chars)
+    assert message.count("...") == 1

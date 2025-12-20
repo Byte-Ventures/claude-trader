@@ -642,18 +642,22 @@ class TelegramNotifier:
 
     def notify_error(self, error: str, context: str = "") -> None:
         """Send notification for system error."""
-        # Truncate both error and context to prevent Telegram length issues
-        # Using 500 char limit with smart truncation (first 250 + last 250)
-        # to preserve both start (error type) and end (relevant details)
+        # Truncate both error and context to ensure readable notifications
+        # Limit set to 500 chars to preserve readability while capturing essential details
+        # (Telegram API limit is 4096, but shorter messages are more actionable)
         MAX_LEN = 500
 
         if len(error) > MAX_LEN:
-            # Smart truncation: keep first 250 and last 250 chars
-            error = error[:250] + "..." + error[-250:]
+            # For stack traces, prioritize start + end (error type at both locations)
+            # For other errors, keep first 400 + last 100 to preserve error message
+            if 'Traceback' in error or '  File ' in error:
+                error = error[:250] + "..." + error[-250:]
+            else:
+                error = error[:400] + "..." + error[-100:]
 
         if len(context) > MAX_LEN:
-            # Smart truncation: keep first 250 and last 250 chars
-            context = context[:250] + "..." + context[-250:]
+            # For context, preserve more of the beginning (usually more relevant)
+            context = context[:400] + "..." + context[-100:]
 
         message = (
             f"❌ <b>System Error</b>\n\n"
