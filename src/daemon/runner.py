@@ -18,7 +18,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Event
+from threading import Event, Lock
 from typing import Optional, Union
 
 import structlog
@@ -126,6 +126,16 @@ class TradingDaemon:
         # iterations can occur because the main loop is synchronous.
         self._current_signal_id: Optional[int] = None
         self._signal_history_failures: int = 0  # Track consecutive storage failures
+
+        # Sentiment fetch failure tracking
+        # Thread-safety note: Lock is needed because sentiment fetches occur in both
+        # _trading_iteration() and _check_hourly_analysis(). While the main loop is
+        # synchronous, these methods could theoretically access the counter at overlapping
+        # times if async operations or future refactoring creates concurrency. The lock
+        # ensures atomic counter updates and prevents race conditions during increment/reset.
+        self._sentiment_fetch_failures: int = 0  # Track consecutive sentiment fetch failures
+        self._last_sentiment_fetch_success: Optional[datetime] = None  # Last successful fetch time
+        self._sentiment_lock = Lock()  # Protect sentiment failure counter from race conditions
 
         # Create persistent event loop for async operations (avoids repeated asyncio.run())
         self._loop = asyncio.new_event_loop()
@@ -1438,18 +1448,24 @@ class TradingDaemon:
                         category=sentiment_category,
                         value=sentiment.value,
                     )
+                    # Record success and handle recovery notification
+                    self._record_sentiment_success()
                 else:
                     logger.warning(
                         "sentiment_unavailable_for_trade_evaluation",
                         reason="fetch_returned_none",
                         impact="extreme_fear_override_disabled",
                     )
+                    # Record failure atomically (increments counter and checks threshold)
+                    self._record_sentiment_failure(context="trading")
             except Exception as e:
                 logger.warning(
                     "sentiment_fetch_failed_during_trade_evaluation",
                     error=str(e),
                     impact="extreme_fear_override_disabled",
                 )
+                # Record failure atomically (increments counter and checks threshold)
+                self._record_sentiment_failure(context="trading")
 
         # Calculate signal with HTF context and sentiment
         signal_result = self.signal_scorer.calculate_score(
@@ -3214,6 +3230,104 @@ class TradingDaemon:
             logger.warning("cramer_portfolio_fetch_error", error=str(e))
             return None
 
+    def _record_sentiment_failure(self, context: str = "unknown") -> None:
+        """Atomically record sentiment fetch failure and alert if threshold is exceeded.
+
+        This method:
+        1. Increments the failure counter
+        2. Checks if the threshold is exceeded
+        3. Alerts if this is the first time we cross the threshold
+
+        Args:
+            context: The context where failure occurred ("trading" or "dashboard")
+
+        Thread-safe: All counter operations are atomic under lock.
+        """
+        threshold = self.settings.sentiment_failure_alert_threshold
+
+        # Atomically increment and check threshold under lock
+        with self._sentiment_lock:
+            self._sentiment_fetch_failures += 1
+            failures_count = self._sentiment_fetch_failures
+
+            # Only alert when we first cross the threshold
+            if failures_count != threshold:
+                # Log for troubleshooting when already past threshold
+                if failures_count > threshold:
+                    logger.debug(
+                        "sentiment_fetch_failures_above_threshold",
+                        consecutive_failures=failures_count,
+                        threshold=threshold,
+                        context=context,
+                    )
+                return
+
+            # Read last success timestamp under lock
+            last_success_timestamp = self._last_sentiment_fetch_success
+
+        # Calculate time since last success outside lock (only read operation needs protection)
+        try:
+            if last_success_timestamp is None:
+                time_since_success = "none (check API connectivity)"
+            else:
+                minutes_ago = (datetime.now(timezone.utc) - last_success_timestamp).total_seconds() / 60
+                if minutes_ago < 0:
+                    # Timestamp is in the future - clock skew detected
+                    time_since_success = "unknown (clock skew detected)"
+                elif minutes_ago < 1:
+                    time_since_success = "just now (< 1 minute ago)"
+                else:
+                    time_since_success = f"{minutes_ago:.0f} minutes ago"
+        except Exception:
+            # If time calculation fails (e.g., system clock issues), use fallback
+            time_since_success = "unknown"
+
+        # Perform logging and notifications outside the lock to minimize lock hold time
+        logger.error(
+            "sentiment_fetch_failure_threshold_exceeded",
+            consecutive_failures=failures_count,
+            threshold=threshold,
+            last_success=time_since_success,
+            impact="extreme_fear_override_disabled",
+            context=context,
+        )
+
+        self.notifier.notify_error(
+            f"Sentiment API failing: {failures_count} consecutive failures. "
+            f"Last success: {time_since_success}. "
+            f"Extreme fear override is disabled until sentiment API recovers.",
+            "Sentiment Fetch Failure Alert"
+        )
+
+    def _record_sentiment_success(self) -> None:
+        """Record successful sentiment fetch and notify recovery if needed.
+
+        This method:
+        1. Checks if we were previously in an alert state
+        2. Resets the failure counter
+        3. Updates the last success timestamp
+        4. Notifies recovery if we were previously failing
+
+        NOTE: This is called from both _trading_iteration() and _check_hourly_analysis().
+        Both code paths share the same failure counter, so "consecutive failures" means
+        consecutive attempts across all contexts (trading + dashboard), not per-context.
+        This is intentional - we want to know about API health globally.
+        """
+        threshold = self.settings.sentiment_failure_alert_threshold
+
+        # Atomically check and reset state under lock
+        with self._sentiment_lock:
+            was_in_alert_state = self._sentiment_fetch_failures >= threshold
+            self._sentiment_fetch_failures = 0
+            self._last_sentiment_fetch_success = datetime.now(timezone.utc)
+
+        # Notify recovery if we were previously failing (outside lock to minimize hold time)
+        if was_in_alert_state:
+            self.notifier.notify_info(
+                "Sentiment API has recovered. Extreme fear override is now active.",
+                "Sentiment API Recovery"
+            )
+
     def _check_daily_report(self) -> None:
         """Check if we should generate daily performance report (UTC)."""
         today = datetime.now(timezone.utc).date()
@@ -3493,8 +3607,24 @@ class TradingDaemon:
                     if sentiment_result and sentiment_result.value:
                         sentiment_value = sentiment_result.value
                         sentiment_class = sentiment_result.classification or "Unknown"
+                        # Record success and handle recovery notification
+                        self._record_sentiment_success()
+                    else:
+                        logger.warning(
+                            "sentiment_unavailable_for_dashboard",
+                            reason="fetch_returned_none",
+                            impact="extreme_fear_override_disabled",
+                        )
+                        # Record failure atomically (increments counter and checks threshold)
+                        self._record_sentiment_failure(context="dashboard")
                 except Exception as e:
-                    logger.debug("sentiment_fetch_skipped", error=str(e))
+                    logger.warning(
+                        "sentiment_fetch_failed_during_dashboard",
+                        error=str(e),
+                        impact="extreme_fear_override_disabled",
+                    )
+                    # Record failure atomically (increments counter and checks threshold)
+                    self._record_sentiment_failure(context="dashboard")
 
             # Calculate price changes from candles
             price_change_1h = None

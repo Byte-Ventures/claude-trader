@@ -737,6 +737,14 @@ class Settings(BaseSettings):
         description="Custom sentiment-trend interaction modifiers. If None, uses hardcoded defaults in regime.py. Format: JSON object with keys like 'extreme_fear_bearish_buy' containing threshold_mult and position_mult values."
     )
 
+    # Sentiment Fetch Failure Alerting
+    sentiment_failure_alert_threshold: int = Field(
+        default=3,
+        ge=1,
+        le=100,
+        description="Number of consecutive sentiment fetch failures before alerting (default: 3)"
+    )
+
     # Cramer Mode Mode (paper trading only)
     enable_cramer_mode: bool = Field(
         default=False,
