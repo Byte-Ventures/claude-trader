@@ -164,8 +164,9 @@ def mock_settings():
     settings.mtf_aligned_boost = 20
     settings.mtf_counter_penalty = 20
 
-    # AI max tokens
-    settings.ai_max_tokens = 4000
+    # AI max tokens (split by use case)
+    settings.ai_reviewer_max_tokens = 800
+    settings.ai_research_max_tokens = 4000
 
     # Risk Management (new parameters)
     settings.risk_per_trade_percent = 0.5

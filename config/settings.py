@@ -576,11 +576,17 @@ class Settings(BaseSettings):
         default=True,
         description="Allow AI models to search web during market analysis"
     )
-    ai_max_tokens: int = Field(
+    ai_reviewer_max_tokens: int = Field(
+        default=800,
+        ge=200,
+        le=2000,
+        description="Max tokens for trade review decisions (shorter responses)"
+    )
+    ai_research_max_tokens: int = Field(
         default=4000,
-        ge=500,
-        le=16000,
-        description="Maximum tokens for AI API responses (increase if seeing truncated JSON errors)"
+        ge=1000,
+        le=8000,
+        description="Max tokens for market research (longer responses)"
     )
     ai_api_timeout: int = Field(
         default=120,
@@ -1210,6 +1216,24 @@ class Settings(BaseSettings):
                     )
                 except ValueError:
                     pass  # Invalid value, let normal validation handle it
+
+        # v1.40.0: Migrate old AI_MAX_TOKENS to split settings
+        old_max_tokens = os.environ.get("AI_MAX_TOKENS")
+        if old_max_tokens is not None:
+            has_new_reviewer = os.environ.get("AI_REVIEWER_MAX_TOKENS") or data.get("ai_reviewer_max_tokens")
+            has_new_research = os.environ.get("AI_RESEARCH_MAX_TOKENS") or data.get("ai_research_max_tokens")
+
+            if not has_new_reviewer and not has_new_research:
+                # Migrate: use old value for research (longer), use default 800 for reviewer (shorter)
+                data["ai_research_max_tokens"] = int(old_max_tokens)
+                warnings.warn(
+                    f"AI_MAX_TOKENS={old_max_tokens} is deprecated. "
+                    f"Migrated to AI_RESEARCH_MAX_TOKENS={old_max_tokens}. "
+                    "Update your .env to use AI_REVIEWER_MAX_TOKENS (default 800) "
+                    "and AI_RESEARCH_MAX_TOKENS (default 4000).",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
 
         return data
 
