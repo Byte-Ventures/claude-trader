@@ -428,6 +428,46 @@ function updateDashboard(state) {
         document.getElementById('weight-profile-confidence').textContent = '--';
     }
 
+    // Update HTF bias
+    const htfBiasCard = document.getElementById('htf-bias-card');
+    const htfBias = state.htf_bias;
+    if (htfBias) {
+        htfBiasCard.style.display = 'block';
+
+        const trendEmoji = {
+            'bullish': '📈',
+            'bearish': '📉',
+            'neutral': '↔️'
+        };
+
+        const biasEmoji = htfBias.combined_bias === 'bullish' ? '✅' :
+                         htfBias.combined_bias === 'bearish' ? '❌' :
+                         '⚖️';
+
+        // Defensive check: Pydantic guarantees combined_bias is non-null Literal["bullish", "bearish", "neutral"]
+        // but we check anyway for runtime safety in JavaScript
+        const biasText = htfBias.combined_bias
+            ? htfBias.combined_bias.charAt(0).toUpperCase() + htfBias.combined_bias.slice(1)
+            : 'Unknown';
+        document.getElementById('htf-combined-bias').textContent = `${biasEmoji} ${biasText}`;
+
+        const dailyEmoji = htfBias.daily_trend
+            ? (trendEmoji[htfBias.daily_trend] || '↔️')
+            : '↔️';
+
+        // Only show 4H trend if available (when mtf_4h_enabled=true)
+        if (htfBias.four_hour_trend) {
+            const fourHourEmoji = trendEmoji[htfBias.four_hour_trend] || '↔️';
+            document.getElementById('htf-trends').textContent =
+                `Daily: ${dailyEmoji} | 4H: ${fourHourEmoji}`;
+        } else {
+            // Daily-only mode: hide 4H label for cleaner display
+            document.getElementById('htf-trends').textContent = `Daily: ${dailyEmoji}`;
+        }
+    } else {
+        htfBiasCard.style.display = 'none';
+    }
+
     // Update circuit breaker
     const cbEl = document.getElementById('circuit-breaker');
     const cbLevel = state.safety.circuit_breaker;

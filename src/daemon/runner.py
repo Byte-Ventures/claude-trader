@@ -862,7 +862,7 @@ class TradingDaemon:
         Get trend for a specific timeframe with caching.
 
         Args:
-            granularity: Candle granularity (e.g., "ONE_DAY", "FOUR_HOUR")
+            granularity: Candle granularity ("ONE_DAY" or "FOUR_HOUR")
             cache_minutes: Cache TTL in minutes
 
         Returns:
@@ -872,9 +872,11 @@ class TradingDaemon:
         if granularity == "ONE_DAY":
             last_fetch = self._daily_last_fetch
             cached_trend = self._daily_trend
-        else:  # FOUR_HOUR
+        elif granularity == "FOUR_HOUR":
             last_fetch = self._4h_last_fetch
             cached_trend = self._4h_trend
+        else:
+            raise ValueError(f"Unsupported granularity for HTF: {granularity}")
 
         now = datetime.now(timezone.utc)
         if last_fetch and (now - last_fetch) < timedelta(minutes=cache_minutes):
@@ -914,9 +916,11 @@ class TradingDaemon:
             if granularity == "ONE_DAY":
                 self._daily_trend = trend
                 self._daily_last_fetch = now
-            else:
+            elif granularity == "FOUR_HOUR":
                 self._4h_trend = trend
                 self._4h_last_fetch = now
+            else:
+                raise ValueError(f"Unsupported granularity for HTF: {granularity}")
 
             logger.info("htf_trend_updated", timeframe=granularity, trend=trend)
             return trend
@@ -932,18 +936,21 @@ class TradingDaemon:
             logger.error("htf_fetch_unexpected_error", timeframe=granularity, error=str(e), error_type=type(e).__name__)
             return cached_trend or "neutral"
 
-    def _get_htf_bias(self) -> tuple[str, str, str]:
+    def _get_htf_bias(self) -> tuple[str, Optional[str], Optional[str]]:
         """
-        Get combined HTF bias from daily + 6-hour trends.
+        Get combined HTF bias from daily + 4-hour trends.
 
         Returns:
-            Tuple of (combined_bias, daily_trend, 6h_trend)
+            Tuple of (combined_bias, daily_trend, 4h_trend)
             - Both bullish → "bullish"
             - Both bearish → "bearish"
             - Mixed/neutral → "neutral"
+            - daily_trend is None when mtf_enabled=False
+            - 4h_trend is None when mtf_4h_enabled=False
         """
         if not self.settings.mtf_enabled:
-            return "neutral", "neutral", "neutral"
+            # When MTF is disabled, we don't fetch ANY HTF data, so both trends should be None
+            return "neutral", None, None
 
         daily = self._get_timeframe_trend("ONE_DAY", self.settings.mtf_daily_cache_minutes)
 
@@ -982,8 +989,8 @@ class TradingDaemon:
         signal_result,
         current_price: Decimal,
         htf_bias: str,
-        daily_trend: str,
-        four_hour_trend: str,
+        daily_trend: Optional[str],
+        four_hour_trend: Optional[str],
         threshold: int,
         trade_executed: bool = False,
     ) -> Optional[int]:
@@ -1443,6 +1450,11 @@ class TradingDaemon:
             )
 
         # Get HTF bias for multi-timeframe confirmation
+        # NOTE: _get_htf_bias() handles MTF configuration:
+        # - MTF disabled: returns ("neutral", None, None)
+        # - MTF enabled, 4H disabled: returns (daily, daily, None)
+        # - MTF fully enabled: returns (combined, daily, four_hour)
+        # These variables are used in signal calculation AND dashboard state, ensuring consistency
         htf_bias, daily_trend, four_hour_trend = self._get_htf_bias()
 
         # Fetch sentiment before signal calculation to enable extreme fear override in MTF logic.
@@ -1813,6 +1825,11 @@ class TradingDaemon:
                 "confidence": self._last_weight_profile_confidence,
                 "reasoning": self._last_weight_profile_reasoning,
             } if self.weight_profile_selector else None,
+            "htf_bias": {
+                "daily_trend": daily_trend,
+                "four_hour_trend": four_hour_trend,
+                "combined_bias": htf_bias,
+            } if self.settings.mtf_enabled else None,
             "safety": {
                 "circuit_breaker": self.circuit_breaker.level.name,
                 "can_trade": self.circuit_breaker.can_trade,
