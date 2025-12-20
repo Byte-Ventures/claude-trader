@@ -1904,6 +1904,7 @@ def test_signal_history_indexes_exist(db):
     # Check for expected indexes
     assert any("timestamp" in name for name in index_names)
     assert any("paper" in name and "timestamp" in name for name in index_names)
+    assert "ix_signal_history_executed_lookup" in index_names
 
 
 def test_signal_history_null_htf_values(db):
