@@ -1050,10 +1050,11 @@ class TradingDaemon:
                 error_type=type(e).__name__,
                 consecutive_failures=self._signal_history_failures,
             )
-            # Alert at 10 failures, then every 50 additional failures (60, 110, 160...)
-            if self._signal_history_failures == 10 or (
-                self._signal_history_failures > 10
-                and (self._signal_history_failures - 10) % 50 == 0
+            # Alert at threshold failures, then every 50 additional failures
+            threshold = self.settings.signal_history_failure_threshold
+            if self._signal_history_failures == threshold or (
+                self._signal_history_failures > threshold
+                and (self._signal_history_failures - threshold) % 50 == 0
             ):
                 self.notifier.notify_error(
                     f"Signal history storage failing ({self._signal_history_failures} consecutive failures)",
