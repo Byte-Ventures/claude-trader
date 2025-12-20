@@ -925,7 +925,8 @@ class TradingDaemon:
             - 4h_trend is None when mtf_4h_enabled=False
         """
         if not self.settings.mtf_enabled:
-            return "neutral", "neutral", None
+            # When MTF is disabled, we don't fetch ANY HTF data, so both trends should be None
+            return "neutral", None, None
 
         daily = self._get_timeframe_trend("ONE_DAY", self.settings.mtf_daily_cache_minutes)
 

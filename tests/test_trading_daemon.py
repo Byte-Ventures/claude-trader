@@ -1888,11 +1888,11 @@ def test_get_htf_bias_disabled_returns_neutral(mock_settings, mock_exchange_clie
             with patch('src.daemon.runner.TelegramNotifier'):
                 daemon = TradingDaemon(mock_settings)
 
-                bias, daily, six_h = daemon._get_htf_bias()
+                bias, daily, four_h = daemon._get_htf_bias()
 
                 assert bias == "neutral"
-                assert daily == "neutral"
-                assert six_h is None  # None when MTF disabled, per type signature
+                assert daily is None  # None when MTF disabled, per type signature
+                assert four_h is None  # None when MTF disabled, per type signature
 
 
 def test_get_timeframe_trend_caching(htf_mock_settings, mock_exchange_client, mock_database):
