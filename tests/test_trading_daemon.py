@@ -3721,11 +3721,10 @@ class TestSentimentFailureTracking:
         # Verify initial state
         assert daemon_with_sentiment._sentiment_fetch_failures == 0
 
-        # Trigger failure check
-        daemon_with_sentiment._sentiment_fetch_failures = 1
-        daemon_with_sentiment._check_sentiment_failure_threshold()
+        # Record a failure (increments counter)
+        daemon_with_sentiment._record_sentiment_failure()
 
-        # Counter should remain at 1 (not at threshold yet)
+        # Counter should be at 1 (not at threshold yet)
         assert daemon_with_sentiment._sentiment_fetch_failures == 1
 
         # Verify no alert sent
@@ -3733,11 +3732,11 @@ class TestSentimentFailureTracking:
 
     def test_counter_increments_on_none_return(self, daemon_with_sentiment):
         """Test that failure counter increments when sentiment fetch returns None."""
-        # Simulate None return scenario
-        daemon_with_sentiment._sentiment_fetch_failures = 2
-        daemon_with_sentiment._check_sentiment_failure_threshold()
+        # Record two failures
+        daemon_with_sentiment._record_sentiment_failure()
+        daemon_with_sentiment._record_sentiment_failure()
 
-        # Counter should remain at 2 (not at threshold yet)
+        # Counter should be at 2 (not at threshold yet)
         assert daemon_with_sentiment._sentiment_fetch_failures == 2
 
         # Verify no alert sent
@@ -3760,11 +3759,11 @@ class TestSentimentFailureTracking:
         """Test that alert fires exactly once when threshold is reached."""
         threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
 
-        # Set to threshold
-        daemon_with_sentiment._sentiment_fetch_failures = threshold
-        daemon_with_sentiment._check_sentiment_failure_threshold()
+        # Record failures up to threshold
+        for _ in range(threshold):
+            daemon_with_sentiment._record_sentiment_failure()
 
-        # Alert should be sent once
+        # Alert should be sent once (when we hit the threshold)
         daemon_with_sentiment.notifier.notify_error.assert_called_once()
 
         # Verify alert message contains key information
@@ -3777,22 +3776,23 @@ class TestSentimentFailureTracking:
         """Test that alert does not fire again when failures exceed threshold."""
         threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
 
-        # Set to threshold + 1
-        daemon_with_sentiment._sentiment_fetch_failures = threshold + 1
-        daemon_with_sentiment._check_sentiment_failure_threshold()
+        # Record failures past threshold
+        for _ in range(threshold + 1):
+            daemon_with_sentiment._record_sentiment_failure()
 
-        # Alert should NOT be sent (only fires at exactly threshold)
-        daemon_with_sentiment.notifier.notify_error.assert_not_called()
+        # Alert should be called exactly once (at threshold), not again after
+        assert daemon_with_sentiment.notifier.notify_error.call_count == 1
 
     def test_alert_message_first_run(self, daemon_with_sentiment):
         """Test alert message formatting when no previous success (first run)."""
         threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
 
-        # Set to threshold with no previous success
-        daemon_with_sentiment._sentiment_fetch_failures = threshold
+        # Ensure no previous success
         daemon_with_sentiment._last_sentiment_fetch_success = None
 
-        daemon_with_sentiment._check_sentiment_failure_threshold()
+        # Record failures up to threshold
+        for _ in range(threshold):
+            daemon_with_sentiment._record_sentiment_failure()
 
         # Verify alert message contains improved first-run message
         call_args = daemon_with_sentiment.notifier.notify_error.call_args
@@ -3803,11 +3803,12 @@ class TestSentimentFailureTracking:
         """Test alert message formatting with previous successful fetch."""
         threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
 
-        # Set to threshold with previous success
-        daemon_with_sentiment._sentiment_fetch_failures = threshold
+        # Set previous success
         daemon_with_sentiment._last_sentiment_fetch_success = datetime.now(timezone.utc)
 
-        daemon_with_sentiment._check_sentiment_failure_threshold()
+        # Record failures up to threshold
+        for _ in range(threshold):
+            daemon_with_sentiment._record_sentiment_failure()
 
         # Verify alert message contains time information
         call_args = daemon_with_sentiment.notifier.notify_error.call_args
@@ -3818,12 +3819,10 @@ class TestSentimentFailureTracking:
         """Test that time calculation errors are handled gracefully."""
         threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
 
-        # Set to threshold with a mock datetime that will cause calculation issues
-        daemon_with_sentiment._sentiment_fetch_failures = threshold
-
         # This should not raise an exception even if time calc fails
-        # The try-except in _check_sentiment_failure_threshold handles it
-        daemon_with_sentiment._check_sentiment_failure_threshold()
+        # The try-except in _record_sentiment_failure handles it
+        for _ in range(threshold):
+            daemon_with_sentiment._record_sentiment_failure()
 
         # Alert should still be sent
         daemon_with_sentiment.notifier.notify_error.assert_called_once()

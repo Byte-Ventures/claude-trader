@@ -128,6 +128,11 @@ class TradingDaemon:
         self._signal_history_failures: int = 0  # Track consecutive storage failures
 
         # Sentiment fetch failure tracking
+        # Thread-safety note: Lock is needed because sentiment fetches occur in both
+        # _trading_iteration() and _check_hourly_analysis(). While the main loop is
+        # synchronous, these methods could theoretically access the counter at overlapping
+        # times if async operations or future refactoring creates concurrency. The lock
+        # ensures atomic counter updates and prevents race conditions during increment/reset.
         self._sentiment_fetch_failures: int = 0  # Track consecutive sentiment fetch failures
         self._last_sentiment_fetch_success: Optional[datetime] = None  # Last successful fetch time
         self._sentiment_lock = Lock()  # Protect sentiment failure counter from race conditions
@@ -1451,20 +1456,16 @@ class TradingDaemon:
                         reason="fetch_returned_none",
                         impact="extreme_fear_override_disabled",
                     )
-                    # Increment failure counter (protected by lock)
-                    with self._sentiment_lock:
-                        self._sentiment_fetch_failures += 1
-                    self._check_sentiment_failure_threshold()
+                    # Record failure atomically (increments counter and checks threshold)
+                    self._record_sentiment_failure()
             except Exception as e:
                 logger.warning(
                     "sentiment_fetch_failed_during_trade_evaluation",
                     error=str(e),
                     impact="extreme_fear_override_disabled",
                 )
-                # Increment failure counter (protected by lock)
-                with self._sentiment_lock:
-                    self._sentiment_fetch_failures += 1
-                self._check_sentiment_failure_threshold()
+                # Record failure atomically (increments counter and checks threshold)
+                self._record_sentiment_failure()
 
         # Calculate signal with HTF context and sentiment
         signal_result = self.signal_scorer.calculate_score(
@@ -3229,30 +3230,43 @@ class TradingDaemon:
             logger.warning("cramer_portfolio_fetch_error", error=str(e))
             return None
 
-    def _check_sentiment_failure_threshold(self) -> None:
-        """Check if sentiment fetch failures exceed threshold and alert if needed."""
+    def _record_sentiment_failure(self) -> None:
+        """Atomically record sentiment fetch failure and alert if threshold is exceeded.
+
+        This method:
+        1. Increments the failure counter
+        2. Checks if the threshold is exceeded
+        3. Alerts if this is the first time we cross the threshold
+
+        Thread-safe: All counter operations are atomic under lock.
+        """
         threshold = self.settings.sentiment_failure_alert_threshold
 
-        # Only alert when we first cross the threshold
+        # Atomically increment and check threshold under lock
         with self._sentiment_lock:
-            if self._sentiment_fetch_failures != threshold:
+            self._sentiment_fetch_failures += 1
+            failures_count = self._sentiment_fetch_failures
+
+            # Only alert when we first cross the threshold
+            if failures_count != threshold:
                 return
 
-            # Calculate time since last success with error handling (inside lock for consistency)
-            try:
-                if self._last_sentiment_fetch_success is None:
-                    time_since_success = "none (check API connectivity)"
-                else:
-                    minutes_ago = (datetime.now(timezone.utc) - self._last_sentiment_fetch_success).total_seconds() / 60
-                    if minutes_ago < 1:
-                        time_since_success = "just now (< 1 minute ago)"
-                    else:
-                        time_since_success = f"{minutes_ago:.0f} minutes ago"
-            except Exception:
-                # If time calculation fails (e.g., system clock issues), use fallback
-                time_since_success = "unknown"
+            # Read last success timestamp under lock
+            last_success_timestamp = self._last_sentiment_fetch_success
 
-            failures_count = self._sentiment_fetch_failures
+        # Calculate time since last success outside lock (only read operation needs protection)
+        try:
+            if last_success_timestamp is None:
+                time_since_success = "none (check API connectivity)"
+            else:
+                minutes_ago = (datetime.now(timezone.utc) - last_success_timestamp).total_seconds() / 60
+                if minutes_ago < 1:
+                    time_since_success = "just now (< 1 minute ago)"
+                else:
+                    time_since_success = f"{minutes_ago:.0f} minutes ago"
+        except Exception:
+            # If time calculation fails (e.g., system clock issues), use fallback
+            time_since_success = "unknown"
 
         # Perform logging and notifications outside the lock to minimize lock hold time
         logger.error(
@@ -3586,20 +3600,16 @@ class TradingDaemon:
                             reason="fetch_returned_none",
                             impact="extreme_fear_override_disabled",
                         )
-                        # Increment failure counter (protected by lock)
-                        with self._sentiment_lock:
-                            self._sentiment_fetch_failures += 1
-                        self._check_sentiment_failure_threshold()
+                        # Record failure atomically (increments counter and checks threshold)
+                        self._record_sentiment_failure()
                 except Exception as e:
                     logger.warning(
                         "sentiment_fetch_failed_during_dashboard",
                         error=str(e),
                         impact="extreme_fear_override_disabled",
                     )
-                    # Increment failure counter (protected by lock)
-                    with self._sentiment_lock:
-                        self._sentiment_fetch_failures += 1
-                    self._check_sentiment_failure_threshold()
+                    # Record failure atomically (increments counter and checks threshold)
+                    self._record_sentiment_failure()
 
             # Calculate price changes from candles
             price_change_1h = None
