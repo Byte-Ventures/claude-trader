@@ -393,14 +393,6 @@ function connectWebSocket() {
 
 // Update dashboard with new state
 function updateDashboard(state) {
-    // Update price
-    const priceEl = document.getElementById('current-price');
-    const price = parseFloat(state.price);
-    priceEl.textContent = formatCurrency(price);
-
-    // Update trading pair
-    document.getElementById('trading-pair').textContent = state.trading_pair;
-
     // Update signal
     const signalEl = document.getElementById('signal-score');
     const score = state.signal.score;
@@ -632,7 +624,6 @@ function updateBreakdownBar(id, value) {
 
 // Update config display
 function updateConfig(config) {
-    document.getElementById('trading-pair').textContent = config.trading_pair;
     document.getElementById('signal-threshold').textContent = `Threshold: |${config.signal_threshold}|`;
     if (config.candle_interval) {
         candleIntervalSeconds = parseIntervalToSeconds(config.candle_interval);
