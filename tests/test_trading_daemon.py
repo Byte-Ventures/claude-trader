@@ -2168,13 +2168,13 @@ def test_store_signal_history_alerts_after_repeated_failures(htf_mock_settings, 
 
 
 def test_store_signal_history_truncates_long_errors(htf_mock_settings, mock_exchange_client, mock_database):
-    """Test that long error messages are truncated with ellipsis in alerts."""
+    """Test that long error messages are truncated with smart truncation in alerts."""
     from src.strategy.signal_scorer import SignalResult, IndicatorValues
     from sqlalchemy.exc import SQLAlchemyError
-    from src.daemon.runner import MAX_ERROR_MSG_LENGTH
 
-    # Create error with message > MAX_ERROR_MSG_LENGTH chars
-    long_error_msg = "x" * (MAX_ERROR_MSG_LENGTH + 100)
+    # Create error with message > 500 chars (new limit in notify_error)
+    # Smart truncation keeps first 250 + last 250 chars
+    long_error_msg = "x" * 600
     mock_session = MagicMock()
     mock_session.__enter__ = Mock(side_effect=SQLAlchemyError(long_error_msg))
     mock_session.__exit__ = Mock(return_value=False)
@@ -2219,18 +2219,12 @@ def test_store_signal_history_truncates_long_errors(htf_mock_settings, mock_exch
                 call_kwargs = mock_notifier.notify_error.call_args[1]
                 context = call_kwargs['context']
 
-                # Verify truncation:
-                # - Should contain "Last error: " prefix
-                # - Should have MAX_ERROR_MSG_LENGTH chars of the error message
-                # - Should have "..." appended
+                # Verify the error string is passed to notify_error
+                # (truncation happens inside notify_error, not in runner.py)
                 assert "Last error: " in context
-                # Extract the error portion after "Last error: "
-                error_portion = context.split("Last error: ")[1]
-                # Verify truncation occurred and ellipsis is present
-                assert error_portion.endswith('...')
-                assert len(error_portion) == MAX_ERROR_MSG_LENGTH + 3  # Exactly MAX_ERROR_MSG_LENGTH chars + '...'
-                # Verify we got substantial error content (at least half of MAX_ERROR_MSG_LENGTH)
-                assert 'x' * (MAX_ERROR_MSG_LENGTH // 2) in error_portion
+                # The error portion should contain the full long error message
+                # because truncation happens in notify_error(), not before the call
+                assert long_error_msg in context
 
 
 def test_store_signal_history_short_errors_not_truncated(htf_mock_settings, mock_exchange_client, mock_database):

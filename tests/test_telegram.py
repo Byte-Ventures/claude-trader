@@ -349,3 +349,94 @@ def test_disabled_notifier_does_not_send():
 
     # No bot should be initialized
     assert notifier._bot is None
+
+
+# ============================================================================
+# notify_error Truncation Tests
+# ============================================================================
+
+def test_notify_error_truncates_long_error_with_smart_truncation(notifier, mock_bot):
+    """Test that long error messages use smart truncation (first 250 + last 250)."""
+    # Create error with 600 chars (exceeds 500 char limit)
+    long_error = "A" * 300 + "B" * 300
+
+    notifier.notify_error(
+        error=long_error,
+        context="Test context",
+    )
+
+    mock_bot.send_message.assert_called()
+    call_args = mock_bot.send_message.call_args
+    message = call_args.kwargs.get("text", call_args.args[1] if len(call_args.args) > 1 else "")
+
+    # Verify smart truncation occurred:
+    # - Should have first 250 chars (all A's)
+    # - Should have "..." in the middle
+    # - Should have last 250 chars (all B's)
+    assert "A" * 250 in message
+    assert "..." in message
+    assert "B" * 250 in message
+    # Should NOT contain the full original error
+    assert long_error not in message
+
+
+def test_notify_error_truncates_long_context_with_smart_truncation(notifier, mock_bot):
+    """Test that long context messages use smart truncation (first 250 + last 250)."""
+    # Create context with 600 chars (exceeds 500 char limit)
+    long_context = "X" * 300 + "Y" * 300
+
+    notifier.notify_error(
+        error="Short error",
+        context=long_context,
+    )
+
+    mock_bot.send_message.assert_called()
+    call_args = mock_bot.send_message.call_args
+    message = call_args.kwargs.get("text", call_args.args[1] if len(call_args.args) > 1 else "")
+
+    # Verify smart truncation occurred for context
+    assert "X" * 250 in message
+    assert "..." in message
+    assert "Y" * 250 in message
+    # Should NOT contain the full original context
+    assert long_context not in message
+
+
+def test_notify_error_does_not_truncate_short_messages(notifier, mock_bot):
+    """Test that short error and context messages are not truncated."""
+    short_error = "Database connection failed"
+    short_context = "Main trading loop"
+
+    notifier.notify_error(
+        error=short_error,
+        context=short_context,
+    )
+
+    mock_bot.send_message.assert_called()
+    call_args = mock_bot.send_message.call_args
+    message = call_args.kwargs.get("text", call_args.args[1] if len(call_args.args) > 1 else "")
+
+    # Short messages should appear exactly as provided
+    assert short_error in message
+    assert short_context in message
+    # No truncation indicator
+    assert message.count("...") == 0
+
+
+def test_notify_error_truncates_both_error_and_context(notifier, mock_bot):
+    """Test that both error and context are truncated when both are long."""
+    long_error = "E" * 600
+    long_context = "C" * 600
+
+    notifier.notify_error(
+        error=long_error,
+        context=long_context,
+    )
+
+    mock_bot.send_message.assert_called()
+    call_args = mock_bot.send_message.call_args
+    message = call_args.kwargs.get("text", call_args.args[1] if len(call_args.args) > 1 else "")
+
+    # Both should be truncated
+    # Count the ellipsis - should have 2 (one for error, one for context)
+    assert message.count("...") == 2
