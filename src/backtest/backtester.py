@@ -259,6 +259,11 @@ class Backtester:
 
             # Get current candle and historical window
             current_idx = idx
+            # NOTE: Performance consideration - DataFrame copy on each iteration
+            # This creates O(n²) memory operations for large datasets (10k+ candles).
+            # Acceptable for initial implementation and most realistic backtest sizes.
+            # For optimization, consider passing full DataFrame with end_idx parameter
+            # to calculate_score() to avoid copying.
             hist_df = df.iloc[:current_idx + 1].copy()
             current_candle = df.iloc[current_idx]
             current_price = Decimal(str(current_candle["close"]))
@@ -318,8 +323,8 @@ class Backtester:
                     quote_balance += net_proceeds
                     total_fees += fee
 
-                    # Calculate P&L
-                    pnl = gross_proceeds - open_position.size_quote - fee - open_position.fee
+                    # Calculate P&L: (exit proceeds - exit fee) - (entry cost + entry fee)
+                    pnl = (gross_proceeds - fee) - (open_position.size_quote + open_position.fee)
                     pnl_percent = (pnl / open_position.size_quote) * Decimal("100")
 
                     # Update and record trade
@@ -435,8 +440,8 @@ class Backtester:
                 quote_balance += net_proceeds
                 total_fees += fee
 
-                # Calculate P&L
-                pnl = gross_proceeds - open_position.size_quote - fee - open_position.fee
+                # Calculate P&L: (exit proceeds - exit fee) - (entry cost + entry fee)
+                pnl = (gross_proceeds - fee) - (open_position.size_quote + open_position.fee)
                 pnl_percent = (pnl / open_position.size_quote) * Decimal("100")
 
                 # Update and record trade
@@ -479,7 +484,8 @@ class Backtester:
             quote_balance += net_proceeds
             total_fees += fee
 
-            pnl = gross_proceeds - open_position.size_quote - fee - open_position.fee
+            # Calculate P&L: (exit proceeds - exit fee) - (entry cost + entry fee)
+            pnl = (gross_proceeds - fee) - (open_position.size_quote + open_position.fee)
             pnl_percent = (pnl / open_position.size_quote) * Decimal("100")
 
             open_position.exit_price = fill_price
