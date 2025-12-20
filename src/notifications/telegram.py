@@ -699,6 +699,34 @@ class TelegramNotifier:
             f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
+        # Validate total message length against Telegram's 4096 char limit
+        # This is a defense-in-depth check to ensure message formatting changes
+        # don't accidentally exceed the limit
+        TELEGRAM_MAX_LENGTH = 4096
+        if len(message) > TELEGRAM_MAX_LENGTH:
+            logger.error(
+                f"Message exceeds Telegram limit ({len(message)} chars), "
+                f"truncating more aggressively"
+            )
+            # Calculate overhead (header + footer + formatting)
+            overhead = len(message) - len(error) - len(context)
+            # Split remaining budget equally between error and context
+            per_field_budget = (TELEGRAM_MAX_LENGTH - overhead) // 2
+
+            # Re-truncate with aggressive limits
+            if len(error) > per_field_budget:
+                error = error[:per_field_budget - 3] + "..."
+            if len(context) > per_field_budget:
+                context = context[:per_field_budget - 3] + "..."
+
+            # Rebuild message
+            message = (
+                f"❌ <b>System Error</b>\n\n"
+                f"Error: {error}\n"
+                f"Context: {context}\n"
+                f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+
         # Deduplicate error messages
         if not self._should_send("error", dedup_key):
             return

@@ -572,3 +572,35 @@ def test_notify_error_false_positive_stack_trace_detection(notifier, mock_bot):
     # Verify it's treating this as regular error (400/100), not stack trace (250/250)
     # If it were 250/250, we'd lose more of the beginning
     assert message.count("X") > 50  # Should have many X's from the beginning preserved
+
+
+def test_notify_error_respects_telegram_total_message_limit(notifier, mock_bot):
+    """
+    Test that total message length never exceeds Telegram's 4096 char limit.
+
+    This is a defense-in-depth check to ensure that even if error and context
+    are both at MAX_ERROR_MSG_LENGTH (500 chars each), the total message
+    with headers, formatting, and timestamp stays under Telegram's limit.
+    """
+    # Create error and context that are each at the max allowed (500 chars)
+    # This should normally be fine (~1050 chars total), but we test the
+    # edge case where both are maxed out
+    max_error = "E" * 500
+    max_context = "C" * 500
+
+    notifier.notify_error(error=max_error, context=max_context)
+
+    mock_bot.send_message.assert_called()
+    call_args = mock_bot.send_message.call_args
+    message = call_args.kwargs.get("text", call_args.args[1] if len(call_args.args) > 1 else "")
+
+    # Total message should never exceed Telegram's limit
+    TELEGRAM_MAX_LENGTH = 4096
+    assert len(message) <= TELEGRAM_MAX_LENGTH, (
+        f"Message length {len(message)} exceeds Telegram limit {TELEGRAM_MAX_LENGTH}"
+    )
+
+    # Message should still contain the error structure
+    assert "System Error" in message
+    assert "Error:" in message
+    assert "Context:" in message
