@@ -1102,6 +1102,7 @@ class Settings(BaseSettings):
 
         Maps deprecated names to new names with a deprecation warning.
         Also migrates old VETO_ACTION/VETO_THRESHOLD to tiered thresholds (v1.31.0).
+        Also migrates deprecated MTF_CANDLE_LIMIT to per-timeframe limits.
         """
         # Mapping of old CLAUDE_* vars to new names
         deprecated_mapping = {
@@ -1124,6 +1125,26 @@ class Settings(BaseSettings):
                 key = new_name.lower()
                 if key not in data or data.get(key) is None:
                     data[key] = old_value
+
+        # Migrate deprecated MTF_CANDLE_LIMIT to per-timeframe limits
+        old_mtf_limit = os.environ.get("MTF_CANDLE_LIMIT")
+        if old_mtf_limit is not None:
+            # Check if new per-timeframe limits are already set
+            has_new_daily = os.environ.get("MTF_DAILY_CANDLE_LIMIT") or data.get("mtf_daily_candle_limit")
+            has_new_4h = os.environ.get("MTF_4H_CANDLE_LIMIT") or data.get("mtf_4h_candle_limit")
+
+            if not has_new_daily and not has_new_4h:
+                # Set both new fields to the old value if they weren't explicitly set
+                old_value_int = int(old_mtf_limit)
+                data["mtf_daily_candle_limit"] = old_value_int
+                data["mtf_4h_candle_limit"] = old_value_int
+                warnings.warn(
+                    f"MTF_CANDLE_LIMIT={old_mtf_limit} is deprecated. "
+                    f"Migrated to MTF_DAILY_CANDLE_LIMIT={old_mtf_limit} and MTF_4H_CANDLE_LIMIT={old_mtf_limit}. "
+                    "Update your .env to use MTF_DAILY_CANDLE_LIMIT and MTF_4H_CANDLE_LIMIT instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
 
         # v1.31.0: Migrate old VETO_ACTION/VETO_THRESHOLD to tiered thresholds
         old_action = os.environ.get("VETO_ACTION", "").lower()
