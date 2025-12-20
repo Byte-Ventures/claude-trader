@@ -1113,7 +1113,11 @@ Trading style: POSITION TRADING (long-term)
             whale_activity_line = f"\n⚠️ WHALE ACTIVITY ({whale_direction}): Volume {breakdown.get('_volume_ratio', 0)}x average"
 
         # HTF bias context - always show for full AI context
-        # Use explicit None checks for null safety (avoid masking empty strings)
+        # Use explicit None checks for null safety (avoid masking empty strings).
+        # HTF values are expected to be: "bullish", "bearish", "neutral", or None.
+        # Empty strings should NOT occur in production (would indicate a bug in get_trend()).
+        # If empty strings appear, they are preserved for debugging (not masked as "unknown").
+        # None values indicate missing/unavailable data and are replaced with "unknown".
         htf_trend = breakdown.get("_htf_trend")
         if htf_trend is None:
             htf_trend = "unknown"
