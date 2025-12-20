@@ -30,8 +30,11 @@ class BacktestTrade:
     size_quote: Decimal
     fee: Decimal
     signal_score: int
+    stop_loss_price: Decimal
+    take_profit_price: Decimal
     exit_price: Optional[Decimal] = None
     exit_timestamp: Optional[datetime] = None
+    exit_reason: Optional[str] = None  # "signal", "stop_loss", "take_profit", "end_of_backtest"
     pnl: Optional[Decimal] = None
     pnl_percent: Optional[Decimal] = None
 
@@ -274,6 +277,55 @@ class Backtester:
 
             signal_counts[signal_result.action] += 1
 
+            # Check for stop-loss or take-profit hits on open position
+            # This must happen BEFORE checking for new signals to ensure realistic exit behavior
+            if open_position is not None:
+                candle_high = Decimal(str(current_candle["high"]))
+                candle_low = Decimal(str(current_candle["low"]))
+
+                # For long positions: check if low hit stop-loss or high hit take-profit
+                stop_hit = candle_low <= open_position.stop_loss_price
+                tp_hit = candle_high >= open_position.take_profit_price
+
+                if stop_hit or tp_hit:
+                    # Determine which was hit (if both, assume stop hit first as it's more conservative)
+                    exit_reason = "stop_loss" if stop_hit else "take_profit"
+                    fill_price = open_position.stop_loss_price if stop_hit else open_position.take_profit_price
+
+                    # Calculate proceeds and fee
+                    gross_proceeds = base_balance * fill_price
+                    fee = gross_proceeds * self.fee_percent
+                    net_proceeds = gross_proceeds - fee
+
+                    # Execute exit
+                    quote_balance += net_proceeds
+                    total_fees += fee
+
+                    # Calculate P&L
+                    pnl = gross_proceeds - open_position.size_quote - fee - open_position.fee
+                    pnl_percent = (pnl / open_position.size_quote) * Decimal("100")
+
+                    # Update and record trade
+                    open_position.exit_price = fill_price
+                    open_position.exit_timestamp = timestamp
+                    open_position.exit_reason = exit_reason
+                    open_position.pnl = pnl
+                    open_position.pnl_percent = pnl_percent
+                    trades.append(open_position)
+
+                    logger.debug(
+                        "backtest_stop_tp_exit",
+                        timestamp=timestamp,
+                        reason=exit_reason,
+                        price=str(fill_price),
+                        size_base=str(base_balance),
+                        pnl=str(pnl),
+                        pnl_percent=str(pnl_percent),
+                    )
+
+                    base_balance = Decimal("0")
+                    open_position = None
+
             # Execute trade logic
             if signal_result.action == "buy" and open_position is None and quote_balance > 0:
                 # Calculate position size
@@ -288,6 +340,10 @@ class Backtester:
 
                 if size_result.size_quote >= self.min_trade_size:
                     # Apply slippage (price goes up for buys)
+                    # NOTE: Fill price is based on current candle's close price + slippage.
+                    # This assumes instant execution at candle close, which is optimistic.
+                    # In live trading, orders execute at market price (often next candle's open).
+                    # The slippage parameter partially compensates for this execution delay.
                     fill_price = current_price * (Decimal("1") + self.slippage_percent)
 
                     # Calculate fee and actual cost
@@ -312,6 +368,8 @@ class Backtester:
                             size_quote=size_result.size_quote,
                             fee=fee,
                             signal_score=signal_result.score,
+                            stop_loss_price=size_result.stop_loss_price,
+                            take_profit_price=size_result.take_profit_price,
                         )
 
                         logger.debug(
@@ -339,7 +397,8 @@ class Backtester:
                     )
 
             elif signal_result.action == "sell" and open_position is not None:
-                # Close position
+                # Close position on sell signal
+                # NOTE: Fill price uses current candle's close price - slippage (see buy logic for details)
                 fill_price = current_price * (Decimal("1") - self.slippage_percent)
 
                 # Calculate proceeds and fee
@@ -358,6 +417,7 @@ class Backtester:
                 # Update and record trade
                 open_position.exit_price = fill_price
                 open_position.exit_timestamp = timestamp
+                open_position.exit_reason = "signal"
                 open_position.pnl = pnl
                 open_position.pnl_percent = pnl_percent
                 trades.append(open_position)
@@ -399,6 +459,7 @@ class Backtester:
 
             open_position.exit_price = fill_price
             open_position.exit_timestamp = final_timestamp
+            open_position.exit_reason = "end_of_backtest"
             open_position.pnl = pnl
             open_position.pnl_percent = pnl_percent
             trades.append(open_position)
@@ -490,11 +551,13 @@ class Backtester:
         # a $10 profit on a $50 trade (20%) for portfolio performance
         gross_profit = sum(float(t.pnl or 0) for t in winning_trades)
         gross_loss = abs(sum(float(t.pnl or 0) for t in losing_trades))
-        # If no losses but profits exist, use infinity; if both zero, use 0.0
+        # If no losses but profits exist, use large finite value; if both zero, use 0.0
+        # Using 999.0 instead of infinity to avoid JSON serialization issues and
+        # ensure compatibility with downstream calculations
         if gross_loss > 0:
             profit_factor = gross_profit / gross_loss
         elif gross_profit > 0:
-            profit_factor = float("inf")
+            profit_factor = 999.0
         else:
             profit_factor = 0.0
 
