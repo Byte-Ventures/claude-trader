@@ -71,6 +71,12 @@ class TelegramNotifier:
     - Configurable cooldown per message type
     """
 
+    # Maximum length for error/context messages in notifications
+    # Balance completeness (preserves most error details) vs actionability
+    # (fits on one screen, easier to parse in mobile app)
+    # Telegram API limit is 4096, but shorter messages are more actionable
+    MAX_ERROR_MSG_LENGTH = 500
+
     def __init__(
         self,
         bot_token: str,
@@ -642,25 +648,27 @@ class TelegramNotifier:
 
     def notify_error(self, error: str, context: str = "") -> None:
         """Send notification for system error."""
-        # Truncate both error and context to ensure readable notifications
-        # Limit set to 500 chars to balance completeness (preserves most error details)
-        # vs actionability (fits on one screen, easier to parse in mobile app).
-        # Telegram API limit is 4096, but shorter messages are more actionable.
-        MAX_LEN = 500
+        MAX_LEN = self.MAX_ERROR_MSG_LENGTH
 
         # Calculate dedup key BEFORE truncation to avoid collision on similar errors
         # that only differ in their middle portions
         dedup_key = f"{error}:{context}"
 
         if len(error) > MAX_LEN:
+            # Log full error for debugging before truncation
+            logger.debug(f"Truncating long error message ({len(error)} chars)",
+                        error_preview=error[:100])
+
             # For stack traces, prioritize start + end (error type at both locations)
             # For other errors, keep first 400 + last 100 to preserve error message
-            # Detect Python tracebacks (Traceback + File + line) and JavaScript stack traces (at + line)
-            # This ensures we only treat actual stack traces as such, not regular error messages
-            # that happen to contain keywords like "File" or "at"
+            # Improved detection to handle edge cases:
+            # - Multiple consecutive frames indicate stack trace
+            # - Partial stack traces (middle section only)
+            # - Python tracebacks and JavaScript stack traces
             is_stack_trace = (
-                ('Traceback' in error and '\n  File "' in error and ', line ' in error) or  # Python
-                ('\n  at ' in error and ':' in error)  # JavaScript
+                error.count('\n  File "') >= 2 or  # Multiple Python frames
+                error.count('\n  at ') >= 2 or      # Multiple JavaScript frames
+                ('Traceback' in error and 'File "' in error)  # Single frame Python
             )
             if is_stack_trace:
                 error = error[:250] + "..." + error[-250:]
@@ -668,11 +676,16 @@ class TelegramNotifier:
                 error = error[:400] + "..." + error[-100:]
 
         if len(context) > MAX_LEN:
+            # Log full context for debugging before truncation
+            logger.debug(f"Truncating long context message ({len(context)} chars)",
+                        context_preview=context[:100])
+
             # Apply same smart truncation to context - balanced split for stack traces,
             # preserve beginning for regular text (usually more relevant)
             is_context_stack_trace = (
-                ('Traceback' in context and '\n  File "' in context and ', line ' in context) or  # Python
-                ('\n  at ' in context and ':' in context)  # JavaScript
+                context.count('\n  File "') >= 2 or  # Multiple Python frames
+                context.count('\n  at ') >= 2 or      # Multiple JavaScript frames
+                ('Traceback' in context and 'File "' in context)  # Single frame Python
             )
             if is_context_stack_trace:
                 context = context[:250] + "..." + context[-250:]
