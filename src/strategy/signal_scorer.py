@@ -982,8 +982,8 @@ class SignalScorer:
             logger.info(
                 "htf_bias_applied",
                 htf_bias=htf_bias if htf_bias is not None else "unknown",
-                htf_daily=htf_daily,
-                htf_4h=htf_4h,
+                htf_daily=htf_daily if htf_daily is not None else "unknown",
+                htf_4h=htf_4h if htf_4h is not None else "unknown",
                 sentiment=sentiment_category,
                 signal_direction="bullish" if total_score > 0 else "bearish",
                 adjustment=htf_adjustment,
