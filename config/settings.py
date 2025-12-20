@@ -191,6 +191,12 @@ class Settings(BaseSettings):
     # Strategy Parameters - ATR
     atr_period: int = Field(default=14, ge=2, le=50)
 
+    # MACD Dynamic Scaling - Interval Multipliers
+    macd_interval_multipliers: Optional[dict[str, float]] = Field(
+        default=None,
+        description="MACD dynamic scale interval multipliers for backtesting optimization. If None, uses hardcoded defaults. Format: {\"ONE_MINUTE\": 2.0, \"FIVE_MINUTE\": 1.5, ...}"
+    )
+
     # Strategy Parameters - Signal
     signal_threshold: int = Field(
         default=60,
@@ -933,6 +939,40 @@ class Settings(BaseSettings):
                 f"(current gap: {gap}). Narrow gaps create false crash/pump signals."
             )
         return self
+
+    @field_validator("macd_interval_multipliers")
+    @classmethod
+    def validate_macd_interval_multipliers(cls, v: Optional[dict]) -> Optional[dict]:
+        """Validate MACD interval multipliers configuration."""
+        if v is None:
+            return None
+
+        valid_intervals = {
+            "ONE_MINUTE", "FIVE_MINUTE", "FIFTEEN_MINUTE",
+            "THIRTY_MINUTE", "ONE_HOUR", "TWO_HOUR",
+            "SIX_HOUR", "ONE_DAY"
+        }
+
+        # Check all keys are valid intervals
+        for interval in v.keys():
+            if interval not in valid_intervals:
+                raise ValueError(
+                    f"macd_interval_multipliers has invalid interval: {interval}. "
+                    f"Valid intervals: {sorted(valid_intervals)}"
+                )
+
+        # Check all values are positive floats
+        for interval, multiplier in v.items():
+            if not isinstance(multiplier, (int, float)):
+                raise ValueError(
+                    f"macd_interval_multipliers[{interval}] must be numeric, got {type(multiplier).__name__}"
+                )
+            if multiplier <= 0:
+                raise ValueError(
+                    f"macd_interval_multipliers[{interval}] must be positive, got {multiplier}"
+                )
+
+        return v
 
     @field_validator("sentiment_trend_modifiers")
     @classmethod
