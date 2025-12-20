@@ -2263,6 +2263,10 @@ def test_store_signal_history_alerts_after_repeated_failures(htf_mock_settings, 
                 assert "signal history storage" in error_msg
                 assert "10" in error_msg  # Verify failure count is included
 
+                # Verify the context parameter includes the error
+                context = mock_notifier.notify_error.call_args[1].get('context', '')
+                assert "Database locked" in context  # The mocked error message
+
 
 def test_store_signal_history_truncates_long_errors(htf_mock_settings, mock_exchange_client, mock_database):
     """Test that long error messages are truncated with smart truncation in alerts."""
