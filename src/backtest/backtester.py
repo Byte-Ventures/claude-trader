@@ -134,8 +134,6 @@ class Backtester:
         initial_capital: float = 10000.0,
         fee_percent: float = 0.006,  # 0.6% (Coinbase Advanced taker)
         slippage_percent: float = 0.001,  # 0.1%
-        base_currency: str = "BTC",
-        quote_currency: str = "USD",
         min_trade_size: float = 10.0,  # Minimum trade size in quote currency
     ):
         """
@@ -147,8 +145,6 @@ class Backtester:
             initial_capital: Starting capital in quote currency
             fee_percent: Trading fee as decimal (0.006 = 0.6%)
             slippage_percent: Slippage as decimal (0.001 = 0.1%)
-            base_currency: Base currency symbol (e.g., BTC)
-            quote_currency: Quote currency symbol (e.g., USD)
             min_trade_size: Minimum trade size in quote currency (default: 10.0)
         """
         self.signal_scorer = signal_scorer
@@ -167,8 +163,6 @@ class Backtester:
         self.initial_capital = Decimal(str(initial_capital))
         self.fee_percent = Decimal(str(fee_percent))
         self.slippage_percent = Decimal(str(slippage_percent))
-        self.base_currency = base_currency
-        self.quote_currency = quote_currency
         self.min_trade_size = Decimal(str(min_trade_size))
 
     def run(
@@ -263,7 +257,21 @@ class Backtester:
             timestamp = current_candle["timestamp"]
 
             # Calculate signal
+            # NOTE: No look-ahead bias here. We pass hist_df which includes the current candle,
+            # but this is correct because:
+            # 1. We assume the current candle has CLOSED (we're using its close price)
+            # 2. Indicators (RSI, MACD, etc.) are calculated using all data up to and including
+            #    this completed candle, which matches real-world trading behavior
+            # 3. In live trading, you wait for candle close, then calculate indicators using
+            #    that completed candle's data - this simulation replicates that exactly
             signal_result = self.signal_scorer.calculate_score(hist_df)
+
+            # Validate signal result (defensive check for financial system)
+            if not hasattr(signal_result, 'action'):
+                raise ValueError(f"SignalScorer.calculate_score() returned invalid result: missing 'action' attribute")
+            if signal_result.action not in {'buy', 'sell', 'hold'}:
+                raise ValueError(f"Invalid signal action from SignalScorer: {signal_result.action}. Must be 'buy', 'sell', or 'hold'")
+
             signal_counts[signal_result.action] += 1
 
             # Execute trade logic
@@ -436,7 +444,19 @@ class Backtester:
         final_value: Decimal,
         total_fees: Decimal,
     ) -> BacktestMetrics:
-        """Calculate performance metrics from backtest results."""
+        """
+        Calculate performance metrics from backtest results.
+
+        Note on Decimal to float conversion:
+        This method converts Decimal values to float for metrics calculation. This is
+        acceptable because:
+        1. Trade execution uses Decimal for precision (critical for money calculations)
+        2. Statistical metrics (Sharpe ratio, volatility, etc.) don't require the same
+           precision and are typically displayed as rounded values anyway
+        3. The conversion happens AFTER all trade calculations are complete, so it
+           doesn't affect the integrity of the backtest simulation
+        4. Float arithmetic is faster for statistical calculations on large datasets
+        """
 
         if not trades:
             return BacktestMetrics(
@@ -465,9 +485,11 @@ class Backtester:
         losing_trades = [t for t in trades if t.pnl and t.pnl <= 0]
         win_rate = (len(winning_trades) / len(trades) * 100) if trades else 0.0
 
-        # Profit factor
-        gross_profit = sum(float(t.pnl_percent or 0) for t in winning_trades)
-        gross_loss = abs(sum(float(t.pnl_percent or 0) for t in losing_trades))
+        # Profit factor (uses absolute P&L, not percentages)
+        # A $100 profit on a $1000 trade (10%) is more significant than
+        # a $10 profit on a $50 trade (20%) for portfolio performance
+        gross_profit = sum(float(t.pnl or 0) for t in winning_trades)
+        gross_loss = abs(sum(float(t.pnl or 0) for t in losing_trades))
         # If no losses but profits exist, use infinity; if both zero, use 0.0
         if gross_loss > 0:
             profit_factor = gross_profit / gross_loss
@@ -476,9 +498,11 @@ class Backtester:
         else:
             profit_factor = 0.0
 
-        # Average win/loss
-        avg_win = (gross_profit / len(winning_trades)) if winning_trades else 0.0
-        avg_loss = (gross_loss / len(losing_trades)) if losing_trades else 0.0
+        # Average win/loss (in percentage terms for readability)
+        gross_profit_pct = sum(float(t.pnl_percent or 0) for t in winning_trades)
+        gross_loss_pct = abs(sum(float(t.pnl_percent or 0) for t in losing_trades))
+        avg_win = (gross_profit_pct / len(winning_trades)) if winning_trades else 0.0
+        avg_loss = (gross_loss_pct / len(losing_trades)) if losing_trades else 0.0
 
         # Average trade duration
         durations = []
@@ -497,10 +521,19 @@ class Backtester:
             # Calculate annualization factor from actual data frequency
             time_diffs = equity_df["timestamp"].diff()
             avg_period_seconds = time_diffs.dt.total_seconds().median()
-            periods_per_year = (365.25 * 24 * 3600) / avg_period_seconds if avg_period_seconds > 0 else 365
+            if avg_period_seconds <= 0:
+                raise ValueError(
+                    f"Cannot determine data frequency for annualization: avg_period_seconds={avg_period_seconds}. "
+                    "This indicates invalid or constant timestamps in the equity curve."
+                )
+            periods_per_year = (365.25 * 24 * 3600) / avg_period_seconds
 
             # Sharpe ratio (annualized using actual data frequency)
-            # Simple estimate: mean return / std return * sqrt(periods per year)
+            # NOTE: This is a simplified Sharpe ratio assuming 0% risk-free rate.
+            # For crypto trading, this is reasonable as there's no true "risk-free"
+            # alternative (even stablecoins carry risk). For traditional assets,
+            # consider subtracting the risk-free rate (e.g., T-bill yield) from mean_return.
+            # Formula: (mean_return - risk_free_rate) / std_return * sqrt(periods_per_year)
             mean_return = equity_df["returns"].mean()
             std_return = equity_df["returns"].std()
             if std_return > 0:
@@ -512,6 +545,11 @@ class Backtester:
             volatility = std_return * (periods_per_year ** 0.5) * 100
 
             # Max drawdown
+            # NOTE: This calculates drawdown using close prices only. Actual intra-candle
+            # drawdown could be worse if we considered high/low prices. For example, a flash
+            # crash to the candle low followed by recovery to the close would not show the
+            # full drawdown magnitude. This is acceptable for candle-close trading strategies
+            # but may underestimate risk for stop-loss placement.
             equity_df["peak"] = equity_df["portfolio_value"].cummax()
             equity_df["drawdown"] = (
                 (equity_df["portfolio_value"] - equity_df["peak"]) / equity_df["peak"] * 100

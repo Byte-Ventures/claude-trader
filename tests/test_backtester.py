@@ -378,3 +378,38 @@ def test_backtest_signal_distribution(signal_scorer, position_sizer, sample_ohlc
     assert result.signal_distribution["buy"] >= 0
     assert result.signal_distribution["sell"] >= 0
     assert result.signal_distribution["hold"] >= 0
+
+
+def test_invalid_fee_percent_raises_error(signal_scorer):
+    """Test that invalid fee_percent values raise ValueError."""
+    # Test fee > 1.0 (100%)
+    with pytest.raises(ValueError, match="fee_percent must be between 0 and 1.0"):
+        Backtester(signal_scorer=signal_scorer, fee_percent=1.5)
+
+    # Test negative fee
+    with pytest.raises(ValueError, match="fee_percent must be between 0 and 1.0"):
+        Backtester(signal_scorer=signal_scorer, fee_percent=-0.1)
+
+
+def test_invalid_slippage_percent_raises_error(signal_scorer):
+    """Test that invalid slippage_percent values raise ValueError."""
+    # Test slippage > 1.0 (100%)
+    with pytest.raises(ValueError, match="slippage_percent must be between 0 and 1.0"):
+        Backtester(signal_scorer=signal_scorer, slippage_percent=1.5)
+
+    # Test negative slippage
+    with pytest.raises(ValueError, match="slippage_percent must be between 0 and 1.0"):
+        Backtester(signal_scorer=signal_scorer, slippage_percent=-0.1)
+
+
+def test_valid_edge_case_fee_and_slippage(signal_scorer):
+    """Test that edge case values (0.0 and 1.0) are accepted."""
+    # Zero fees and slippage should work
+    bt_zero = Backtester(signal_scorer=signal_scorer, fee_percent=0.0, slippage_percent=0.0)
+    assert bt_zero.fee_percent == Decimal("0.0")
+    assert bt_zero.slippage_percent == Decimal("0.0")
+
+    # Maximum values (100% fee/slippage) should work (though unrealistic)
+    bt_max = Backtester(signal_scorer=signal_scorer, fee_percent=1.0, slippage_percent=1.0)
+    assert bt_max.fee_percent == Decimal("1.0")
+    assert bt_max.slippage_percent == Decimal("1.0")
