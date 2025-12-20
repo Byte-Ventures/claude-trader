@@ -17,6 +17,7 @@ Features:
 
 import asyncio
 import hashlib
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from time import time
@@ -653,6 +654,8 @@ class TelegramNotifier:
         # Calculate dedup key BEFORE truncation using full error text.
         # This ensures deduplication is based on the complete error, preventing
         # false collisions when different errors have identical truncated forms.
+        # Example: Two 600-char errors with different endings would both truncate
+        # to the same first 500 chars, but have different dedup keys based on full text.
         dedup_key = f"{error}:{context}"
 
         if len(error) > MAX_LEN:
@@ -666,9 +669,10 @@ class TelegramNotifier:
             # - Multiple consecutive frames indicate stack trace
             # - Partial stack traces (middle section only)
             # - Python tracebacks and JavaScript stack traces
+            # Use regex for flexible indentation matching (handles varying spaces/tabs)
             is_stack_trace = (
-                error.count('\n  File "') >= 2 or  # Multiple Python frames
-                error.count('\n  at ') >= 2 or      # Multiple JavaScript frames
+                len(re.findall(r'\n\s+File "', error)) >= 2 or  # Multiple Python frames (flexible indentation)
+                len(re.findall(r'\n\s+at ', error)) >= 2 or      # Multiple JavaScript frames (flexible indentation)
                 ('Traceback' in error and 'File "' in error)  # Single frame Python
             )
             if is_stack_trace:
@@ -684,8 +688,8 @@ class TelegramNotifier:
             # Apply same smart truncation to context - balanced split for stack traces,
             # preserve beginning for regular text (usually more relevant)
             is_context_stack_trace = (
-                context.count('\n  File "') >= 2 or  # Multiple Python frames
-                context.count('\n  at ') >= 2 or      # Multiple JavaScript frames
+                len(re.findall(r'\n\s+File "', context)) >= 2 or  # Multiple Python frames (flexible indentation)
+                len(re.findall(r'\n\s+at ', context)) >= 2 or      # Multiple JavaScript frames (flexible indentation)
                 ('Traceback' in context and 'File "' in context)  # Single frame Python
             )
             if is_context_stack_trace:
@@ -717,11 +721,11 @@ class TelegramNotifier:
             # Re-truncate with aggressive limits
             if len(error) > per_field_budget:
                 # Remove existing ellipsis if present to avoid "..."..."
-                error_clean = error.rstrip('.') if error.endswith('...') else error
+                error_clean = error[:-3] if error.endswith('...') else error
                 error = error_clean[:per_field_budget - 3] + "..."
             if len(context) > per_field_budget:
                 # Remove existing ellipsis if present to avoid "..."..."
-                context_clean = context.rstrip('.') if context.endswith('...') else context
+                context_clean = context[:-3] if context.endswith('...') else context
                 context = context_clean[:per_field_budget - 3] + "..."
 
             # Rebuild message
