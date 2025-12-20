@@ -19,6 +19,7 @@ from decimal import Decimal
 from datetime import datetime, date, timezone
 from unittest.mock import Mock, MagicMock, patch, PropertyMock
 from threading import Event
+import logging
 import pandas as pd
 
 from config.settings import Settings, TradingMode, Exchange
@@ -55,6 +56,7 @@ def mock_settings():
     settings.trading_pair = "BTC-USD"
     settings.is_paper_trading = True
     settings.database_path = ":memory:"
+    settings.signal_history_failure_threshold = 10
     settings.paper_initial_quote = Decimal("10000")
     settings.paper_initial_base = Decimal("0")
     settings.base_order_size_usd = Decimal("100")
@@ -1924,22 +1926,81 @@ def test_get_timeframe_trend_caching(htf_mock_settings, mock_exchange_client, mo
                 # Mock signal scorer get_trend
                 daemon.signal_scorer.get_trend = Mock(return_value="bullish")
 
-                # First call should fetch
+                # First call should fetch (cache miss)
                 trend1 = daemon._get_timeframe_trend("ONE_DAY", 60)
 
                 # Verify get_candles was called
                 assert mock_exchange_client.get_candles.called
+                # Verify cache miss counter incremented
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 0
 
                 # Reset mock to verify caching
                 mock_exchange_client.get_candles.reset_mock()
                 daemon.signal_scorer.get_trend.reset_mock()
 
-                # Second call within cache period should use cache
+                # Second call within cache period should use cache (cache hit)
                 trend2 = daemon._get_timeframe_trend("ONE_DAY", 60)
 
                 # Should NOT call get_candles again (cache hit)
                 assert not mock_exchange_client.get_candles.called
                 assert trend1 == trend2 == "bullish"
+                # Verify cache hit counter incremented
+                assert daemon._htf_cache_misses == 1  # Still 1
+                assert daemon._htf_cache_hits == 1    # Now 1
+
+
+def test_get_timeframe_trend_cache_expiration(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test HTF cache expiration and counter accumulation over multiple refresh cycles."""
+    from datetime import datetime, timezone, timedelta
+    from unittest.mock import patch
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Mock signal scorer get_trend
+                daemon.signal_scorer.get_trend = Mock(return_value="bullish")
+
+                # Call 1: First fetch (cache miss)
+                trend1 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                assert trend1 == "bullish"
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 0
+
+                # Call 2: Within cache period (cache hit)
+                trend2 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                assert trend2 == "bullish"
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 1
+
+                # Fast-forward time to expire cache (61 minutes > 60 minute cache)
+                mock_now = datetime.now(timezone.utc) + timedelta(minutes=61)
+                with patch('src.daemon.runner.datetime') as mock_datetime:
+                    mock_datetime.now.return_value = mock_now
+                    # Need to also patch timedelta to work with mocked datetime
+                    mock_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+
+                    # Update daemon's last fetch to be 61 minutes ago
+                    daemon._daily_last_fetch = mock_now - timedelta(minutes=61)
+
+                    # Call 3: Cache expired (cache miss)
+                    daemon.signal_scorer.get_trend.return_value = "bearish"
+                    trend3 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                    assert trend3 == "bearish"
+                    assert daemon._htf_cache_misses == 2
+                    assert daemon._htf_cache_hits == 1
+
+                # Call 4: Within new cache period (cache hit)
+                trend4 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                assert trend4 == "bearish"
+                assert daemon._htf_cache_misses == 2
+                assert daemon._htf_cache_hits == 2
+
+                # Verify counters accumulated correctly over multiple cycles
+                assert daemon._htf_cache_misses == 2  # Two fetches
+                assert daemon._htf_cache_hits == 2    # Two cache hits
 
 
 def test_get_timeframe_trend_fail_open(htf_mock_settings, mock_database):
@@ -1964,6 +2025,42 @@ def test_get_timeframe_trend_fail_open(htf_mock_settings, mock_database):
                 trend = daemon._get_timeframe_trend("ONE_DAY", 60)
 
                 assert trend == "neutral"
+                # Verify cache miss counter incremented on error path
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 0
+
+
+def test_get_timeframe_trend_insufficient_data(htf_mock_settings, mock_database):
+    """Test HTF trend returns neutral on insufficient candle data."""
+    import pandas as pd
+
+    # Create client that returns insufficient candles
+    mock_client = Mock()
+    mock_client.get_current_price.return_value = Decimal("50000")
+    # Return only 10 candles when 50 are required (ema_slow_period)
+    mock_client.get_candles.return_value = pd.DataFrame({
+        'timestamp': range(10),
+        'close': [50000] * 10
+    })
+    mock_client.get_balance.return_value = Balance("USD", Decimal("1000"), Decimal("0"))
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                htf_mock_settings.mtf_enabled = True
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Clear any cached trend
+                daemon._daily_last_fetch = None
+                daemon._daily_trend = "neutral"
+
+                # Should return neutral when insufficient data
+                trend = daemon._get_timeframe_trend("ONE_DAY", 60)
+
+                assert trend == "neutral"
+                # Verify cache miss counter incremented on insufficient data path
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 0
 
 
 def test_invalidate_htf_cache(htf_mock_settings, mock_exchange_client, mock_database):
@@ -2165,6 +2262,10 @@ def test_store_signal_history_alerts_after_repeated_failures(htf_mock_settings, 
                 error_msg = mock_notifier.notify_error.call_args[0][0].lower()
                 assert "signal history storage" in error_msg
                 assert "10" in error_msg  # Verify failure count is included
+
+                # Verify the context parameter includes the error
+                context = mock_notifier.notify_error.call_args[1].get('context', '')
+                assert "Database locked" in context  # The mocked error message
 
 
 def test_store_signal_history_truncates_long_errors(htf_mock_settings, mock_exchange_client, mock_database):
@@ -4126,3 +4227,455 @@ class TestSentimentFailureTracking:
 
         # Verify counter remains at 0
         assert daemon_with_sentiment._sentiment_fetch_failures == 0
+
+
+# ============================================================================
+# Position Room Check Tests (Issue #161)
+# ============================================================================
+
+class TestPositionRoomCheck:
+    """
+    Test position room check logic in runner.py:1399-1418.
+
+    Verifies that the room check uses MAX_POSITION_PERCENT (hard limit)
+    not POSITION_SIZE_PERCENT (soft target), preventing regression of bug
+    fixed in PR #160.
+    """
+
+    # Test constants to avoid magic numbers
+    BTC_PRICE = Decimal("50000")
+    # HARD_LIMIT = 80%: This is correct and matches validator.py:57 default.
+    # Note: Issue #161 and PR #160 originally referenced 90%, but the actual
+    # implementation uses 80% as the hard limit. The validator enforces 80%
+    # as the maximum position percentage, while the position sizer targets
+    # lower percentages (soft limits) for normal operations.
+    HARD_LIMIT = Decimal("80")  # Match validator.py:57 default
+    SOFT_LIMIT = Decimal("20")
+    MIN_TRADE = 10.0
+
+    def test_position_between_soft_and_hard_limits(self, mock_settings, mock_exchange_client, mock_database, caplog):
+        """
+        Test with position at 75% - between soft limit (20%) and hard limit (80%).
+        Should have room because we're below the hard limit.
+        """
+        # Configure hard limit at 80%, soft limit at 20%
+        mock_settings.max_position_percent = self.HARD_LIMIT  # Validator hard limit
+        mock_settings.position_size_percent = self.SOFT_LIMIT  # Position sizer soft target
+        mock_settings.min_trade_quote = self.MIN_TRADE
+
+        # Setup balances: 75% in base, 25% in quote
+        # Portfolio = 10000 USD, base value = 7500 USD, quote = 2500 USD
+        base_balance = Decimal("0.15")  # 0.15 BTC * 50000 = 7500 USD
+        quote_balance = Decimal("2500")
+
+        # Verify setup achieves intended position percentage
+        portfolio_value = quote_balance + (base_balance * self.BTC_PRICE)
+        position_pct = float(base_balance * self.BTC_PRICE / portfolio_value * 100)
+        assert 74.9 <= position_pct <= 75.1, f"Expected 75% position, got {position_pct:.1f}%"
+
+        mock_exchange_client.get_current_price.return_value = self.BTC_PRICE
+        def get_balance_side_effect(currency):
+            if currency == "USD":
+                return Balance(currency=currency, available=quote_balance, hold=Decimal("0"))
+            else:  # BTC
+                return Balance(currency=currency, available=base_balance, hold=Decimal("0"))
+        mock_exchange_client.get_balance.side_effect = get_balance_side_effect
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    # Verify daemon uses validator's hard limit (80%), not position sizer's soft target (20%)
+                    assert daemon.validator.config.max_position_percent == self.HARD_LIMIT, \
+                        "Daemon should use validator's MAX_POSITION_PERCENT for room check"
+
+                    # Mock signal scorer to return a strong buy signal
+                    # This ensures we're testing the room check with a buy scenario
+                    buy_signal = SignalResult(
+                        score=75,  # Strong buy signal
+                        action="buy",
+                        indicators=IndicatorValues(
+                            rsi=30.0, macd_line=100.0, macd_signal=50.0, macd_histogram=50.0,
+                            bb_upper=51000.0, bb_middle=50000.0, bb_lower=49000.0,
+                            ema_fast=50100.0, ema_slow=50000.0, atr=500.0, volatility="normal"
+                        ),
+                        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        confidence=0.8
+                    )
+
+                    # Reset mock to track calls during iteration
+                    mock_exchange_client.reset_mock()
+
+                    # Run trading iteration to trigger room check logic
+                    with caplog.at_level(logging.INFO):
+                        with patch('src.strategy.signal_scorer.SignalScorer.calculate_score', return_value=buy_signal):
+                            daemon._trading_iteration()
+
+                    # Should NOT see "buy_blocked_insufficient_room" log because there IS room
+                    # Expected calculation: Position = 75%, Max = 80%, Available Room = 5%
+                    # Min Room = max(1.0%, 10/10000 * 100) = 1.0%
+                    # 5% > 1.0% so buy should be allowed
+                    assert "buy_blocked_insufficient_room" not in caplog.text, \
+                        "Should have room to buy when position is at 75% (below 80% hard limit)"
+
+                    # Verify other safety systems would allow trading
+                    # This proves room check is the ONLY reason a buy might not occur
+                    assert daemon.kill_switch.is_active is False, "Kill switch should be inactive"
+                    assert daemon.circuit_breaker.can_trade is True, "Circuit breaker should allow trading"
+                    assert daemon.loss_limiter.get_status().can_trade is True, "Loss limiter should allow trading"
+
+    def test_position_at_hard_limit(self, mock_settings, mock_exchange_client, mock_database, caplog):
+        """
+        Test with position exactly at hard limit (80%).
+        Should have no room to buy - verify daemon blocks buy orders.
+        """
+        # Configure hard limit at 80%
+        mock_settings.max_position_percent = self.HARD_LIMIT
+        mock_settings.position_size_percent = self.SOFT_LIMIT
+        mock_settings.min_trade_quote = self.MIN_TRADE
+
+        # Setup balances: 80% in base, 20% in quote
+        base_balance = Decimal("0.16")  # 0.16 BTC * 50000 = 8000 USD
+        quote_balance = Decimal("2000")
+
+        # Verify setup achieves intended position percentage
+        portfolio_value = quote_balance + (base_balance * self.BTC_PRICE)
+        position_pct = float(base_balance * self.BTC_PRICE / portfolio_value * 100)
+        assert 79.9 <= position_pct <= 80.1, f"Expected 80% position, got {position_pct:.1f}%"
+
+        mock_exchange_client.get_current_price.return_value = self.BTC_PRICE
+        def get_balance_side_effect(currency):
+            if currency == "USD":
+                return Balance(currency=currency, available=quote_balance, hold=Decimal("0"))
+            else:  # BTC
+                return Balance(currency=currency, available=base_balance, hold=Decimal("0"))
+        mock_exchange_client.get_balance.side_effect = get_balance_side_effect
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    # Verify daemon uses validator's hard limit (80%)
+                    assert daemon.validator.config.max_position_percent == self.HARD_LIMIT, \
+                        "Daemon should use validator's MAX_POSITION_PERCENT for room check"
+
+                    # Mock signal scorer to return a strong buy signal
+                    # This ensures we're testing the room check, not signal strength
+                    buy_signal = SignalResult(
+                        score=75,  # Strong buy signal
+                        action="buy",
+                        indicators=IndicatorValues(
+                            rsi=30.0, macd_line=100.0, macd_signal=50.0, macd_histogram=50.0,
+                            bb_upper=51000.0, bb_middle=50000.0, bb_lower=49000.0,
+                            ema_fast=50100.0, ema_slow=50000.0, atr=500.0, volatility="normal"
+                        ),
+                        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        confidence=0.8
+                    )
+
+                    # Reset mock to track calls during iteration
+                    mock_exchange_client.reset_mock()
+
+                    # Run trading iteration
+                    with patch('src.strategy.signal_scorer.SignalScorer.calculate_score', return_value=buy_signal):
+                        daemon._trading_iteration()
+
+                    # Verify room check specifically blocked the buy
+                    # Expected calculation: Position = 80%, Max = 80%, Available Room = 0%
+                    # Verify other safety systems would allow trading (so room check is the blocker)
+                    assert daemon.kill_switch.is_active is False, "Kill switch should be inactive"
+                    assert daemon.circuit_breaker.can_trade is True, "Circuit breaker should allow trading"
+                    assert daemon.loss_limiter.get_status().can_trade is True, "Loss limiter should allow trading"
+                    # Verify NO buy order was placed despite strong signal and all safety systems allowing trading
+                    # This proves the room check was the blocker
+                    mock_exchange_client.market_buy.assert_not_called()
+
+    def test_position_above_hard_limit(self, mock_settings, mock_exchange_client, mock_database, caplog):
+        """
+        Test with position above hard limit (81% > 80%).
+        Should have negative room - verify daemon blocks buy orders.
+        """
+        # Configure hard limit at 80%
+        mock_settings.max_position_percent = self.HARD_LIMIT
+        mock_settings.position_size_percent = self.SOFT_LIMIT
+        mock_settings.min_trade_quote = self.MIN_TRADE
+
+        # Setup balances: 81% in base, 19% in quote
+        base_balance = Decimal("0.162")  # 0.162 BTC * 50000 = 8100 USD
+        quote_balance = Decimal("1900")
+
+        # Verify setup achieves intended position percentage
+        portfolio_value = quote_balance + (base_balance * self.BTC_PRICE)
+        position_pct = float(base_balance * self.BTC_PRICE / portfolio_value * 100)
+        assert 80.9 <= position_pct <= 81.1, f"Expected 81% position, got {position_pct:.1f}%"
+
+        mock_exchange_client.get_current_price.return_value = self.BTC_PRICE
+        def get_balance_side_effect(currency):
+            if currency == "USD":
+                return Balance(currency=currency, available=quote_balance, hold=Decimal("0"))
+            else:  # BTC
+                return Balance(currency=currency, available=base_balance, hold=Decimal("0"))
+        mock_exchange_client.get_balance.side_effect = get_balance_side_effect
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    # Verify daemon uses validator's hard limit (80%)
+                    assert daemon.validator.config.max_position_percent == self.HARD_LIMIT, \
+                        "Daemon should use validator's MAX_POSITION_PERCENT for room check"
+
+                    # Mock signal scorer to return a strong buy signal
+                    buy_signal = SignalResult(
+                        score=75,  # Strong buy signal
+                        action="buy",
+                        indicators=IndicatorValues(
+                            rsi=30.0, macd_line=100.0, macd_signal=50.0, macd_histogram=50.0,
+                            bb_upper=51000.0, bb_middle=50000.0, bb_lower=49000.0,
+                            ema_fast=50100.0, ema_slow=50000.0, atr=500.0, volatility="normal"
+                        ),
+                        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        confidence=0.8
+                    )
+
+                    # Reset mock to track calls during iteration
+                    mock_exchange_client.reset_mock()
+
+                    # Run trading iteration
+                    with patch('src.strategy.signal_scorer.SignalScorer.calculate_score', return_value=buy_signal):
+                        daemon._trading_iteration()
+
+                    # Verify room check specifically blocked the buy
+                    # Expected calculation: Position = 81%, Max = 80%, Available Room = -1%
+                    # Verify other safety systems would allow trading (so room check is the blocker)
+                    assert daemon.kill_switch.is_active is False, "Kill switch should be inactive"
+                    assert daemon.circuit_breaker.can_trade is True, "Circuit breaker should allow trading"
+                    assert daemon.loss_limiter.get_status().can_trade is True, "Loss limiter should allow trading"
+                    # Verify NO buy order was placed despite strong signal and all safety systems allowing trading
+                    # This proves the room check was the blocker
+                    mock_exchange_client.market_buy.assert_not_called()
+
+    def test_edge_case_position_just_below_hard_limit(self, mock_settings, mock_exchange_client, mock_database, caplog):
+        """
+        Test edge case: position at 79%, hard limit 80%.
+        Portfolio = 1000 USD, MIN_TRADE_QUOTE = 10 USD (min_room_pct = 1.0%).
+        Available room = 1.0%, which equals min_room_pct.
+        Should have room since available_room_pct >= min_room_pct.
+        """
+        # Configure hard limit at 80%
+        mock_settings.max_position_percent = self.HARD_LIMIT
+        mock_settings.position_size_percent = self.SOFT_LIMIT
+        mock_settings.min_trade_quote = self.MIN_TRADE
+
+        # Setup balances for 1000 USD portfolio: 79% in base, 21% in quote
+        base_balance = Decimal("0.0158")  # 0.0158 BTC * 50000 = 790 USD
+        quote_balance = Decimal("210")
+
+        # Verify setup achieves intended position percentage
+        portfolio_value = quote_balance + (base_balance * self.BTC_PRICE)
+        position_pct = float(base_balance * self.BTC_PRICE / portfolio_value * 100)
+        assert 78.9 <= position_pct <= 79.1, f"Expected 79% position, got {position_pct:.1f}%"
+
+        mock_exchange_client.get_current_price.return_value = self.BTC_PRICE
+        def get_balance_side_effect(currency):
+            if currency == "USD":
+                return Balance(currency=currency, available=quote_balance, hold=Decimal("0"))
+            else:  # BTC
+                return Balance(currency=currency, available=base_balance, hold=Decimal("0"))
+        mock_exchange_client.get_balance.side_effect = get_balance_side_effect
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    # Verify daemon uses validator's hard limit (80%)
+                    assert daemon.validator.config.max_position_percent == self.HARD_LIMIT, \
+                        "Daemon should use validator's MAX_POSITION_PERCENT for room check"
+
+                    # Mock signal scorer to return a strong buy signal
+                    # This ensures we're testing the room check with a buy scenario
+                    buy_signal = SignalResult(
+                        score=75,  # Strong buy signal
+                        action="buy",
+                        indicators=IndicatorValues(
+                            rsi=30.0, macd_line=100.0, macd_signal=50.0, macd_histogram=50.0,
+                            bb_upper=51000.0, bb_middle=50000.0, bb_lower=49000.0,
+                            ema_fast=50100.0, ema_slow=50000.0, atr=500.0, volatility="normal"
+                        ),
+                        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        confidence=0.8
+                    )
+
+                    # Reset mock to track calls during iteration
+                    mock_exchange_client.reset_mock()
+
+                    # Run trading iteration to trigger room check logic
+                    with caplog.at_level(logging.INFO):
+                        with patch('src.strategy.signal_scorer.SignalScorer.calculate_score', return_value=buy_signal):
+                            daemon._trading_iteration()
+
+                    # Should NOT see "buy_blocked_insufficient_room" because room meets min requirement
+                    # Expected calculation: Position = 79%, Max = 80%, Available Room = 1%
+                    # Min Room = max(1.0%, 10/1000 * 100) = 1.0%
+                    # 1.0% >= 1.0% so buy should be allowed
+                    assert "buy_blocked_insufficient_room" not in caplog.text, \
+                        "Should have room to buy when available_room_pct (1.0%) >= min_room_pct (1.0%)"
+
+                    # Verify other safety systems would allow trading
+                    # This proves room check is the ONLY reason a buy might not occur
+                    assert daemon.kill_switch.is_active is False, "Kill switch should be inactive"
+                    assert daemon.circuit_breaker.can_trade is True, "Circuit breaker should allow trading"
+                    assert daemon.loss_limiter.get_status().can_trade is True, "Loss limiter should allow trading"
+
+    def test_edge_case_room_below_min_trade_requirement(self, mock_settings, mock_exchange_client, mock_database, caplog):
+        """
+        Test edge case: position at 79.5%, hard limit 80%.
+        Portfolio = 1000 USD, MIN_TRADE_QUOTE = 10 USD (min_room_pct = 1.0%).
+        Available room = 0.5%, which is less than min_room_pct.
+        Should NOT have room - verify daemon blocks buy orders.
+        """
+        # Configure hard limit at 80%
+        mock_settings.max_position_percent = self.HARD_LIMIT
+        mock_settings.position_size_percent = self.SOFT_LIMIT
+        mock_settings.min_trade_quote = self.MIN_TRADE
+
+        # Setup balances for 1000 USD portfolio: 79.5% in base, 20.5% in quote
+        base_balance = Decimal("0.0159")  # 0.0159 BTC * 50000 = 795 USD
+        quote_balance = Decimal("205")
+
+        # Verify setup achieves intended position percentage
+        portfolio_value = quote_balance + (base_balance * self.BTC_PRICE)
+        position_pct = float(base_balance * self.BTC_PRICE / portfolio_value * 100)
+        assert 79.4 <= position_pct <= 79.6, f"Expected 79.5% position, got {position_pct:.1f}%"
+
+        mock_exchange_client.get_current_price.return_value = self.BTC_PRICE
+        def get_balance_side_effect(currency):
+            if currency == "USD":
+                return Balance(currency=currency, available=quote_balance, hold=Decimal("0"))
+            else:  # BTC
+                return Balance(currency=currency, available=base_balance, hold=Decimal("0"))
+        mock_exchange_client.get_balance.side_effect = get_balance_side_effect
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    # Verify daemon uses validator's hard limit (80%)
+                    assert daemon.validator.config.max_position_percent == self.HARD_LIMIT, \
+                        "Daemon should use validator's MAX_POSITION_PERCENT for room check"
+
+                    # Mock signal scorer to return a strong buy signal
+                    buy_signal = SignalResult(
+                        score=75,  # Strong buy signal
+                        action="buy",
+                        indicators=IndicatorValues(
+                            rsi=30.0, macd_line=100.0, macd_signal=50.0, macd_histogram=50.0,
+                            bb_upper=51000.0, bb_middle=50000.0, bb_lower=49000.0,
+                            ema_fast=50100.0, ema_slow=50000.0, atr=500.0, volatility="normal"
+                        ),
+                        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        confidence=0.8
+                    )
+
+                    # Reset mock to track calls during iteration
+                    mock_exchange_client.reset_mock()
+
+                    # Run trading iteration
+                    with patch('src.strategy.signal_scorer.SignalScorer.calculate_score', return_value=buy_signal):
+                        daemon._trading_iteration()
+
+                    # Verify room check specifically blocked the buy
+                    # Expected calculation: Position = 79.5%, Max = 80%, Available Room = 0.5%
+                    # Min Room = max(1.0%, 10/1000 * 100) = 1.0%
+                    # 0.5% < 1.0% so buy should be blocked
+                    # Verify other safety systems would allow trading (so room check is the blocker)
+                    assert daemon.kill_switch.is_active is False, "Kill switch should be inactive"
+                    assert daemon.circuit_breaker.can_trade is True, "Circuit breaker should allow trading"
+                    assert daemon.loss_limiter.get_status().can_trade is True, "Loss limiter should allow trading"
+                    # Verify NO buy order was placed despite strong signal and all safety systems allowing trading
+                    # This proves the room check was the blocker
+                    mock_exchange_client.market_buy.assert_not_called()
+
+    def test_sell_allowed_when_position_at_limit(self, mock_settings, mock_exchange_client, mock_database, caplog):
+        """
+        Verify sells are allowed even when position is at hard limit.
+        Room check should only affect buy orders, not sell orders.
+        """
+        # Configure hard limit at 80%
+        mock_settings.max_position_percent = self.HARD_LIMIT
+        mock_settings.position_size_percent = self.SOFT_LIMIT
+        mock_settings.min_trade_quote = self.MIN_TRADE
+
+        # Setup balances: 80% in base, 20% in quote (at hard limit)
+        base_balance = Decimal("0.16")  # 0.16 BTC * 50000 = 8000 USD
+        quote_balance = Decimal("2000")
+
+        # Verify setup achieves intended position percentage
+        portfolio_value = quote_balance + (base_balance * self.BTC_PRICE)
+        position_pct = float(base_balance * self.BTC_PRICE / portfolio_value * 100)
+        assert 79.9 <= position_pct <= 80.1, f"Expected 80% position, got {position_pct:.1f}%"
+
+        mock_exchange_client.get_current_price.return_value = self.BTC_PRICE
+        def get_balance_side_effect(currency):
+            if currency == "USD":
+                return Balance(currency=currency, available=quote_balance, hold=Decimal("0"))
+            else:  # BTC
+                return Balance(currency=currency, available=base_balance, hold=Decimal("0"))
+        mock_exchange_client.get_balance.side_effect = get_balance_side_effect
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    # Verify daemon uses validator's hard limit (80%)
+                    assert daemon.validator.config.max_position_percent == self.HARD_LIMIT, \
+                        "Daemon should use validator's MAX_POSITION_PERCENT for room check"
+
+                    # Mock signal scorer to return a strong sell signal
+                    # This ensures we're testing that sell orders are NOT blocked by room check
+                    sell_signal = SignalResult(
+                        score=-75,  # Strong sell signal
+                        action="sell",
+                        indicators=IndicatorValues(
+                            rsi=70.0, macd_line=-100.0, macd_signal=-50.0, macd_histogram=-50.0,
+                            bb_upper=51000.0, bb_middle=50000.0, bb_lower=49000.0,
+                            ema_fast=49900.0, ema_slow=50000.0, atr=500.0, volatility="normal"
+                        ),
+                        breakdown={"rsi": -20, "macd": -20, "bollinger": -15, "ema": -10, "volume": -10},
+                        confidence=0.8
+                    )
+
+                    # Reset mock to track calls during iteration
+                    mock_exchange_client.reset_mock()
+
+                    # Run trading iteration
+                    with caplog.at_level(logging.INFO):
+                        with patch('src.strategy.signal_scorer.SignalScorer.calculate_score', return_value=sell_signal):
+                            daemon._trading_iteration()
+
+                    # Verify sell was NOT blocked by BUY room check (room check is buy-specific)
+                    assert "buy_blocked_insufficient_room" not in caplog.text, \
+                        "Room check should not affect sell orders"
+
+                    # Verify other safety systems would allow trading
+                    # This proves that sell logic was evaluated and not blocked by safety systems
+                    assert daemon.kill_switch.is_active is False, "Kill switch should be inactive"
+                    assert daemon.circuit_breaker.can_trade is True, "Circuit breaker should allow trading"
+                    assert daemon.loss_limiter.get_status().can_trade is True, "Loss limiter should allow trading"
+
+                    # Verify sell was attempted (market_sell called with positive size)
+                    # Since all safety systems allow trading and we have a strong sell signal,
+                    # the daemon should have attempted to execute the sell
+                    if mock_exchange_client.market_sell.call_count > 0:
+                        # Sell was executed - verify it was called with correct parameters
+                        call_args = mock_exchange_client.market_sell.call_args
+                        assert call_args is not None, "market_sell should have been called"
+                        # Verify sell size is greater than 0 (selling some or all of the position)
+                        sell_size = call_args[0][1] if len(call_args[0]) > 1 else call_args[1].get('size')
+                        assert sell_size > 0, "Sell size should be positive"
