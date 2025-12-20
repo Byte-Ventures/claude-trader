@@ -1442,9 +1442,20 @@ class TradingDaemon:
                         category=sentiment_category,
                         value=sentiment.value,
                     )
+                    # Track if we were previously in alert state
+                    threshold = self.settings.sentiment_failure_alert_threshold
+                    was_in_alert_state = self._sentiment_fetch_failures >= threshold
+
                     # Reset failure counter on success
                     self._sentiment_fetch_failures = 0
                     self._last_sentiment_fetch_success = datetime.now(timezone.utc)
+
+                    # Notify recovery if we were previously failing
+                    if was_in_alert_state:
+                        self.notifier.notify_info(
+                            "Sentiment API has recovered. Extreme fear override is now active.",
+                            "Sentiment API Recovery"
+                        )
                 else:
                     logger.warning(
                         "sentiment_unavailable_for_trade_evaluation",
@@ -3538,16 +3549,35 @@ class TradingDaemon:
                     if sentiment_result and sentiment_result.value:
                         sentiment_value = sentiment_result.value
                         sentiment_class = sentiment_result.classification or "Unknown"
+                        # Track if we were previously in alert state
+                        threshold = self.settings.sentiment_failure_alert_threshold
+                        was_in_alert_state = self._sentiment_fetch_failures >= threshold
+
                         # Reset failure counter on success
                         self._sentiment_fetch_failures = 0
                         self._last_sentiment_fetch_success = datetime.now(timezone.utc)
+
+                        # Notify recovery if we were previously failing
+                        if was_in_alert_state:
+                            self.notifier.notify_info(
+                                "Sentiment API has recovered. Extreme fear override is now active.",
+                                "Sentiment API Recovery"
+                            )
                     else:
-                        logger.debug("sentiment_fetch_skipped", reason="no_value")
+                        logger.warning(
+                            "sentiment_unavailable_for_dashboard",
+                            reason="fetch_returned_none",
+                            impact="extreme_fear_override_disabled",
+                        )
                         # Increment failure counter
                         self._sentiment_fetch_failures += 1
                         self._check_sentiment_failure_threshold()
                 except Exception as e:
-                    logger.debug("sentiment_fetch_skipped", error=str(e))
+                    logger.warning(
+                        "sentiment_fetch_failed_during_dashboard",
+                        error=str(e),
+                        impact="extreme_fear_override_disabled",
+                    )
                     # Increment failure counter
                     self._sentiment_fetch_failures += 1
                     self._check_sentiment_failure_threshold()
