@@ -122,3 +122,76 @@ class TestTradingStyle:
 
         # Unknown intervals fall through to position trading (conservative default)
         assert style == "position"
+
+
+class TestHTFDisplayFormatting:
+    """Tests for HTF (Higher Timeframe) data display formatting."""
+
+    @pytest.fixture
+    def mock_db(self):
+        """Create minimal mock database."""
+        return MagicMock()
+
+    @pytest.fixture
+    def reviewer(self, mock_db):
+        """Create a TradeReviewer instance."""
+        return TradeReviewer(
+            api_key="test-key",
+            db=mock_db,
+            reviewer_models=["model1"],
+            judge_model="judge-model",
+        )
+
+    def test_htf_unknown_values_display_correctly(self, reviewer):
+        """Test that 'unknown' HTF values are formatted correctly with .upper()."""
+        # Create context with None HTF values (which become "unknown")
+        context = {
+            'price': 50000.0,
+            'score': 75,
+            'threshold': 50,
+            'breakdown': {
+                '_htf_trend': None,  # Will become "unknown"
+                '_htf_daily': None,  # Will become "unknown"
+                '_htf_4h': None,     # Will become "unknown"
+            },
+            'trading_style_desc': 'swing trading',
+            'candle_interval': 'ONE_HOUR',
+            'fear_greed': 50,
+            'fear_greed_class': 'Neutral',
+            'win_rate': 60.0,
+            'net_pnl': 1000.0,
+            'total_trades': 10,
+            'action': 'buy',
+        }
+
+        # Build the prompt (which includes HTF formatting)
+        prompt = reviewer._build_reviewer_prompt(context)
+
+        # Verify that "unknown" values are properly uppercased in the prompt
+        assert "HIGHER TIMEFRAME BIAS: UNKNOWN (Daily: UNKNOWN, 4H: UNKNOWN)" in prompt
+
+    def test_htf_mixed_values_display_correctly(self, reviewer):
+        """Test HTF display with mix of unknown and actual trend values."""
+        context = {
+            'price': 50000.0,
+            'score': 75,
+            'threshold': 50,
+            'breakdown': {
+                '_htf_trend': 'bullish',
+                '_htf_daily': None,      # Will become "unknown"
+                '_htf_4h': 'bearish',
+            },
+            'trading_style_desc': 'swing trading',
+            'candle_interval': 'ONE_HOUR',
+            'fear_greed': 50,
+            'fear_greed_class': 'Neutral',
+            'win_rate': 60.0,
+            'net_pnl': 1000.0,
+            'total_trades': 10,
+            'action': 'buy',
+        }
+
+        prompt = reviewer._build_reviewer_prompt(context)
+
+        # Verify mixed values are properly formatted
+        assert "HIGHER TIMEFRAME BIAS: BULLISH (Daily: UNKNOWN, 4H: BEARISH)" in prompt
