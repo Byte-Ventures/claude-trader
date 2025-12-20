@@ -766,11 +766,15 @@ class TradingDaemon:
 
             # Invalidate HTF cache if MTF settings or indicator periods changed
             # Indicator periods affect trend calculation, so cache must be invalidated
-            mtf_related_settings = {"mtf_enabled", "mtf_4h_enabled", "mtf_daily_candle_limit", "mtf_4h_candle_limit",
-                                   "mtf_daily_cache_minutes", "mtf_4h_cache_minutes",
-                                   "mtf_aligned_boost", "mtf_counter_penalty",
-                                   "ema_slow", "bollinger_period", "macd_slow"}
-            if mtf_related_settings & set(changes.keys()):
+            # Cache-affecting parameters: mtf_enabled, mtf_4h_enabled, mtf_daily_candle_limit,
+            # mtf_4h_candle_limit, mtf_daily_cache_minutes, mtf_4h_cache_minutes, ema_slow,
+            # bollinger_period, macd_slow
+            # Note: mtf_aligned_boost and mtf_counter_penalty are NOT included as they
+            # only affect score calculation, not trend fetching
+            mtf_cache_affecting_settings = {"mtf_enabled", "mtf_4h_enabled", "mtf_daily_candle_limit", "mtf_4h_candle_limit",
+                                           "mtf_daily_cache_minutes", "mtf_4h_cache_minutes",
+                                           "ema_slow", "bollinger_period", "macd_slow"}
+            if mtf_cache_affecting_settings & set(changes.keys()):
                 self._invalidate_htf_cache()
 
             logger.info(
