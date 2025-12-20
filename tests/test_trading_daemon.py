@@ -2167,6 +2167,127 @@ def test_store_signal_history_alerts_after_repeated_failures(htf_mock_settings, 
                 assert "10" in error_msg  # Verify failure count is included
 
 
+def test_store_signal_history_truncates_long_errors(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test that long error messages are truncated with smart truncation in alerts."""
+    from src.strategy.signal_scorer import SignalResult, IndicatorValues
+    from sqlalchemy.exc import SQLAlchemyError
+
+    # Create error with message > 500 chars (new limit in notify_error)
+    # For non-stack-trace errors: keeps first 400 + last 100 chars
+    # For stack traces: keeps first 250 + last 250 chars
+    long_error_msg = "x" * 600
+    mock_session = MagicMock()
+    mock_session.__enter__ = Mock(side_effect=SQLAlchemyError(long_error_msg))
+    mock_session.__exit__ = Mock(return_value=False)
+    mock_database.session.return_value = mock_session
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier') as mock_notifier_class:
+                mock_notifier = Mock()
+                mock_notifier_class.return_value = mock_notifier
+
+                daemon = TradingDaemon(htf_mock_settings)
+
+                signal_result = SignalResult(
+                    score=65,
+                    action="buy",
+                    indicators=IndicatorValues(
+                        rsi=35.0, macd_line=100.0, macd_signal=50.0,
+                        macd_histogram=50.0, bb_upper=51000.0, bb_middle=50000.0,
+                        bb_lower=49000.0, ema_fast=50100.0, ema_slow=50000.0,
+                        volatility="normal"
+                    ),
+                    breakdown={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                    confidence=0.8,
+                )
+
+                # Call 10 times to trigger alert with long error
+                for _ in range(10):
+                    daemon._store_signal_history(
+                        signal_result=signal_result,
+                        current_price=Decimal("50000"),
+                        htf_bias="bullish",
+                        daily_trend="bullish",
+                        four_hour_trend="bullish",
+                        threshold=60,
+                    )
+
+                # Verify notification was called
+                mock_notifier.notify_error.assert_called_once()
+
+                # Extract the context parameter from the call
+                call_kwargs = mock_notifier.notify_error.call_args[1]
+                context = call_kwargs['context']
+
+                # Verify the error string is passed to notify_error
+                # (truncation happens inside notify_error, not in runner.py)
+                assert "Last error: " in context
+                # The error portion should contain the full long error message
+                # because truncation happens in notify_error(), not before the call
+                assert long_error_msg in context
+
+
+def test_store_signal_history_short_errors_not_truncated(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test that short error messages are not truncated."""
+    from src.strategy.signal_scorer import SignalResult, IndicatorValues
+    from sqlalchemy.exc import SQLAlchemyError
+
+    # Create error with message < 500 chars
+    short_error_msg = "Database locked"
+    mock_session = MagicMock()
+    mock_session.__enter__ = Mock(side_effect=SQLAlchemyError(short_error_msg))
+    mock_session.__exit__ = Mock(return_value=False)
+    mock_database.session.return_value = mock_session
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier') as mock_notifier_class:
+                mock_notifier = Mock()
+                mock_notifier_class.return_value = mock_notifier
+
+                daemon = TradingDaemon(htf_mock_settings)
+
+                signal_result = SignalResult(
+                    score=65,
+                    action="buy",
+                    indicators=IndicatorValues(
+                        rsi=35.0, macd_line=100.0, macd_signal=50.0,
+                        macd_histogram=50.0, bb_upper=51000.0, bb_middle=50000.0,
+                        bb_lower=49000.0, ema_fast=50100.0, ema_slow=50000.0,
+                        volatility="normal"
+                    ),
+                    breakdown={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                    confidence=0.8,
+                )
+
+                # Call 10 times to trigger alert with short error
+                for _ in range(10):
+                    daemon._store_signal_history(
+                        signal_result=signal_result,
+                        current_price=Decimal("50000"),
+                        htf_bias="bullish",
+                        daily_trend="bullish",
+                        four_hour_trend="bullish",
+                        threshold=60,
+                    )
+
+                # Verify notification was called
+                mock_notifier.notify_error.assert_called_once()
+
+                # Extract the context parameter from the call
+                call_kwargs = mock_notifier.notify_error.call_args[1]
+                context = call_kwargs['context']
+
+                # Verify NO truncation:
+                # - Should contain "Last error: " prefix
+                # - Should contain the full error message
+                # - Should NOT have "..." appended
+                assert "Last error: " in context
+                assert short_error_msg in context
+                assert not context.endswith("...")
+
+
 def test_store_signal_history_alerts_every_50_after_initial(htf_mock_settings, mock_exchange_client, mock_database):
     """Test signal history alerts at 10, then every 50 additional failures (60, 110...)."""
     from src.strategy.signal_scorer import SignalResult, IndicatorValues

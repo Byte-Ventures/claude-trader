@@ -53,7 +53,6 @@ ASYNC_TIMEOUT_SECONDS = 120
 # Interval for periodic stop protection checks (seconds)
 STOP_PROTECTION_CHECK_INTERVAL_SECONDS = 300  # 5 minutes
 
-
 class TradingDaemon:
     """
     Main trading daemon that orchestrates all bot operations.
@@ -579,6 +578,7 @@ class TradingDaemon:
                 return (float(price) - indicators.bb_lower) / bb_range
         return None
 
+
     def _validate_trading_pair(self, trading_pair: str) -> None:
         """
         Validate trading pair format and against exchange.
@@ -1057,7 +1057,7 @@ class TradingDaemon:
             ):
                 self.notifier.notify_error(
                     f"Signal history storage failing ({self._signal_history_failures} consecutive failures)",
-                    context=f"Last error: {e}",
+                    context=f"Last error: {str(e)}",
                 )
             return None
 
@@ -1335,6 +1335,7 @@ class TradingDaemon:
                         unrealized_pnl=str(unrealized_pnl),
                         combined_loss_pct=f"{combined_loss_pct:.1f}%",
                     )
+                    # No truncation needed - fixed-format percentage is always short
                     self.notifier.notify_error(
                         f"Combined loss {combined_loss_pct:.1f}% exceeds daily limit",
                         "Unrealized loss warning"
