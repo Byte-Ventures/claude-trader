@@ -972,6 +972,17 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def validate_ai_token_hierarchy(self) -> "Settings":
+        """Validate AI token limits are properly ordered (reviewer <= research)."""
+        if self.ai_reviewer_max_tokens > self.ai_research_max_tokens:
+            raise ValueError(
+                f"ai_reviewer_max_tokens ({self.ai_reviewer_max_tokens}) must be <= "
+                f"ai_research_max_tokens ({self.ai_research_max_tokens}). "
+                "Reviewer tokens are for brief trade decisions, research tokens are for detailed analysis."
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_mtf_candle_limits(self) -> "Settings":
         """Validate MTF candle limits are sufficient for indicator calculations.
 
