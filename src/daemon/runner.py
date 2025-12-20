@@ -1045,7 +1045,7 @@ class TradingDaemon:
             return daily, daily, None
 
         # MTF uses FOUR_HOUR (not SIX_HOUR) because:
-        # - Provides 6 candles/day vs 4 for SIX_HOUR
+        # - Detects trend changes more quickly (6 periods/day vs 4 for SIX_HOUR)
         # - More responsive to intraday trend shifts (trade-off: potentially more noise vs 6H stability)
         # - Balances between daily stability and hourly responsiveness
         # Note: SIX_HOUR remains a valid granularity for other uses, just not for MTF
