@@ -2737,3 +2737,54 @@ class TestConfigValidation:
         )
         assert settings.whale_candle_bullish_threshold == 0.99
         assert settings.whale_candle_bearish_threshold == 0.01
+
+    def test_mtf_daily_candle_limit_below_indicator_period(self):
+        """Test that mtf_daily_candle_limit below indicator periods raises ValidationError.
+
+        If ema_slow is set to 50, mtf_daily_candle_limit must be >= 50.
+        Otherwise get_trend() would always return neutral due to insufficient data.
+        """
+        with pytest.raises(ValidationError) as exc_info:
+            Settings(ema_slow=50, mtf_daily_candle_limit=30)
+        error_message = str(exc_info.value).lower()
+        assert "mtf_daily_candle_limit" in error_message
+        assert "50" in error_message  # Should mention the required minimum
+
+    def test_mtf_4h_candle_limit_below_indicator_period(self):
+        """Test that mtf_4h_candle_limit below indicator periods raises ValidationError.
+
+        If bollinger_period is set to 50, mtf_4h_candle_limit must be >= 50.
+        """
+        with pytest.raises(ValidationError) as exc_info:
+            Settings(bollinger_period=50, mtf_4h_candle_limit=30)
+        error_message = str(exc_info.value).lower()
+        assert "mtf_4h_candle_limit" in error_message
+        assert "50" in error_message  # Should mention the required minimum
+
+    def test_mtf_candle_limits_with_high_macd_slow(self):
+        """Test that mtf candle limits respect macd_slow period."""
+        with pytest.raises(ValidationError) as exc_info:
+            Settings(macd_slow=60, mtf_daily_candle_limit=50)
+        error_message = str(exc_info.value).lower()
+        assert "mtf_daily_candle_limit" in error_message
+        assert "60" in error_message
+
+    def test_mtf_candle_limits_valid_with_default_indicators(self):
+        """Test that default MTF candle limits are valid with default indicator periods."""
+        # Default ema_slow=21, bollinger_period=20, macd_slow=26
+        # Default mtf_daily_candle_limit=50, mtf_4h_candle_limit=84
+        # Both should be valid since 50 > 26 and 84 > 26
+        settings = Settings()
+        assert settings.mtf_daily_candle_limit == 50
+        assert settings.mtf_4h_candle_limit == 84
+
+    def test_mtf_candle_limits_valid_with_custom_indicators(self):
+        """Test that MTF candle limits can be set equal to indicator periods."""
+        # Set candle limits exactly equal to the longest indicator period
+        settings = Settings(
+            ema_slow=50,
+            mtf_daily_candle_limit=50,
+            mtf_4h_candle_limit=84,  # Already > 50
+        )
+        assert settings.mtf_daily_candle_limit == 50
+        assert settings.mtf_4h_candle_limit == 84

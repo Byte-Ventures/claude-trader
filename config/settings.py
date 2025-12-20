@@ -946,6 +946,38 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def validate_mtf_candle_limits(self) -> "Settings":
+        """Validate MTF candle limits are sufficient for indicator calculations.
+
+        The signal scorer requires enough candles to calculate all indicators:
+        - EMA slow period (default 21, max 200)
+        - Bollinger period (default 20, max 100)
+        - MACD slow period (default 26, max 100)
+
+        If candle limits are less than the longest indicator period,
+        get_trend() will always return neutral due to insufficient data.
+        """
+        min_required = max(self.ema_slow, self.bollinger_period, self.macd_slow)
+
+        if self.mtf_daily_candle_limit < min_required:
+            raise ValueError(
+                f"mtf_daily_candle_limit ({self.mtf_daily_candle_limit}) must be >= "
+                f"longest indicator period ({min_required}). Current settings: "
+                f"ema_slow={self.ema_slow}, bollinger_period={self.bollinger_period}, "
+                f"macd_slow={self.macd_slow}"
+            )
+
+        if self.mtf_4h_candle_limit < min_required:
+            raise ValueError(
+                f"mtf_4h_candle_limit ({self.mtf_4h_candle_limit}) must be >= "
+                f"longest indicator period ({min_required}). Current settings: "
+                f"ema_slow={self.ema_slow}, bollinger_period={self.bollinger_period}, "
+                f"macd_slow={self.macd_slow}"
+            )
+
+        return self
+
     @field_validator("macd_interval_multipliers")
     @classmethod
     def validate_macd_interval_multipliers(cls, v: Optional[dict]) -> Optional[dict]:
