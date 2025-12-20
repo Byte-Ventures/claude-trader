@@ -656,17 +656,20 @@ class Settings(BaseSettings):
         default=False,
         description="Include 4-hour timeframe in MTF (false = daily-only, simpler)"
     )
+    # Upper bound rationale: Daily limited to 100 (~14 weeks) as longer periods dilute
+    # trend signals in volatile crypto markets. 4H allows 200 (~33 days) to capture
+    # recent price action with finer granularity while keeping API/memory usage reasonable.
     mtf_daily_candle_limit: int = Field(
         default=50,
-        ge=26,
-        le=100,
-        description="Candles for daily trend analysis (50 = ~7 weeks, min 26 for EMA/MACD)"
+        ge=26,  # Conservative minimum - actual minimum depends on indicator settings (see validate_mtf_candle_limits)
+        le=100,  # ~14 weeks - longer periods dilute trend signals in crypto
+        description="Candles for daily trend analysis (50 = ~7 weeks, must be >= longest indicator period)"
     )
     mtf_4h_candle_limit: int = Field(
         default=84,
-        ge=26,
-        le=200,
-        description="Candles for 4H trend analysis (84 = 14 days, min 26 for EMA/MACD)"
+        ge=26,  # Conservative minimum - actual minimum depends on indicator settings (see validate_mtf_candle_limits)
+        le=200,  # ~33 days - finer granularity captures recent price action
+        description="Candles for 4H trend analysis (84 = 14 days, must be >= longest indicator period)"
     )
     mtf_daily_cache_minutes: int = Field(
         default=60,
