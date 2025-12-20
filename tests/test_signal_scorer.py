@@ -2788,3 +2788,38 @@ class TestConfigValidation:
         )
         assert settings.mtf_daily_candle_limit == 50
         assert settings.mtf_4h_candle_limit == 84
+
+    def test_mtf_candle_limit_migration(self, monkeypatch):
+        """Test that deprecated MTF_CANDLE_LIMIT is migrated to per-timeframe limits."""
+        import warnings
+
+        # Set the deprecated env var and clear new ones
+        monkeypatch.setenv("MTF_CANDLE_LIMIT", "60")
+        monkeypatch.delenv("MTF_DAILY_CANDLE_LIMIT", raising=False)
+        monkeypatch.delenv("MTF_4H_CANDLE_LIMIT", raising=False)
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            settings = Settings()
+
+            # Check migration occurred
+            assert settings.mtf_daily_candle_limit == 60
+            # 4H should be scaled: 60 * 1.68 = 100.8 -> 100
+            assert settings.mtf_4h_candle_limit == 100
+
+            # Check deprecation warning was issued
+            deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            mtf_warnings = [x for x in deprecation_warnings if "MTF_CANDLE_LIMIT" in str(x.message)]
+            assert len(mtf_warnings) == 1
+            assert "deprecated" in str(mtf_warnings[0].message).lower()
+
+    def test_mtf_candle_limit_migration_respects_new_values(self, monkeypatch):
+        """Test that migration doesn't override explicitly set new values."""
+        # Set both old and new values
+        monkeypatch.setenv("MTF_CANDLE_LIMIT", "60")
+        monkeypatch.setenv("MTF_DAILY_CANDLE_LIMIT", "70")
+
+        settings = Settings()
+
+        # New value should take precedence
+        assert settings.mtf_daily_candle_limit == 70
