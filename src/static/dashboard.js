@@ -451,7 +451,9 @@ function updateDashboard(state) {
             : 'Unknown';
         document.getElementById('htf-combined-bias').textContent = `${biasEmoji} ${biasText}`;
 
-        const dailyEmoji = trendEmoji[htfBias.daily_trend] || '↔️';
+        const dailyEmoji = htfBias.daily_trend
+            ? (trendEmoji[htfBias.daily_trend] || '↔️')
+            : '↔️';
         const fourHourEmoji = htfBias.four_hour_trend
             ? (trendEmoji[htfBias.four_hour_trend] || '↔️')
             : '—';

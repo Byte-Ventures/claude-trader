@@ -913,7 +913,7 @@ class TradingDaemon:
             logger.error("htf_fetch_unexpected_error", timeframe=granularity, error=str(e), error_type=type(e).__name__)
             return cached_trend or "neutral"
 
-    def _get_htf_bias(self) -> tuple[str, str, str]:
+    def _get_htf_bias(self) -> tuple[str, str, Optional[str]]:
         """
         Get combined HTF bias from daily + 4-hour trends.
 
@@ -922,6 +922,7 @@ class TradingDaemon:
             - Both bullish → "bullish"
             - Both bearish → "bearish"
             - Mixed/neutral → "neutral"
+            - 4h_trend is None when mtf_4h_enabled=False
         """
         if not self.settings.mtf_enabled:
             return "neutral", "neutral", "neutral"
