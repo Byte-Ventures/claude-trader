@@ -194,7 +194,7 @@ class Settings(BaseSettings):
     # MACD Dynamic Scaling - Interval Multipliers
     macd_interval_multipliers: Optional[dict[str, float]] = Field(
         default=None,
-        description="MACD dynamic scale interval multipliers for backtesting optimization. If None, uses hardcoded defaults. Format: {\"ONE_MINUTE\": 2.0, \"FIVE_MINUTE\": 1.5, ...}"
+        description="MACD dynamic scale interval multipliers. Used in production to tune histogram scaling per interval. If None, uses hardcoded defaults. Format: {\"ONE_MINUTE\": 2.0, \"FIVE_MINUTE\": 1.5, ...}"
     )
 
     # Strategy Parameters - Signal
@@ -1198,45 +1198,60 @@ class Settings(BaseSettings):
                     )
 
         # Migrate deprecated MTF_CANDLE_LIMIT to per-timeframe limits
+        # Migrate each parameter independently to handle partial upgrades
         old_mtf_limit = os.environ.get("MTF_CANDLE_LIMIT")
         if old_mtf_limit is not None:
             has_new_daily = os.environ.get("MTF_DAILY_CANDLE_LIMIT") or data.get("mtf_daily_candle_limit")
             has_new_4h = os.environ.get("MTF_4H_CANDLE_LIMIT") or data.get("mtf_4h_candle_limit")
 
-            if not has_new_daily and not has_new_4h:
-                try:
-                    limit_val = int(old_mtf_limit)
+            try:
+                limit_val = int(old_mtf_limit)
+                # 4H needs more candles (6 per day vs 1), scale up proportionally
+                # Old default was 50 for daily, new 4H default is 84 (14 days worth)
+                # Scale: 84/50 = 1.68, round to nearest sensible value
+                scaled_4h = min(200, max(26, int(limit_val * 1.68)))
+
+                # Migrate each independently - user may have set only one new param
+                migrated = []
+                if not has_new_daily:
                     data["mtf_daily_candle_limit"] = limit_val
-                    # 4H needs more candles (6 per day vs 1), scale up proportionally
-                    # Old default was 50 for daily, new 4H default is 84 (14 days worth)
-                    # Scale: 84/50 = 1.68, round to nearest sensible value
-                    scaled_4h = min(200, max(26, int(limit_val * 1.68)))
+                    migrated.append(f"MTF_DAILY_CANDLE_LIMIT={limit_val}")
+                if not has_new_4h:
                     data["mtf_4h_candle_limit"] = scaled_4h
+                    migrated.append(f"MTF_4H_CANDLE_LIMIT={scaled_4h}")
+
+                if migrated:
                     warnings.warn(
                         f"MTF_CANDLE_LIMIT={old_mtf_limit} is deprecated. "
-                        f"Migrated to MTF_DAILY_CANDLE_LIMIT={limit_val} and "
-                        f"MTF_4H_CANDLE_LIMIT={scaled_4h}. "
+                        f"Migrated to {' and '.join(migrated)}. "
                         "Update your .env to use the new parameters.",
                         DeprecationWarning,
                         stacklevel=2,
                     )
-                except ValueError:
-                    pass  # Invalid value, let normal validation handle it
+            except ValueError:
+                pass  # Invalid value, let normal validation handle it
 
         # v1.40.0: Migrate old AI_MAX_TOKENS to split settings
+        # Migrate each parameter independently to handle partial upgrades
         old_max_tokens = os.environ.get("AI_MAX_TOKENS")
         if old_max_tokens is not None:
             has_new_reviewer = os.environ.get("AI_REVIEWER_MAX_TOKENS") or data.get("ai_reviewer_max_tokens")
             has_new_research = os.environ.get("AI_RESEARCH_MAX_TOKENS") or data.get("ai_research_max_tokens")
 
-            if not has_new_reviewer and not has_new_research:
-                # Migrate: use old value for research (longer), use default 800 for reviewer (shorter)
+            # Migrate each independently - user may have set only one new param
+            migrated = []
+            if not has_new_reviewer:
+                data["ai_reviewer_max_tokens"] = 800
+                migrated.append("AI_REVIEWER_MAX_TOKENS=800")
+            if not has_new_research:
                 data["ai_research_max_tokens"] = int(old_max_tokens)
+                migrated.append(f"AI_RESEARCH_MAX_TOKENS={old_max_tokens}")
+
+            if migrated:
                 warnings.warn(
                     f"AI_MAX_TOKENS={old_max_tokens} is deprecated. "
-                    f"Migrated to AI_RESEARCH_MAX_TOKENS={old_max_tokens}. "
-                    "Update your .env to use AI_REVIEWER_MAX_TOKENS (default 800) "
-                    "and AI_RESEARCH_MAX_TOKENS (default 4000).",
+                    f"Migrated to {' and '.join(migrated)}. "
+                    "Update your .env to use the new parameters.",
                     DeprecationWarning,
                     stacklevel=2,
                 )

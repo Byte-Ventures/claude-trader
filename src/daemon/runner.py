@@ -175,9 +175,8 @@ class TradingDaemon:
         self._4h_trend: str = "neutral"
         self._4h_last_fetch: Optional[datetime] = None
         # HTF cache performance metrics (accumulate over daemon lifetime)
-        # Note: Counters grow unbounded for long-running processes, but this is acceptable
-        # for observability purposes. With typical cache durations (minutes to hours),
-        # overflow would only occur after months of continuous operation.
+        # Note: Counters grow unbounded, but Python ints have arbitrary precision
+        # (no overflow). Safe for 24/7 operation.
         self._htf_cache_hits: int = 0
         self._htf_cache_misses: int = 0
 

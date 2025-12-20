@@ -155,10 +155,6 @@ main {
     margin-top: 0.25rem;
 }
 
-.price-card .metric-value {
-    color: var(--accent-blue);
-}
-
 .signal-card .metric-value.positive {
     color: var(--accent-green);
 }
