@@ -110,8 +110,19 @@ class SignalResult:
     score: int  # -100 to +100
     action: str  # "buy", "sell", or "hold"
     indicators: IndicatorValues
-    breakdown: dict[str, Any]  # Score contributions (int) + metadata (float/str/bool with _ prefix)
+    components: dict[str, int]  # Score contributions only (rsi, macd, bollinger, ema, volume, trend_filter, htf_bias)
+    metadata: dict[str, Any]  # Raw values, flags, ratios (_rsi_value, _whale_activity, _htf_trend, etc.)
     confidence: float  # 0.0 to 1.0
+
+    @property
+    def breakdown(self) -> dict[str, Any]:
+        """
+        Backward compatibility property combining components and metadata.
+
+        Returns:
+            Combined dict with all score components and metadata keys.
+        """
+        return {**self.components, **self.metadata}
 
 
 class SignalScorer:
@@ -507,7 +518,8 @@ class SignalScorer:
                 score=0,
                 action="hold",
                 indicators=IndicatorValues(),
-                breakdown={},
+                components={},
+                metadata={},
                 confidence=0.0,
             )
 
@@ -542,7 +554,8 @@ class SignalScorer:
         )
 
         # Calculate individual scores
-        breakdown = {}
+        components = {}  # Score contributions only
+        metadata = {}    # Raw values, flags, ratios
         total_score = 0
 
         # RSI component (graduated: returns -1.0 to +1.0)
@@ -642,30 +655,30 @@ class SignalScorer:
                 bb_original=original_bb,
                 bb_adjusted=bb_score,
             )
-        breakdown["_momentum_active"] = 1 if momentum_active else 0
+        metadata["_momentum_active"] = 1 if momentum_active else 0
 
-        breakdown["rsi"] = rsi_score
+        components["rsi"] = rsi_score
         total_score += rsi_score
-        breakdown["macd"] = macd_score
+        components["macd"] = macd_score
         total_score += macd_score
-        breakdown["bollinger"] = bb_score
+        components["bollinger"] = bb_score
         total_score += bb_score
-        breakdown["ema"] = ema_score
+        components["ema"] = ema_score
         total_score += ema_score
 
         # Store raw indicator values for signal history
-        breakdown["_rsi_value"] = indicators.rsi
-        breakdown["_macd_histogram"] = indicators.macd_histogram
+        metadata["_rsi_value"] = indicators.rsi
+        metadata["_macd_histogram"] = indicators.macd_histogram
         # Bollinger band position: 0 = at lower band, 1 = at upper band
         if indicators.bb_upper and indicators.bb_lower and indicators.bb_upper != indicators.bb_lower:
-            breakdown["_bb_position"] = (price - float(indicators.bb_lower)) / (float(indicators.bb_upper) - float(indicators.bb_lower))
+            metadata["_bb_position"] = (price - float(indicators.bb_lower)) / (float(indicators.bb_upper) - float(indicators.bb_lower))
         else:
-            breakdown["_bb_position"] = None
+            metadata["_bb_position"] = None
         # EMA gap percent
         if indicators.ema_fast and indicators.ema_slow and indicators.ema_slow != 0:
-            breakdown["_ema_gap_percent"] = ((float(indicators.ema_fast) - float(indicators.ema_slow)) / float(indicators.ema_slow)) * 100
+            metadata["_ema_gap_percent"] = ((float(indicators.ema_fast) - float(indicators.ema_slow)) / float(indicators.ema_slow)) * 100
         else:
-            breakdown["_ema_gap_percent"] = None
+            metadata["_ema_gap_percent"] = None
 
         # Volume confirmation (boost on high volume, penalty on low volume)
         # Includes whale activity detection for extreme volume spikes
@@ -697,15 +710,15 @@ class SignalScorer:
                     # is valuable information for AI reviewers even without directional bias.
                     volume_boost = int(abs(total_score) * self.whale_boost_percent)
                     if total_score > 0:
-                        breakdown["volume"] = volume_boost
+                        components["volume"] = volume_boost
                         total_score += volume_boost
                     elif total_score < 0:
-                        breakdown["volume"] = -volume_boost
+                        components["volume"] = -volume_boost
                         total_score -= volume_boost
                     else:
-                        breakdown["volume"] = 0
-                    breakdown["_whale_activity"] = True
-                    breakdown["_volume_ratio"] = volume_ratio
+                        components["volume"] = 0
+                    metadata["_whale_activity"] = True
+                    metadata["_volume_ratio"] = volume_ratio
 
                     # Determine whale direction based on price movement during volume spike
                     # Enhanced with candle structure analysis for directional confirmation
@@ -714,7 +727,7 @@ class SignalScorer:
                         current_price = close.iloc[-1]
                         if prev_price > 0 and not pd.isna(current_price) and current_price > 0:
                             price_change_pct = (current_price - prev_price) / prev_price
-                            breakdown["_price_change_pct"] = round(price_change_pct, 6)
+                            metadata["_price_change_pct"] = round(price_change_pct, 6)
 
                             # Analyze candle structure to confirm direction
                             # Check if candle closed near its high (bullish) or low (bearish)
@@ -750,15 +763,15 @@ class SignalScorer:
                                         action="treating_as_unknown",
                                     )
                                     close_position = None
-                                    breakdown["_candle_close_position"] = None
-                                    breakdown["_whale_direction"] = "unknown"
+                                    metadata["_candle_close_position"] = None
+                                    metadata["_whale_direction"] = "unknown"
                                     # Note: _price_change_pct is kept (already set on line 699) - it's still valid
                                     data_inconsistency = True
                                 else:
                                     # Division by zero protection: candle_range > 0 guaranteed by if-condition above (line 716)
                                     close_position = (current_price - candle_low) / candle_range
                                     # Store rounded value for display only; close_position variable remains unrounded for threshold comparisons below
-                                    breakdown["_candle_close_position"] = round(close_position, 3)
+                                    metadata["_candle_close_position"] = round(close_position, 3)
                             else:
                                 # Zero-range candle (doji/flat) or missing data:
                                 # When high == low (perfect equilibrium), candle_range = 0
@@ -766,7 +779,7 @@ class SignalScorer:
                                 # A zero-range candle with whale volume indicates perfect
                                 # equilibrium or a gap, which doesn't provide directional conviction
                                 close_position = None
-                                breakdown["_candle_close_position"] = None
+                                metadata["_candle_close_position"] = None
 
                             # Determine direction with candle structure confirmation
                             # Skip if data inconsistency was detected (price outside candle range)
@@ -783,92 +796,92 @@ class SignalScorer:
                                 if price_change_pct > self.whale_direction_threshold:
                                     # Price moved up - check candle structure for confirmation
                                     if close_position is not None and close_position > self.whale_candle_bullish_threshold:
-                                        breakdown["_whale_direction"] = "bullish"
+                                        metadata["_whale_direction"] = "bullish"
                                     elif close_position is not None and close_position < 0.5:
                                         # Closed in lower half despite price increase - fighting/rejection
-                                        breakdown["_whale_direction"] = "neutral"
+                                        metadata["_whale_direction"] = "neutral"
                                     else:
                                         # Conservative: treat as neutral if either:
                                         # 1) Missing data (close_position is None)
                                         # 2) Ambiguous range (0.5 <= close_position <= threshold)
                                         # Both cases lack conviction for a directional signal
-                                        breakdown["_whale_direction"] = "neutral"
+                                        metadata["_whale_direction"] = "neutral"
                                 elif price_change_pct < -self.whale_direction_threshold:
                                     # Price moved down - check candle structure for confirmation
                                     if close_position is not None and close_position < self.whale_candle_bearish_threshold:
-                                        breakdown["_whale_direction"] = "bearish"
+                                        metadata["_whale_direction"] = "bearish"
                                     elif close_position is not None and close_position > 0.5:
                                         # Closed in upper half despite price decrease - fighting/support
-                                        breakdown["_whale_direction"] = "neutral"
+                                        metadata["_whale_direction"] = "neutral"
                                     else:
                                         # Conservative: treat as neutral if either:
                                         # 1) Missing data (close_position is None)
                                         # 2) Ambiguous range (bearish_threshold <= close_position <= 0.5)
                                         # Both cases lack conviction for a directional signal
-                                        breakdown["_whale_direction"] = "neutral"
+                                        metadata["_whale_direction"] = "neutral"
                                 else:
-                                    breakdown["_whale_direction"] = "neutral"
+                                    metadata["_whale_direction"] = "neutral"
                         else:
                             # Zero/negative prev price - can't calculate direction
-                            breakdown["_whale_direction"] = "unknown"
-                            breakdown["_price_change_pct"] = None
-                            breakdown["_candle_close_position"] = None
+                            metadata["_whale_direction"] = "unknown"
+                            metadata["_price_change_pct"] = None
+                            metadata["_candle_close_position"] = None
                     else:
-                        breakdown["_whale_direction"] = "unknown"
-                        breakdown["_price_change_pct"] = None
-                        breakdown["_candle_close_position"] = None
+                        metadata["_whale_direction"] = "unknown"
+                        metadata["_price_change_pct"] = None
+                        metadata["_candle_close_position"] = None
                 elif volume_ratio > self.high_volume_threshold:
                     # High volume: boost signal by configurable percentage (default 20%)
                     volume_boost = int(abs(total_score) * self.high_volume_boost_percent)
                     if total_score > 0:
-                        breakdown["volume"] = volume_boost
+                        components["volume"] = volume_boost
                         total_score += volume_boost
                     elif total_score < 0:
-                        breakdown["volume"] = -volume_boost
+                        components["volume"] = -volume_boost
                         total_score -= volume_boost
                     else:
-                        breakdown["volume"] = 0
-                    breakdown["_whale_activity"] = False
-                    breakdown["_volume_ratio"] = volume_ratio
+                        components["volume"] = 0
+                    metadata["_whale_activity"] = False
+                    metadata["_volume_ratio"] = volume_ratio
                 elif volume_ratio < self.low_volume_threshold:
                     # Low volume: fixed penalty (consistent behavior)
                     if total_score > 0:
-                        breakdown["volume"] = -self.low_volume_penalty
+                        components["volume"] = -self.low_volume_penalty
                         total_score -= self.low_volume_penalty
                     elif total_score < 0:
-                        breakdown["volume"] = self.low_volume_penalty
+                        components["volume"] = self.low_volume_penalty
                         total_score += self.low_volume_penalty
                     else:
-                        breakdown["volume"] = 0
-                    breakdown["_whale_activity"] = False
-                    breakdown["_volume_ratio"] = volume_ratio
+                        components["volume"] = 0
+                    metadata["_whale_activity"] = False
+                    metadata["_volume_ratio"] = volume_ratio
                 else:
-                    breakdown["volume"] = 0
-                    breakdown["_whale_activity"] = False
-                    breakdown["_volume_ratio"] = volume_ratio
+                    components["volume"] = 0
+                    metadata["_whale_activity"] = False
+                    metadata["_volume_ratio"] = volume_ratio
             else:
                 # Invalid volume SMA (NaN or zero)
-                breakdown["volume"] = 0
-                breakdown["_whale_activity"] = False
-                breakdown["_volume_ratio"] = None
+                components["volume"] = 0
+                metadata["_whale_activity"] = False
+                metadata["_volume_ratio"] = None
         else:
             # Insufficient volume data (< 20 candles)
-            breakdown["volume"] = 0
-            breakdown["_whale_activity"] = False
-            breakdown["_volume_ratio"] = None
+            components["volume"] = 0
+            metadata["_whale_activity"] = False
+            metadata["_volume_ratio"] = None
 
         # Log whale activity detection
-        if breakdown.get("_whale_activity"):
+        if metadata.get("_whale_activity"):
             logger.info(
                 "whale_activity_detected",
-                volume_ratio=breakdown["_volume_ratio"],
-                volume_boost=breakdown["volume"],
-                whale_direction=breakdown.get("_whale_direction", "unknown"),
+                volume_ratio=metadata["_volume_ratio"],
+                volume_boost=components["volume"],
+                whale_direction=metadata.get("_whale_direction", "unknown"),
                 signal_direction="bullish" if total_score > 0 else "bearish" if total_score < 0 else "neutral",
             )
 
         # Store raw score before adjustments (for signal history)
-        breakdown["_raw_score"] = total_score
+        metadata["_raw_score"] = total_score
 
         # Trend filter: penalize counter-trend trades (scaled by signal strength)
         # Skip penalty for extreme RSI (mean-reversion zones) with crash protection
@@ -907,7 +920,7 @@ class SignalScorer:
             signal_confidence = abs(total_score) / 100
             trend_adjustment = int(self.trend_filter_penalty * (1 - signal_confidence * 0.5))
             total_score += trend_adjustment
-        breakdown["trend_filter"] = trend_adjustment
+        components["trend_filter"] = trend_adjustment
 
         # HTF (Higher Timeframe) bias modifier
         # Purpose: Reduce false signals by aligning trades with the macro trend
@@ -1020,16 +1033,16 @@ class SignalScorer:
                 partial_penalty=htf_bias == "neutral" or htf_bias is None,
             )
 
-        breakdown["htf_bias"] = htf_adjustment
+        components["htf_bias"] = htf_adjustment
         # Use explicit None checks for null safety (avoid masking empty strings).
         # HTF values are expected to be: "bullish", "bearish", "neutral", or None.
         # Empty strings should NOT occur in production (would indicate a bug in get_trend()).
         # If empty strings appear, they are preserved for debugging (not masked as "unknown").
         # None values indicate missing/unavailable data and are replaced with "unknown".
         # See also: src/ai/trade_reviewer.py for similar pattern
-        breakdown["_htf_trend"] = htf_bias if htf_bias is not None else "unknown"
-        breakdown["_htf_daily"] = htf_daily if htf_daily is not None else "unknown"
-        breakdown["_htf_4h"] = htf_4h if htf_4h is not None else "unknown"
+        metadata["_htf_trend"] = htf_bias if htf_bias is not None else "unknown"
+        metadata["_htf_daily"] = htf_daily if htf_daily is not None else "unknown"
+        metadata["_htf_4h"] = htf_4h if htf_4h is not None else "unknown"
 
         # Clamp score to -100 to +100
         total_score = max(-100, min(100, total_score))
@@ -1045,10 +1058,10 @@ class SignalScorer:
         # Calculate confidence with confluence factor
         # Combines magnitude with how many indicators agree
         if action != "hold":
-            # Count agreeing indicators (non-zero contributions, excluding metadata keys)
+            # Count agreeing indicators (non-zero contributions)
             confluence_count = sum(
-                1 for key, score in breakdown.items()
-                if score != 0 and not key.startswith("_")
+                1 for score in components.values()
+                if score != 0
             )
             confluence_factor = confluence_count / 7  # 7 components: rsi, macd, bollinger, ema, volume, trend_filter, htf_bias
 
@@ -1063,7 +1076,8 @@ class SignalScorer:
             score=total_score,
             action=action,
             indicators=indicators,
-            breakdown=breakdown,
+            components=components,
+            metadata=metadata,
             confidence=confidence,
         )
 
@@ -1071,7 +1085,8 @@ class SignalScorer:
             "signal_calculated",
             score=total_score,
             action=action,
-            breakdown=breakdown,
+            components=components,
+            metadata=metadata,
             confidence=confidence,
         )
 
