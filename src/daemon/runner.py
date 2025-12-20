@@ -35,7 +35,7 @@ from src.safety.trade_cooldown import TradeCooldown, TradeCooldownConfig
 from src.safety.validator import OrderValidator, OrderRequest, ValidatorConfig
 from sqlalchemy.exc import SQLAlchemyError
 from src.state.database import BotMode, Database, SignalHistory
-from src.strategy.signal_scorer import SignalScorer
+from src.strategy.signal_scorer import SignalScorer, SignalResult
 from src.strategy.weight_profile_selector import (
     WeightProfileSelector,
     ProfileSelectorConfig,
@@ -1014,7 +1014,7 @@ class TradingDaemon:
 
     def _store_signal_history(
         self,
-        signal_result,
+        signal_result: SignalResult,
         current_price: Decimal,
         htf_bias: str,
         daily_trend: Optional[str],
@@ -1026,6 +1026,15 @@ class TradingDaemon:
         Store signal calculation for historical analysis.
 
         Called every iteration to enable post-mortem analysis of trades.
+
+        Args:
+            signal_result (SignalResult): The calculated signal with scores and metadata
+            current_price (Decimal): Current market price
+            htf_bias (str): Higher timeframe bias (bullish/bearish/neutral)
+            daily_trend (str): Daily trend direction
+            four_hour_trend (str): 4-hour trend direction
+            threshold (int): Signal threshold used for trading decision
+            trade_executed (bool, optional): Whether a trade was executed based on this signal. Defaults to False.
 
         Returns:
             The signal history record ID, or None if storage failed.
