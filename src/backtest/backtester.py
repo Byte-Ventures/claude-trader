@@ -7,7 +7,7 @@ trade execution, fees, and slippage to validate strategy performance.
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 from typing import Optional
 
 import pandas as pd
@@ -136,6 +136,7 @@ class Backtester:
         slippage_percent: float = 0.001,  # 0.1%
         base_currency: str = "BTC",
         quote_currency: str = "USD",
+        min_trade_size: float = 10.0,  # Minimum trade size in quote currency
     ):
         """
         Initialize backtester.
@@ -148,6 +149,7 @@ class Backtester:
             slippage_percent: Slippage as decimal (0.001 = 0.1%)
             base_currency: Base currency symbol (e.g., BTC)
             quote_currency: Quote currency symbol (e.g., USD)
+            min_trade_size: Minimum trade size in quote currency (default: 10.0)
         """
         self.signal_scorer = signal_scorer
         self.position_sizer = position_sizer or PositionSizer(
@@ -156,11 +158,18 @@ class Backtester:
                 min_trade_base=0.0001,
             )
         )
+        # Validate fee and slippage ranges to catch configuration errors
+        if not (0 <= fee_percent <= 1.0):
+            raise ValueError(f"fee_percent must be between 0 and 1.0, got {fee_percent}")
+        if not (0 <= slippage_percent <= 1.0):
+            raise ValueError(f"slippage_percent must be between 0 and 1.0, got {slippage_percent}")
+
         self.initial_capital = Decimal(str(initial_capital))
         self.fee_percent = Decimal(str(fee_percent))
         self.slippage_percent = Decimal(str(slippage_percent))
         self.base_currency = base_currency
         self.quote_currency = quote_currency
+        self.min_trade_size = Decimal(str(min_trade_size))
 
     def run(
         self,
@@ -233,9 +242,10 @@ class Backtester:
         open_position: Optional[BacktestTrade] = None
 
         # Need minimum candles for indicators
+        # Use defensive attribute access in case SignalScorer internals change
         min_candles = max(
-            self.signal_scorer.ema_slow_period,
-            self.signal_scorer.bollinger_period,
+            getattr(self.signal_scorer, "ema_slow_period", 21),
+            getattr(self.signal_scorer, "bollinger_period", 20),
             26,  # MACD slow
         )
 
@@ -268,7 +278,7 @@ class Backtester:
                     side="buy",
                 )
 
-                if size_result.size_quote > Decimal("10"):  # Minimum trade size
+                if size_result.size_quote >= self.min_trade_size:
                     # Apply slippage (price goes up for buys)
                     fill_price = current_price * (Decimal("1") + self.slippage_percent)
 
@@ -279,7 +289,9 @@ class Backtester:
                     # Check sufficient balance
                     if total_cost <= quote_balance:
                         # Execute buy
-                        base_received = size_result.size_quote / fill_price
+                        base_received = (size_result.size_quote / fill_price).quantize(
+                            Decimal("0.00000001"), rounding=ROUND_DOWN
+                        )
                         quote_balance -= total_cost
                         base_balance += base_received
                         total_fees += fee
@@ -301,6 +313,22 @@ class Backtester:
                             size_base=str(base_received),
                             fee=str(fee),
                         )
+                    else:
+                        logger.debug(
+                            "trade_rejected",
+                            reason="insufficient_balance",
+                            timestamp=timestamp,
+                            required=str(total_cost),
+                            available=str(quote_balance),
+                        )
+                else:
+                    logger.debug(
+                        "trade_rejected",
+                        reason="below_minimum_size",
+                        timestamp=timestamp,
+                        size_quote=str(size_result.size_quote),
+                        min_size=str(self.min_trade_size),
+                    )
 
             elif signal_result.action == "sell" and open_position is not None:
                 # Close position
@@ -440,7 +468,13 @@ class Backtester:
         # Profit factor
         gross_profit = sum(float(t.pnl_percent or 0) for t in winning_trades)
         gross_loss = abs(sum(float(t.pnl_percent or 0) for t in losing_trades))
-        profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 0.0
+        # If no losses but profits exist, use infinity; if both zero, use 0.0
+        if gross_loss > 0:
+            profit_factor = gross_profit / gross_loss
+        elif gross_profit > 0:
+            profit_factor = float("inf")
+        else:
+            profit_factor = 0.0
 
         # Average win/loss
         avg_win = (gross_profit / len(winning_trades)) if winning_trades else 0.0
@@ -460,18 +494,22 @@ class Backtester:
             # Calculate returns
             equity_df["returns"] = equity_df["portfolio_value"].pct_change()
 
-            # Sharpe ratio (annualized, assuming 365 days)
+            # Calculate annualization factor from actual data frequency
+            time_diffs = equity_df["timestamp"].diff()
+            avg_period_seconds = time_diffs.dt.total_seconds().median()
+            periods_per_year = (365.25 * 24 * 3600) / avg_period_seconds if avg_period_seconds > 0 else 365
+
+            # Sharpe ratio (annualized using actual data frequency)
             # Simple estimate: mean return / std return * sqrt(periods per year)
             mean_return = equity_df["returns"].mean()
             std_return = equity_df["returns"].std()
             if std_return > 0:
-                # Rough estimate assuming daily candles
-                sharpe_ratio = (mean_return / std_return) * (365 ** 0.5)
+                sharpe_ratio = (mean_return / std_return) * (periods_per_year ** 0.5)
             else:
                 sharpe_ratio = 0.0
 
-            # Volatility (annualized)
-            volatility = std_return * (365 ** 0.5) * 100
+            # Volatility (annualized using actual data frequency)
+            volatility = std_return * (periods_per_year ** 0.5) * 100
 
             # Max drawdown
             equity_df["peak"] = equity_df["portfolio_value"].cummax()
