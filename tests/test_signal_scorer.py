@@ -2823,3 +2823,123 @@ class TestConfigValidation:
 
         # New value should take precedence
         assert settings.mtf_daily_candle_limit == 70
+
+
+# ============================================================================
+# HTF Null Safety Tests
+# ============================================================================
+
+class TestHTFNullSafety:
+    """Test that HTF values handle None and empty strings correctly in signal_scorer.py."""
+
+    def test_htf_none_values_replaced_with_unknown(self):
+        """Test that None HTF values are replaced with 'unknown' in breakdown."""
+        scorer = SignalScorer()
+
+        # Create test data with all indicators neutral
+        candles = pd.DataFrame({
+            'time': pd.date_range('2024-01-01', periods=200, freq='h'),
+            'open': [50000.0] * 200,
+            'high': [50100.0] * 200,
+            'low': [49900.0] * 200,
+            'close': [50000.0] * 200,
+            'volume': [100.0] * 200,
+        })
+
+        # Pass None values directly to calculate_score
+        result = scorer.calculate_score(
+            candles,
+            Decimal("50000"),
+            htf_bias=None,
+            htf_daily=None,
+            htf_4h=None
+        )
+
+        # Verify None values were replaced with "unknown"
+        assert result.breakdown["_htf_trend"] == "unknown"
+        assert result.breakdown["_htf_daily"] == "unknown"
+        assert result.breakdown["_htf_4h"] == "unknown"
+
+    def test_htf_empty_string_values_preserved(self):
+        """Test that empty string HTF values are preserved (not replaced with 'unknown')."""
+        scorer = SignalScorer()
+
+        # Create test data
+        candles = pd.DataFrame({
+            'time': pd.date_range('2024-01-01', periods=200, freq='h'),
+            'open': [50000.0] * 200,
+            'high': [50100.0] * 200,
+            'low': [49900.0] * 200,
+            'close': [50000.0] * 200,
+            'volume': [100.0] * 200,
+        })
+
+        # Pass empty strings directly to calculate_score
+        result = scorer.calculate_score(
+            candles,
+            Decimal("50000"),
+            htf_bias="",
+            htf_daily="",
+            htf_4h=""
+        )
+
+        # Verify empty strings were preserved
+        assert result.breakdown["_htf_trend"] == ""
+        assert result.breakdown["_htf_daily"] == ""
+        assert result.breakdown["_htf_4h"] == ""
+
+    def test_htf_valid_values_preserved(self):
+        """Test that valid HTF values are preserved correctly."""
+        scorer = SignalScorer()
+
+        # Create test data
+        candles = pd.DataFrame({
+            'time': pd.date_range('2024-01-01', periods=200, freq='h'),
+            'open': [50000.0] * 200,
+            'high': [50100.0] * 200,
+            'low': [49900.0] * 200,
+            'close': [50000.0] * 200,
+            'volume': [100.0] * 200,
+        })
+
+        # Pass valid trend strings directly to calculate_score
+        result = scorer.calculate_score(
+            candles,
+            Decimal("50000"),
+            htf_bias="bullish",
+            htf_daily="bearish",
+            htf_4h="neutral"
+        )
+
+        # Verify valid values were preserved
+        assert result.breakdown["_htf_trend"] == "bullish"
+        assert result.breakdown["_htf_daily"] == "bearish"
+        assert result.breakdown["_htf_4h"] == "neutral"
+
+    def test_htf_mixed_none_and_valid_values(self):
+        """Test handling of mixed None and valid HTF values."""
+        scorer = SignalScorer()
+
+        # Create test data
+        candles = pd.DataFrame({
+            'time': pd.date_range('2024-01-01', periods=200, freq='h'),
+            'open': [50000.0] * 200,
+            'high': [50100.0] * 200,
+            'low': [49900.0] * 200,
+            'close': [50000.0] * 200,
+            'volume': [100.0] * 200,
+        })
+
+        # Pass mixed values directly to calculate_score
+        result = scorer.calculate_score(
+            candles,
+            Decimal("50000"),
+            htf_bias="bullish",
+            htf_daily=None,
+            htf_4h="neutral"
+        )
+
+        # Verify mixed handling
+        assert result.breakdown["_htf_trend"] == "bullish"
+        assert result.breakdown["_htf_daily"] == "unknown"  # None -> "unknown"
+        assert result.breakdown["_htf_4h"] == "neutral"
