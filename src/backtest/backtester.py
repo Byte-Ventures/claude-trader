@@ -119,6 +119,10 @@ class Backtester:
     - Comprehensive performance metrics
     - Signal distribution analysis
 
+    Limitations:
+    - Long-only positions: This backtester only supports long positions (buy to open,
+      sell to close). Short selling is not currently implemented.
+
     Example:
         >>> bt = Backtester(
         ...     signal_scorer=SignalScorer(threshold=60),
@@ -244,6 +248,7 @@ class Backtester:
             getattr(self.signal_scorer, "ema_slow_period", 21),
             getattr(self.signal_scorer, "bollinger_period", 20),
             26,  # MACD slow
+            self.position_sizer.atr_period,  # ATR period for position sizing
         )
 
         # Run through each candle
@@ -288,7 +293,15 @@ class Backtester:
                 tp_hit = candle_high >= open_position.take_profit_price
 
                 if stop_hit or tp_hit:
-                    # Determine which was hit (if both, assume stop hit first as it's more conservative)
+                    # IMPORTANT: When both stop-loss and take-profit are hit within the same candle,
+                    # we assume stop-loss was triggered first. This is a conservative approach that:
+                    # 1. Prevents overstating backtest performance by avoiding the assumption that
+                    #    the more favorable exit (take-profit) occurred
+                    # 2. Better represents worst-case execution scenarios
+                    # 3. Accounts for the fact that without tick data, we cannot determine the
+                    #    actual intra-candle price sequence
+                    # Alternative: Could use candle open→close direction as a heuristic, but this
+                    # adds complexity and may still not reflect reality in volatile markets.
                     exit_reason = "stop_loss" if stop_hit else "take_profit"
                     fill_price = open_position.stop_loss_price if stop_hit else open_position.take_profit_price
 
