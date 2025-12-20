@@ -656,11 +656,20 @@ class Settings(BaseSettings):
         default=False,
         description="Include 4-hour timeframe in MTF (false = daily-only, simpler)"
     )
-    mtf_candle_limit: int = Field(
+    # Upper bound rationale: Daily limited to 100 (~14 weeks) as longer periods dilute
+    # trend signals in volatile crypto markets. 4H allows 200 (~33 days) to capture
+    # recent price action with finer granularity while keeping API/memory usage reasonable.
+    mtf_daily_candle_limit: int = Field(
         default=50,
-        ge=20,
-        le=100,
-        description="Number of candles to fetch for HTF trend calculation"
+        ge=26,  # Conservative default minimum (26 = default MACD slow). Actual minimum validated against max(ema_slow, bollinger_period, macd_slow)
+        le=100,  # ~14 weeks - longer periods dilute trend signals in crypto
+        description="Candles for daily trend analysis (50 = ~7 weeks, must be >= longest indicator period)"
+    )
+    mtf_4h_candle_limit: int = Field(
+        default=84,
+        ge=26,  # Conservative default minimum (26 = default MACD slow). Actual minimum validated against max(ema_slow, bollinger_period, macd_slow)
+        le=200,  # ~33 days - finer granularity captures recent price action
+        description="Candles for 4H trend analysis (84 = 14 days, must be >= longest indicator period)"
     )
     mtf_daily_cache_minutes: int = Field(
         default=60,
@@ -737,10 +746,26 @@ class Settings(BaseSettings):
         description="Custom sentiment-trend interaction modifiers. If None, uses hardcoded defaults in regime.py. Format: JSON object with keys like 'extreme_fear_bearish_buy' containing threshold_mult and position_mult values."
     )
 
+    # Sentiment Fetch Failure Alerting
+    sentiment_failure_alert_threshold: int = Field(
+        default=3,
+        ge=1,
+        le=100,
+        description="Number of consecutive sentiment fetch failures before alerting (default: 3)"
+    )
+
     # Cramer Mode Mode (paper trading only)
     enable_cramer_mode: bool = Field(
         default=False,
         description="Enable Cramer Mode: execute opposite trade alongside each normal trade for comparison (paper mode only)"
+    )
+
+    # Signal History Cleanup
+    signal_history_retention_days: int = Field(
+        default=90,
+        ge=1,
+        le=365,
+        description="Number of days to retain signal history records (older records are deleted during cleanup)"
     )
 
     @field_validator("ema_slow")
@@ -940,6 +965,38 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def validate_mtf_candle_limits(self) -> "Settings":
+        """Validate MTF candle limits are sufficient for indicator calculations.
+
+        The signal scorer requires enough candles to calculate all indicators:
+        - EMA slow period (default 21, max 200)
+        - Bollinger period (default 20, max 100)
+        - MACD slow period (default 26, max 100)
+
+        If candle limits are less than the longest indicator period,
+        get_trend() will always return neutral due to insufficient data.
+        """
+        min_required = max(self.ema_slow, self.bollinger_period, self.macd_slow)
+
+        if self.mtf_daily_candle_limit < min_required:
+            raise ValueError(
+                f"mtf_daily_candle_limit ({self.mtf_daily_candle_limit}) must be >= "
+                f"longest indicator period ({min_required}). Current settings: "
+                f"ema_slow={self.ema_slow}, bollinger_period={self.bollinger_period}, "
+                f"macd_slow={self.macd_slow}"
+            )
+
+        if self.mtf_4h_candle_limit < min_required:
+            raise ValueError(
+                f"mtf_4h_candle_limit ({self.mtf_4h_candle_limit}) must be >= "
+                f"longest indicator period ({min_required}). Current settings: "
+                f"ema_slow={self.ema_slow}, bollinger_period={self.bollinger_period}, "
+                f"macd_slow={self.macd_slow}"
+            )
+
+        return self
+
     @field_validator("macd_interval_multipliers")
     @classmethod
     def validate_macd_interval_multipliers(cls, v: Optional[dict]) -> Optional[dict]:
@@ -1061,6 +1118,7 @@ class Settings(BaseSettings):
 
         Maps deprecated names to new names with a deprecation warning.
         Also migrates old VETO_ACTION/VETO_THRESHOLD to tiered thresholds (v1.31.0).
+        Also migrates deprecated MTF_CANDLE_LIMIT to per-timeframe limits.
         """
         # Mapping of old CLAUDE_* vars to new names
         deprecated_mapping = {
@@ -1126,6 +1184,32 @@ class Settings(BaseSettings):
                         DeprecationWarning,
                         stacklevel=2,
                     )
+
+        # Migrate deprecated MTF_CANDLE_LIMIT to per-timeframe limits
+        old_mtf_limit = os.environ.get("MTF_CANDLE_LIMIT")
+        if old_mtf_limit is not None:
+            has_new_daily = os.environ.get("MTF_DAILY_CANDLE_LIMIT") or data.get("mtf_daily_candle_limit")
+            has_new_4h = os.environ.get("MTF_4H_CANDLE_LIMIT") or data.get("mtf_4h_candle_limit")
+
+            if not has_new_daily and not has_new_4h:
+                try:
+                    limit_val = int(old_mtf_limit)
+                    data["mtf_daily_candle_limit"] = limit_val
+                    # 4H needs more candles (6 per day vs 1), scale up proportionally
+                    # Old default was 50 for daily, new 4H default is 84 (14 days worth)
+                    # Scale: 84/50 = 1.68, round to nearest sensible value
+                    scaled_4h = min(200, max(26, int(limit_val * 1.68)))
+                    data["mtf_4h_candle_limit"] = scaled_4h
+                    warnings.warn(
+                        f"MTF_CANDLE_LIMIT={old_mtf_limit} is deprecated. "
+                        f"Migrated to MTF_DAILY_CANDLE_LIMIT={limit_val} and "
+                        f"MTF_4H_CANDLE_LIMIT={scaled_4h}. "
+                        "Update your .env to use the new parameters.",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
+                except ValueError:
+                    pass  # Invalid value, let normal validation handle it
 
         return data
 
