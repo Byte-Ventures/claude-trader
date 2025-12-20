@@ -526,7 +526,7 @@ class TelegramNotifier:
 
         if self.send_message_sync(message):
             self._record_sent("order_failed", error)
-            self._save_to_dashboard("order_failed", f"Order Failed: {side.upper()}", message)
+        self._save_to_dashboard("order_failed", f"Order Failed: {side.upper()}", message)
 
     def notify_circuit_breaker(
         self,
@@ -553,7 +553,7 @@ class TelegramNotifier:
 
         if self.send_message_sync(message):
             self._record_sent("circuit_breaker", f"{level}:{reason}")
-            self._save_to_dashboard("circuit_breaker", f"Circuit Breaker: {level.upper()}", message)
+        self._save_to_dashboard("circuit_breaker", f"Circuit Breaker: {level.upper()}", message)
 
     def notify_kill_switch(self, reason: str) -> None:
         """Send notification for kill switch activation."""
@@ -584,11 +584,11 @@ class TelegramNotifier:
 
         if self.send_message_sync(message):
             self._record_sent("loss_limit", dedup_key)
-            self._save_to_dashboard(
-                "loss_limit",
-                f"{limit_type.title()} Loss Limit",
-                message,
-            )
+        self._save_to_dashboard(
+            "loss_limit",
+            f"{limit_type.title()} Loss Limit",
+            message,
+        )
 
     def notify_daily_summary(
         self,
@@ -656,7 +656,7 @@ class TelegramNotifier:
 
         if self.send_message_sync(message):
             self._record_sent("error", dedup_key)
-            self._save_to_dashboard("error", "System Error", message)
+        self._save_to_dashboard("error", "System Error", message)
 
     def notify_trade_review(self, review, review_type: str) -> None:
         """
@@ -870,8 +870,8 @@ class TelegramNotifier:
 
         if self.send_message_sync(message):
             self._record_sent(msg_type, dedup_key)
-            title = f"AI Review: {review_type.replace('_', ' ').title()}"
-            self._save_to_dashboard(msg_type, title, message)
+        title = f"AI Review: {review_type.replace('_', ' ').title()}"
+        self._save_to_dashboard(msg_type, title, message)
 
     def notify_regime_change(
         self,
