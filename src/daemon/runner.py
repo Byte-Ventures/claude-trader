@@ -281,6 +281,7 @@ class TradingDaemon:
                 market_research_cache_minutes=settings.market_research_cache_minutes,
                 candle_interval=settings.candle_interval,
                 signal_threshold=settings.signal_threshold,
+                mtf_enabled=settings.mtf_enabled,
                 reviewer_max_tokens=settings.ai_reviewer_max_tokens,
                 research_max_tokens=settings.ai_research_max_tokens,
                 api_timeout=settings.ai_api_timeout,
