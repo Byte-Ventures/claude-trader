@@ -486,6 +486,11 @@ def test_notify_error_handles_unicode_at_boundary(notifier, mock_bot):
     assert len(message) > 0
     assert "..." in message  # Truncation occurred
 
+    # Verify no replacement characters (broken unicode) in output
+    assert '\ufffd' not in message, "Message contains broken unicode replacement character"
+    # Verify emoji is preserved (not broken) - it should appear at least once
+    assert '🔥' in message, "Emoji should be preserved (not broken)"
+
 
 def test_notify_error_truncates_stack_traces_with_balanced_split(notifier, mock_bot):
     """Test stack traces use balanced 250/250 truncation to preserve error type at both ends."""

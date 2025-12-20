@@ -651,6 +651,30 @@ class TelegramNotifier:
         self.send_message_sync(message)
         self._save_to_dashboard("shutdown", "Bot Stopped", message)
 
+    def _safe_truncate(self, text: str, max_len: int, from_end: bool = False) -> str:
+        """
+        Safely truncate text without breaking unicode characters.
+
+        Args:
+            text: Text to truncate
+            max_len: Maximum length after truncation
+            from_end: If True, take from end; if False, take from start
+
+        Returns:
+            Truncated text with unicode characters intact
+        """
+        if from_end:
+            # Truncate from end
+            candidate = text[-max_len:]
+            # Encode and decode to clean up any broken unicode characters at boundaries
+            # errors='ignore' removes broken characters, then decode back to string
+            return candidate.encode('utf-8', errors='ignore').decode('utf-8')
+        else:
+            # Truncate from start
+            candidate = text[:max_len]
+            # Encode and decode to clean up any broken unicode characters at boundaries
+            return candidate.encode('utf-8', errors='ignore').decode('utf-8')
+
     def notify_error(self, error: str, context: str = "") -> None:
         """Send notification for system error."""
         MAX_LEN = self.MAX_ERROR_MSG_LENGTH
@@ -667,39 +691,45 @@ class TelegramNotifier:
             logger.debug(f"Truncating long error message ({len(error)} chars)",
                         error_preview=error[:100])
 
-            # For stack traces, prioritize start + end (error type at both locations)
-            # For other errors, keep first 400 + last 100 to preserve error message
-            # Improved detection to handle edge cases:
-            # - Multiple consecutive frames indicate stack trace
-            # - Partial stack traces (middle section only)
-            # - Python tracebacks and JavaScript stack traces
-            # Use regex for flexible indentation matching (handles varying spaces/tabs)
-            is_stack_trace = (
-                len(re.findall(r'\n\s+File "', error)) >= 2 or  # Multiple Python frames (flexible indentation)
-                len(re.findall(r'\n\s+at ', error)) >= 2 or      # Multiple JavaScript frames (flexible indentation)
-                ('Traceback' in error and 'File "' in error)  # Single frame Python
-            )
+            # Early exit check - if neither keyword present, skip expensive regex
+            is_stack_trace = False
+            if 'Traceback' in error or 'File "' in error or ' at ' in error:
+                # For stack traces, prioritize start + end (error type at both locations)
+                # For other errors, keep first 400 + last 100 to preserve error message
+                # Improved detection to handle edge cases:
+                # - Multiple consecutive frames indicate stack trace
+                # - Partial stack traces (middle section only)
+                # - Python tracebacks and JavaScript stack traces
+                # Use regex for flexible indentation matching (handles varying spaces/tabs)
+                is_stack_trace = (
+                    len(re.findall(r'\n\s+File "', error)) >= 2 or  # Multiple Python frames (flexible indentation)
+                    len(re.findall(r'\n\s+at ', error)) >= 2 or      # Multiple JavaScript frames (flexible indentation)
+                    ('Traceback' in error and 'File "' in error)  # Single frame Python
+                )
             if is_stack_trace:
-                error = error[:250] + self.ELLIPSIS + error[-250:]
+                error = self._safe_truncate(error, 250) + self.ELLIPSIS + self._safe_truncate(error, 250, from_end=True)
             else:
-                error = error[:400] + self.ELLIPSIS + error[-100:]
+                error = self._safe_truncate(error, 400) + self.ELLIPSIS + self._safe_truncate(error, 100, from_end=True)
 
         if len(context) > MAX_LEN:
             # Log full context for debugging before truncation
             logger.debug(f"Truncating long context message ({len(context)} chars)",
                         context_preview=context[:100])
 
-            # Apply same smart truncation to context - balanced split for stack traces,
-            # preserve beginning for regular text (usually more relevant)
-            is_context_stack_trace = (
-                len(re.findall(r'\n\s+File "', context)) >= 2 or  # Multiple Python frames (flexible indentation)
-                len(re.findall(r'\n\s+at ', context)) >= 2 or      # Multiple JavaScript frames (flexible indentation)
-                ('Traceback' in context and 'File "' in context)  # Single frame Python
-            )
+            # Early exit check - if neither keyword present, skip expensive regex
+            is_context_stack_trace = False
+            if 'Traceback' in context or 'File "' in context or ' at ' in context:
+                # Apply same smart truncation to context - balanced split for stack traces,
+                # preserve beginning for regular text (usually more relevant)
+                is_context_stack_trace = (
+                    len(re.findall(r'\n\s+File "', context)) >= 2 or  # Multiple Python frames (flexible indentation)
+                    len(re.findall(r'\n\s+at ', context)) >= 2 or      # Multiple JavaScript frames (flexible indentation)
+                    ('Traceback' in context and 'File "' in context)  # Single frame Python
+                )
             if is_context_stack_trace:
-                context = context[:250] + self.ELLIPSIS + context[-250:]
+                context = self._safe_truncate(context, 250) + self.ELLIPSIS + self._safe_truncate(context, 250, from_end=True)
             else:
-                context = context[:400] + self.ELLIPSIS + context[-100:]
+                context = self._safe_truncate(context, 400) + self.ELLIPSIS + self._safe_truncate(context, 100, from_end=True)
 
         message = (
             f"❌ <b>System Error</b>\n\n"
@@ -723,15 +753,15 @@ class TelegramNotifier:
             # Ensure minimum 10 chars per field for defensive programming
             per_field_budget = max(10, (TELEGRAM_MAX_LENGTH - overhead) // 2)
 
-            # Re-truncate with aggressive limits
+            # Re-truncate with aggressive limits using safe truncation
             if len(error) > per_field_budget:
                 # Remove existing ellipsis if present to avoid "..."..."
                 error_clean = error[:-self.ELLIPSIS_LEN] if error.endswith(self.ELLIPSIS) else error
-                error = error_clean[:per_field_budget - self.ELLIPSIS_LEN] + self.ELLIPSIS
+                error = self._safe_truncate(error_clean, per_field_budget - self.ELLIPSIS_LEN) + self.ELLIPSIS
             if len(context) > per_field_budget:
                 # Remove existing ellipsis if present to avoid "..."..."
                 context_clean = context[:-self.ELLIPSIS_LEN] if context.endswith(self.ELLIPSIS) else context
-                context = context_clean[:per_field_budget - self.ELLIPSIS_LEN] + self.ELLIPSIS
+                context = self._safe_truncate(context_clean, per_field_budget - self.ELLIPSIS_LEN) + self.ELLIPSIS
 
             # Rebuild message
             message = (
