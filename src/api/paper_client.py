@@ -546,6 +546,35 @@ class PaperTradingClient:
         """Paper orders are instantly filled, cannot cancel."""
         return False
 
+    def get_trading_fee_rate(self, product_id: str) -> Decimal:
+        """
+        Get trading fee rate for paper trading.
+
+        Paper trading uses the real exchange's fee rate for accurate simulation.
+        If the real client doesn't support fee fetching, falls back to the
+        simulated TAKER_FEE constant.
+
+        Args:
+            product_id: Trading pair (e.g., BTC-USD)
+
+        Returns:
+            Trading fee rate as decimal (e.g., Decimal("0.006") for 0.6%)
+        """
+        try:
+            # Try to get fee from real exchange client
+            if hasattr(self.real_client, "get_trading_fee_rate"):
+                return self.real_client.get_trading_fee_rate(product_id)
+        except Exception as e:
+            logger.warning(
+                "real_client_fee_fetch_failed",
+                product_id=product_id,
+                error=str(e),
+                message="Using simulated fee rate",
+            )
+
+        # Fallback to simulated fee
+        return self.TAKER_FEE
+
     # Paper trading specific methods
 
     def get_portfolio_value(self, product_id: Optional[str] = None) -> Decimal:

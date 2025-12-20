@@ -770,3 +770,53 @@ class KrakenClient:
         except Exception as e:
             logger.error("cancel_order_failed", error=str(e), order_id=order_id)
             return False
+
+    def get_trading_fee_rate(self, product_id: str) -> Decimal:
+        """
+        Get current trading fee rate for a product.
+
+        Kraken fees are volume-tiered:
+        - Taker: 0.26% (default <$50K/30d), down to 0.10% (>$10M/30d)
+        - Maker: 0.16% (default <$50K/30d), down to 0.00% (>$10M/30d)
+
+        Since the bot primarily uses IOC limit orders (which typically execute as taker),
+        we use the taker fee rate for conservative profit margin validation.
+
+        Args:
+            product_id: Trading pair in normalized format (e.g., BTC-USD)
+
+        Returns:
+            Current taker fee rate as decimal (e.g., Decimal("0.0026") for 0.26%)
+        """
+        try:
+            # Convert to Kraken pair format (e.g., BTC-USD -> XBTUSD)
+            kraken_pair = to_exchange_symbol(product_id, Exchange.KRAKEN)
+
+            # Get trade volume to determine fee tier
+            response = self._private_request("TradeVolume", {"pair": kraken_pair})
+
+            # Extract fee information from response
+            if "fees" in response and kraken_pair in response["fees"]:
+                fee_info = response["fees"][kraken_pair]
+                # Kraken returns fee as percentage (e.g., 0.26 for 0.26%)
+                # Convert to decimal (0.26 -> 0.0026)
+                if "fee" in fee_info:
+                    fee_percent = Decimal(str(fee_info["fee"]))
+                    return fee_percent / Decimal("100")
+
+            # Fallback to default Kraken taker fee
+            logger.warning(
+                "fee_tier_not_found",
+                product_id=product_id,
+                message="Using default taker fee rate (0.26%)",
+            )
+            return Decimal("0.0026")
+
+        except Exception as e:
+            logger.warning(
+                "get_trading_fee_rate_failed",
+                product_id=product_id,
+                error=str(e),
+                message="Using default taker fee rate (0.26%)",
+            )
+            return Decimal("0.0026")
