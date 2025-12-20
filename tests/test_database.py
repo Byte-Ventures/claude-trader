@@ -35,6 +35,7 @@ from src.state.database import (
     TrailingStop,
     RegimeHistory,
     RateHistory,
+    SignalHistory,
 )
 
 
@@ -2141,3 +2142,340 @@ class TestBotModeMigration:
         assert cursor.fetchone()[0] == "inverted"
 
         conn.close()
+
+
+# ============================================================================
+# Signal History Cleanup Tests
+# ============================================================================
+
+def test_cleanup_signal_history_basic(db):
+    """Test basic signal history cleanup functionality."""
+    now = datetime.now(timezone.utc)
+
+    # Create signal history records with different ages
+    with db.session() as session:
+        # Recent record (1 day old) - should be kept
+        recent = SignalHistory(
+            symbol="BTC-USD",
+            timestamp=now - timedelta(days=1),
+            is_paper=True,
+            current_price="50000",
+            rsi_score=10.0,
+            macd_score=5.0,
+            bollinger_score=-5.0,
+            ema_score=8.0,
+            volume_score=2.0,
+            raw_score=20.0,
+            final_score=20.0,
+            action="hold",
+            threshold_used=60,
+        )
+        session.add(recent)
+
+        # Old record (100 days old) - should be deleted
+        old = SignalHistory(
+            symbol="BTC-USD",
+            timestamp=now - timedelta(days=100),
+            is_paper=True,
+            current_price="48000",
+            rsi_score=-15.0,
+            macd_score=-10.0,
+            bollinger_score=-8.0,
+            ema_score=-5.0,
+            volume_score=-2.0,
+            raw_score=-40.0,
+            final_score=-40.0,
+            action="hold",
+            threshold_used=60,
+        )
+        session.add(old)
+
+        # Very old record (200 days old) - should be deleted
+        very_old = SignalHistory(
+            symbol="BTC-USD",
+            timestamp=now - timedelta(days=200),
+            is_paper=True,
+            current_price="45000",
+            rsi_score=-20.0,
+            macd_score=-15.0,
+            bollinger_score=-10.0,
+            ema_score=-8.0,
+            volume_score=-3.0,
+            raw_score=-56.0,
+            final_score=-56.0,
+            action="hold",
+            threshold_used=60,
+        )
+        session.add(very_old)
+
+    # Run cleanup with 90-day retention
+    deleted = db.cleanup_signal_history(retention_days=90)
+
+    # Should delete 2 old records
+    assert deleted == 2
+
+    # Verify recent record still exists
+    with db.session() as session:
+        remaining = session.query(SignalHistory).filter(
+            SignalHistory.is_paper == True
+        ).count()
+        assert remaining == 1
+
+
+def test_cleanup_signal_history_paper_live_separation(db):
+    """Test cleanup respects paper/live mode separation."""
+    now = datetime.now(timezone.utc)
+
+    # Create old records in both paper and live mode
+    with db.session() as session:
+        paper_old = SignalHistory(
+            symbol="BTC-USD",
+            timestamp=now - timedelta(days=100),
+            is_paper=True,
+            current_price="50000",
+            rsi_score=10.0,
+            macd_score=5.0,
+            bollinger_score=-5.0,
+            ema_score=8.0,
+            volume_score=2.0,
+            raw_score=20.0,
+            final_score=20.0,
+            action="hold",
+            threshold_used=60,
+        )
+        session.add(paper_old)
+
+        live_old = SignalHistory(
+            symbol="BTC-USD",
+            timestamp=now - timedelta(days=100),
+            is_paper=False,
+            current_price="50000",
+            rsi_score=10.0,
+            macd_score=5.0,
+            bollinger_score=-5.0,
+            ema_score=8.0,
+            volume_score=2.0,
+            raw_score=20.0,
+            final_score=20.0,
+            action="hold",
+            threshold_used=60,
+        )
+        session.add(live_old)
+
+    # Clean only paper mode
+    deleted = db.cleanup_signal_history(retention_days=90, is_paper=True)
+    assert deleted == 1
+
+    # Verify live record still exists
+    with db.session() as session:
+        live_count = session.query(SignalHistory).filter(
+            SignalHistory.is_paper == False
+        ).count()
+        assert live_count == 1
+
+        paper_count = session.query(SignalHistory).filter(
+            SignalHistory.is_paper == True
+        ).count()
+        assert paper_count == 0
+
+
+def test_cleanup_signal_history_no_old_records(db):
+    """Test cleanup returns 0 when no old records exist."""
+    now = datetime.now(timezone.utc)
+
+    # Create only recent records
+    with db.session() as session:
+        for i in range(5):
+            record = SignalHistory(
+                symbol="BTC-USD",
+                timestamp=now - timedelta(days=i),
+                is_paper=True,
+                current_price="50000",
+                rsi_score=10.0,
+                macd_score=5.0,
+                bollinger_score=-5.0,
+                ema_score=8.0,
+                volume_score=2.0,
+                raw_score=20.0,
+                final_score=20.0,
+                action="hold",
+                threshold_used=60,
+            )
+            session.add(record)
+
+    # Run cleanup - should delete nothing
+    deleted = db.cleanup_signal_history(retention_days=90)
+    assert deleted == 0
+
+    # Verify all records still exist
+    with db.session() as session:
+        count = session.query(SignalHistory).count()
+        assert count == 5
+
+
+def test_cleanup_signal_history_empty_table(db):
+    """Test cleanup on empty table returns 0."""
+    deleted = db.cleanup_signal_history(retention_days=90)
+    assert deleted == 0
+
+
+def test_cleanup_signal_history_boundary_condition(db):
+    """Test cleanup at exact retention boundary."""
+    now = datetime.now(timezone.utc)
+
+    with db.session() as session:
+        # Record 89 days old (should be kept - within retention window)
+        within_boundary = SignalHistory(
+            symbol="BTC-USD",
+            timestamp=now - timedelta(days=89),
+            is_paper=True,
+            current_price="50000",
+            rsi_score=10.0,
+            macd_score=5.0,
+            bollinger_score=-5.0,
+            ema_score=8.0,
+            volume_score=2.0,
+            raw_score=20.0,
+            final_score=20.0,
+            action="hold",
+            threshold_used=60,
+        )
+        session.add(within_boundary)
+
+        # Record exactly 90 days old (should be deleted - older than retention)
+        boundary = SignalHistory(
+            symbol="BTC-USD",
+            timestamp=now - timedelta(days=90),
+            is_paper=True,
+            current_price="49500",
+            rsi_score=8.0,
+            macd_score=4.0,
+            bollinger_score=-4.0,
+            ema_score=6.0,
+            volume_score=1.5,
+            raw_score=15.0,
+            final_score=15.0,
+            action="hold",
+            threshold_used=60,
+        )
+        session.add(boundary)
+
+        # Record 91 days old (should be deleted)
+        past_boundary = SignalHistory(
+            symbol="BTC-USD",
+            timestamp=now - timedelta(days=91),
+            is_paper=True,
+            current_price="49000",
+            rsi_score=5.0,
+            macd_score=3.0,
+            bollinger_score=-3.0,
+            ema_score=4.0,
+            volume_score=1.0,
+            raw_score=10.0,
+            final_score=10.0,
+            action="hold",
+            threshold_used=60,
+        )
+        session.add(past_boundary)
+
+    # Run cleanup
+    deleted = db.cleanup_signal_history(retention_days=90)
+    assert deleted == 2
+
+    # Verify only the 89-day-old record still exists
+    with db.session() as session:
+        count = session.query(SignalHistory).count()
+        assert count == 1
+
+
+def test_cleanup_signal_history_both_modes(db):
+    """Test cleanup without mode filter affects both paper and live."""
+    now = datetime.now(timezone.utc)
+
+    # Create old records in both modes
+    with db.session() as session:
+        paper_old = SignalHistory(
+            symbol="BTC-USD",
+            timestamp=now - timedelta(days=100),
+            is_paper=True,
+            current_price="50000",
+            rsi_score=10.0,
+            macd_score=5.0,
+            bollinger_score=-5.0,
+            ema_score=8.0,
+            volume_score=2.0,
+            raw_score=20.0,
+            final_score=20.0,
+            action="hold",
+            threshold_used=60,
+        )
+        session.add(paper_old)
+
+        live_old = SignalHistory(
+            symbol="BTC-USD",
+            timestamp=now - timedelta(days=100),
+            is_paper=False,
+            current_price="50000",
+            rsi_score=10.0,
+            macd_score=5.0,
+            bollinger_score=-5.0,
+            ema_score=8.0,
+            volume_score=2.0,
+            raw_score=20.0,
+            final_score=20.0,
+            action="hold",
+            threshold_used=60,
+        )
+        session.add(live_old)
+
+    # Clean both modes (is_paper=None)
+    deleted = db.cleanup_signal_history(retention_days=90, is_paper=None)
+    assert deleted == 2
+
+    # Verify both records deleted
+    with db.session() as session:
+        count = session.query(SignalHistory).count()
+        assert count == 0
+
+
+def test_cleanup_signal_history_invalid_retention_days(db):
+    """Test cleanup raises ValueError for invalid retention_days."""
+    with pytest.raises(ValueError, match="retention_days must be between 1 and 365"):
+        db.cleanup_signal_history(retention_days=0)
+
+    with pytest.raises(ValueError, match="retention_days must be between 1 and 365"):
+        db.cleanup_signal_history(retention_days=-10)
+
+    with pytest.raises(ValueError, match="retention_days must be between 1 and 365"):
+        db.cleanup_signal_history(retention_days=366)
+
+
+def test_cleanup_signal_history_uses_config_default(db):
+    """Test cleanup uses SIGNAL_HISTORY_RETENTION_DAYS from config when retention_days=None."""
+    from config.settings import get_settings
+
+    settings = get_settings()
+    now = datetime.now(timezone.utc)
+
+    # Create record older than config default
+    with db.session() as session:
+        old = SignalHistory(
+            symbol="BTC-USD",
+            timestamp=now - timedelta(days=settings.signal_history_retention_days + 1),
+            is_paper=True,
+            current_price="50000",
+            rsi_score=10.0,
+            macd_score=5.0,
+            bollinger_score=-5.0,
+            ema_score=8.0,
+            volume_score=2.0,
+            raw_score=20.0,
+            final_score=20.0,
+            action="hold",
+            threshold_used=60,
+        )
+        session.add(old)
+
+    # Call without retention_days parameter - should use config default
+    deleted = db.cleanup_signal_history()
+    assert deleted == 1
