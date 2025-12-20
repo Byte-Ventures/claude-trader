@@ -850,7 +850,7 @@ class TradingDaemon:
         Get trend for a specific timeframe with caching.
 
         Args:
-            granularity: Candle granularity (e.g., "ONE_DAY", "SIX_HOUR")
+            granularity: Candle granularity (e.g., "ONE_DAY", "FOUR_HOUR")
             cache_minutes: Cache TTL in minutes
 
         Returns:
