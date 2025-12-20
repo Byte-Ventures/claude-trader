@@ -99,13 +99,21 @@ The bot already has excellent defensive architecture:
 
 **Status:** DONE
 
-Multi-timeframe confirmation using Daily + 6-Hour trends to reduce false signals.
+Multi-timeframe confirmation using Daily + 4-Hour trends to reduce false signals.
 
-- Fetches ONE_DAY and SIX_HOUR candles with caching (60min and 30min respectively)
+- Fetches ONE_DAY and FOUR_HOUR candles with caching (60min and 30min respectively)
 - Both timeframes must agree for strong bias (bullish/bearish), otherwise neutral
 - Score modifiers: +20 for aligned trades, -20 for counter-trend trades
 - HTF context shown to AI reviewers for better decision making
 - Signal history table (`signal_history`) stores every signal for post-mortem analysis
+
+**Why 4H instead of 6H for MTF?**
+- FOUR_HOUR provides more frequent data points (6 candles/day vs 4 for 6H)
+- More responsive to intraday trend shifts while still filtering hourly noise
+- Provides good intermediate timeframe between daily and hourly trading
+- Both 4H and 6H are supported by major exchanges (Coinbase, Kraken)
+
+Note: The multi-timeframe (MTF) feature is hardcoded to use FOUR_HOUR in `runner.py:972`. The SIX_HOUR granularity remains available for other uses (primary trading timeframe, manual analysis, etc.) but is not used by MTF.
 
 **Expected Impact:** 30-50% reduction in false signals
 
@@ -121,7 +129,7 @@ But Daily trend is bearish → price keeps falling → stopped out
 ```python
 # In runner.py, fetch multiple timeframes
 daily_candles = self.client.get_candles(pair, "ONE_DAY", limit=50)
-four_hour_candles = self.client.get_candles(pair, "SIX_HOUR", limit=50)
+four_hour_candles = self.client.get_candles(pair, "FOUR_HOUR", limit=50)
 
 # Determine macro bias
 daily_trend = self._get_trend(daily_candles)  # bullish/bearish/neutral

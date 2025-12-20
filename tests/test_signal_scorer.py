@@ -1982,7 +1982,7 @@ def test_get_recommended_threshold_progression():
 class TestHTFBiasModifier:
     """Tests for higher timeframe bias score modifiers.
 
-    HTF (Higher Timeframe) bias is determined by combining Daily and 6-hour trends:
+    HTF (Higher Timeframe) bias is determined by combining Daily and 4-hour trends:
     - Both bullish → bullish bias
     - Both bearish → bearish bias
     - Mixed/neutral → neutral bias

@@ -911,7 +911,7 @@ class SignalScorer:
 
         # HTF (Higher Timeframe) bias modifier
         # Purpose: Reduce false signals by aligning trades with the macro trend
-        # - Daily + 6-hour trends must agree for strong bias, otherwise neutral
+        # - Daily + 4-hour trends must agree for strong bias, otherwise neutral
         # - Expected impact: 30-50% reduction in false signals
         #
         # Application logic (asymmetric for sell signals):
