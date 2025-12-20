@@ -194,7 +194,7 @@ class Settings(BaseSettings):
     # MACD Dynamic Scaling - Interval Multipliers
     macd_interval_multipliers: Optional[dict[str, float]] = Field(
         default=None,
-        description="MACD dynamic scale interval multipliers for backtesting optimization. If None, uses hardcoded defaults. Format: {\"ONE_MINUTE\": 2.0, \"FIVE_MINUTE\": 1.5, ...}"
+        description="MACD dynamic scale interval multipliers. Used in production to tune histogram scaling per interval. If None, uses hardcoded defaults. Format: {\"ONE_MINUTE\": 2.0, \"FIVE_MINUTE\": 1.5, ...}"
     )
 
     # Strategy Parameters - Signal
