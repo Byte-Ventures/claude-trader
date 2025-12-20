@@ -4144,6 +4144,11 @@ class TestPositionRoomCheck:
 
     # Test constants to avoid magic numbers
     BTC_PRICE = Decimal("50000")
+    # HARD_LIMIT = 80%: This is correct and matches validator.py:57 default.
+    # Note: Issue #161 and PR #160 originally referenced 90%, but the actual
+    # implementation uses 80% as the hard limit. The validator enforces 80%
+    # as the maximum position percentage, while the position sizer targets
+    # lower percentages (soft limits) for normal operations.
     HARD_LIMIT = Decimal("80")  # Match validator.py:57 default
     SOFT_LIMIT = Decimal("20")
     MIN_TRADE = 10.0
@@ -4216,7 +4221,7 @@ class TestPositionRoomCheck:
                     assert "buy_blocked_insufficient_room" not in caplog.text, \
                         "Should have room to buy when position is at 75% (below 80% hard limit)"
 
-    def test_position_at_hard_limit(self, mock_settings, mock_exchange_client, mock_database):
+    def test_position_at_hard_limit(self, mock_settings, mock_exchange_client, mock_database, caplog):
         """
         Test with position exactly at hard limit (80%).
         Should have no room to buy - verify daemon blocks buy orders.
@@ -4273,12 +4278,17 @@ class TestPositionRoomCheck:
                     with patch('src.strategy.signal_scorer.SignalScorer.calculate_score', return_value=buy_signal):
                         daemon._trading_iteration()
 
-                    # Verify NO buy order was placed despite strong buy signal
-                    # Room check should block the buy when at 80% hard limit
+                    # Verify room check specifically blocked the buy
                     # Expected calculation: Position = 80%, Max = 80%, Available Room = 0%
+                    # Verify other safety systems would allow trading (so room check is the blocker)
+                    assert daemon.kill_switch.is_active is False, "Kill switch should be inactive"
+                    assert daemon.circuit_breaker.can_trade is True, "Circuit breaker should allow trading"
+                    assert daemon.loss_limiter.get_status().can_trade is True, "Loss limiter should allow trading"
+                    # Verify NO buy order was placed despite strong signal and all safety systems allowing trading
+                    # This proves the room check was the blocker
                     mock_exchange_client.market_buy.assert_not_called()
 
-    def test_position_above_hard_limit(self, mock_settings, mock_exchange_client, mock_database):
+    def test_position_above_hard_limit(self, mock_settings, mock_exchange_client, mock_database, caplog):
         """
         Test with position above hard limit (81% > 80%).
         Should have negative room - verify daemon blocks buy orders.
@@ -4334,9 +4344,14 @@ class TestPositionRoomCheck:
                     with patch('src.strategy.signal_scorer.SignalScorer.calculate_score', return_value=buy_signal):
                         daemon._trading_iteration()
 
-                    # Verify NO buy order was placed despite strong buy signal
-                    # Room check should block the buy when above 80% hard limit
+                    # Verify room check specifically blocked the buy
                     # Expected calculation: Position = 81%, Max = 80%, Available Room = -1%
+                    # Verify other safety systems would allow trading (so room check is the blocker)
+                    assert daemon.kill_switch.is_active is False, "Kill switch should be inactive"
+                    assert daemon.circuit_breaker.can_trade is True, "Circuit breaker should allow trading"
+                    assert daemon.loss_limiter.get_status().can_trade is True, "Loss limiter should allow trading"
+                    # Verify NO buy order was placed despite strong signal and all safety systems allowing trading
+                    # This proves the room check was the blocker
                     mock_exchange_client.market_buy.assert_not_called()
 
     def test_edge_case_position_just_below_hard_limit(self, mock_settings, mock_exchange_client, mock_database, caplog):
@@ -4408,7 +4423,7 @@ class TestPositionRoomCheck:
                     assert "buy_blocked_insufficient_room" not in caplog.text, \
                         "Should have room to buy when available_room_pct (1.0%) >= min_room_pct (1.0%)"
 
-    def test_edge_case_room_below_min_trade_requirement(self, mock_settings, mock_exchange_client, mock_database):
+    def test_edge_case_room_below_min_trade_requirement(self, mock_settings, mock_exchange_client, mock_database, caplog):
         """
         Test edge case: position at 79.5%, hard limit 80%.
         Portfolio = 1000 USD, MIN_TRADE_QUOTE = 10 USD (min_room_pct = 1.0%).
@@ -4466,11 +4481,16 @@ class TestPositionRoomCheck:
                     with patch('src.strategy.signal_scorer.SignalScorer.calculate_score', return_value=buy_signal):
                         daemon._trading_iteration()
 
-                    # Verify NO buy order was placed despite strong buy signal
-                    # Room check should block the buy when available room < min requirement
+                    # Verify room check specifically blocked the buy
                     # Expected calculation: Position = 79.5%, Max = 80%, Available Room = 0.5%
                     # Min Room = max(1.0%, 10/1000 * 100) = 1.0%
                     # 0.5% < 1.0% so buy should be blocked
+                    # Verify other safety systems would allow trading (so room check is the blocker)
+                    assert daemon.kill_switch.is_active is False, "Kill switch should be inactive"
+                    assert daemon.circuit_breaker.can_trade is True, "Circuit breaker should allow trading"
+                    assert daemon.loss_limiter.get_status().can_trade is True, "Loss limiter should allow trading"
+                    # Verify NO buy order was placed despite strong signal and all safety systems allowing trading
+                    # This proves the room check was the blocker
                     mock_exchange_client.market_buy.assert_not_called()
 
     def test_sell_allowed_when_position_at_limit(self, mock_settings, mock_exchange_client, mock_database, caplog):
