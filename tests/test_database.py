@@ -2515,6 +2515,10 @@ def test_rate_history_concurrent_updates(db):
     2. Final low price is the minimum across all updates
     3. No data corruption occurs
     4. Open price is preserved (immutable)
+
+    Note: SQLite serializes writes at the database level, so true concurrent execution may
+    not occur. This test validates logical correctness of the UPSERT logic under the
+    assumption of concurrent updates.
     """
     timestamp = datetime(2024, 1, 1, 12, 0, 0)
 
@@ -2566,7 +2570,8 @@ def test_rate_history_concurrent_updates(db):
     # Thread worker function
     def update_candle(scenario):
         """Worker function to update the candle with scenario data."""
-        # Add small random delay to increase concurrency chance
+        # Small random delay (0-10ms) to increase likelihood of concurrent execution.
+        # Note: SQLite's locking model may still serialize these writes.
         time.sleep(random.uniform(0, 0.01))
 
         candles = [{
@@ -2580,7 +2585,13 @@ def test_rate_history_concurrent_updates(db):
 
         # No try/except - the database UPSERT should handle concurrency gracefully.
         # If exceptions occur, they indicate a real bug that must be fixed.
-        db.record_rates_bulk(candles, is_paper=False)
+        db.record_rates_bulk(
+            candles,
+            symbol="BTC-USD",
+            exchange="kraken",
+            interval="1m",
+            is_paper=False
+        )
 
     # Create and start threads
     threads = []
