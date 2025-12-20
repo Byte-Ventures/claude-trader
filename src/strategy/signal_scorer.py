@@ -717,7 +717,7 @@ class SignalScorer:
                         total_score -= volume_boost
                     else:
                         components["volume"] = 0
-                    metadata["_whale_activity"] = True
+                    metadata["_whale_activity"] = 1
                     metadata["_volume_ratio"] = volume_ratio
 
                     # Determine whale direction based on price movement during volume spike
@@ -841,7 +841,7 @@ class SignalScorer:
                         total_score -= volume_boost
                     else:
                         components["volume"] = 0
-                    metadata["_whale_activity"] = False
+                    metadata["_whale_activity"] = 0
                     metadata["_volume_ratio"] = volume_ratio
                 elif volume_ratio < self.low_volume_threshold:
                     # Low volume: fixed penalty (consistent behavior)
@@ -853,21 +853,21 @@ class SignalScorer:
                         total_score += self.low_volume_penalty
                     else:
                         components["volume"] = 0
-                    metadata["_whale_activity"] = False
+                    metadata["_whale_activity"] = 0
                     metadata["_volume_ratio"] = volume_ratio
                 else:
                     components["volume"] = 0
-                    metadata["_whale_activity"] = False
+                    metadata["_whale_activity"] = 0
                     metadata["_volume_ratio"] = volume_ratio
             else:
                 # Invalid volume SMA (NaN or zero)
                 components["volume"] = 0
-                metadata["_whale_activity"] = False
+                metadata["_whale_activity"] = 0
                 metadata["_volume_ratio"] = None
         else:
             # Insufficient volume data (< 20 candles)
             components["volume"] = 0
-            metadata["_whale_activity"] = False
+            metadata["_whale_activity"] = 0
             metadata["_volume_ratio"] = None
 
         # Log whale activity detection
@@ -1058,13 +1058,19 @@ class SignalScorer:
         # Calculate confidence with confluence factor
         # Combines magnitude with how many indicators agree
         if action != "hold":
+            # Components dict should never be empty for non-hold actions
+            if not components:
+                raise ValueError(
+                    "Components dict is empty for non-hold action - this indicates a bug in signal calculation"
+                )
+
             # Count agreeing indicators (non-zero contributions)
             confluence_count = sum(
                 1 for score in components.values()
                 if score != 0
             )
             # Use actual component count for robustness (typically 7: rsi, macd, bollinger, ema, volume, trend_filter, htf_bias)
-            confluence_factor = confluence_count / len(components) if components else 0
+            confluence_factor = confluence_count / len(components)
 
             # Combine magnitude and confluence (equally weighted)
             magnitude_confidence = abs(total_score) / 100

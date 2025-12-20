@@ -1117,7 +1117,7 @@ class TradingDaemon:
                     volume_ratio=breakdown.get("_volume_ratio"),
                     trend_filter_adj=breakdown.get("trend_filter", 0),
                     momentum_mode_adj=breakdown.get("_momentum_active", 0),
-                    whale_activity_adj=1 if breakdown.get("_whale_activity", False) else 0,
+                    whale_activity_adj=breakdown.get("_whale_activity", 0),
                     htf_bias_adj=breakdown.get("htf_bias", 0),
                     htf_bias=htf_bias,
                     htf_daily_trend=daily_trend,
