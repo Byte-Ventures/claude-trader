@@ -78,6 +78,10 @@ class TelegramNotifier:
     # Telegram API limit is 4096, but shorter messages are more actionable
     MAX_ERROR_MSG_LENGTH = 500
 
+    # Ellipsis string and length for truncation operations
+    ELLIPSIS = "..."
+    ELLIPSIS_LEN = len(ELLIPSIS)  # 3 characters
+
     def __init__(
         self,
         bot_token: str,
@@ -676,9 +680,9 @@ class TelegramNotifier:
                 ('Traceback' in error and 'File "' in error)  # Single frame Python
             )
             if is_stack_trace:
-                error = error[:250] + "..." + error[-250:]
+                error = error[:250] + self.ELLIPSIS + error[-250:]
             else:
-                error = error[:400] + "..." + error[-100:]
+                error = error[:400] + self.ELLIPSIS + error[-100:]
 
         if len(context) > MAX_LEN:
             # Log full context for debugging before truncation
@@ -693,9 +697,9 @@ class TelegramNotifier:
                 ('Traceback' in context and 'File "' in context)  # Single frame Python
             )
             if is_context_stack_trace:
-                context = context[:250] + "..." + context[-250:]
+                context = context[:250] + self.ELLIPSIS + context[-250:]
             else:
-                context = context[:400] + "..." + context[-100:]
+                context = context[:400] + self.ELLIPSIS + context[-100:]
 
         message = (
             f"❌ <b>System Error</b>\n\n"
@@ -716,17 +720,18 @@ class TelegramNotifier:
             # Calculate overhead (header + footer + formatting)
             overhead = len(message) - len(error) - len(context)
             # Split remaining budget equally between error and context
-            per_field_budget = (TELEGRAM_MAX_LENGTH - overhead) // 2
+            # Ensure minimum 10 chars per field for defensive programming
+            per_field_budget = max(10, (TELEGRAM_MAX_LENGTH - overhead) // 2)
 
             # Re-truncate with aggressive limits
             if len(error) > per_field_budget:
                 # Remove existing ellipsis if present to avoid "..."..."
-                error_clean = error[:-3] if error.endswith('...') else error
-                error = error_clean[:per_field_budget - 3] + "..."
+                error_clean = error[:-self.ELLIPSIS_LEN] if error.endswith(self.ELLIPSIS) else error
+                error = error_clean[:per_field_budget - self.ELLIPSIS_LEN] + self.ELLIPSIS
             if len(context) > per_field_budget:
                 # Remove existing ellipsis if present to avoid "..."..."
-                context_clean = context[:-3] if context.endswith('...') else context
-                context = context_clean[:per_field_budget - 3] + "..."
+                context_clean = context[:-self.ELLIPSIS_LEN] if context.endswith(self.ELLIPSIS) else context
+                context = context_clean[:per_field_budget - self.ELLIPSIS_LEN] + self.ELLIPSIS
 
             # Rebuild message
             message = (
