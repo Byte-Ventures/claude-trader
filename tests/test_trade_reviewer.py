@@ -174,7 +174,7 @@ class TestHTFNullSafety:
         prompt = reviewer._build_reviewer_prompt(context)
 
         # Empty strings should be preserved, NOT replaced with "UNKNOWN"
-        # The HTF line should show empty strings in uppercase (i.e., empty)
+        # The HTF line should show empty strings when uppercased (empty strings uppercased are still empty)
         assert 'HIGHER TIMEFRAME BIAS:  (Daily: , 4H: )' in prompt
         # Should NOT contain "UNKNOWN" for these empty string values
         # Note: The word "unknown" may appear in the prompt for None values in other tests,
