@@ -993,6 +993,7 @@ class SignalScorer:
 
         # Apply adjustment and log only if NOT already handled by extreme fear override
         if htf_adjustment != 0 and not extreme_fear_override_applied:
+            score_before = total_score
             total_score += htf_adjustment
             logger.info(
                 "htf_bias_applied",
@@ -1000,7 +1001,9 @@ class SignalScorer:
                 htf_daily=htf_daily if htf_daily is not None else "unknown",
                 htf_4h=htf_4h if htf_4h is not None else "unknown",
                 sentiment=sentiment_category,
-                signal_direction="bullish" if total_score > 0 else "bearish",
+                signal_direction="bullish" if score_before > 0 else "bearish",
+                score_before=score_before,
+                score_after=total_score,
                 adjustment=htf_adjustment,
                 partial_penalty=htf_bias == "neutral" or htf_bias is None,
             )
