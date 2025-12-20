@@ -9,7 +9,6 @@ This script shows how to:
 """
 
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
 
 import pandas as pd
 

@@ -288,6 +288,10 @@ class Backtester:
                 candle_high = Decimal(str(current_candle["high"]))
                 candle_low = Decimal(str(current_candle["low"]))
 
+                # Validate that this is a long position (only long positions supported)
+                if open_position.side != "buy":
+                    raise ValueError(f"Unexpected position side: {open_position.side}. Only long positions are supported.")
+
                 # For long positions: check if low hit stop-loss or high hit take-profit
                 stop_hit = candle_low <= open_position.stop_loss_price
                 tp_hit = candle_high >= open_position.take_profit_price
@@ -351,6 +355,14 @@ class Backtester:
                     side="buy",
                 )
 
+                # Validate position sizer results
+                if size_result.stop_loss_price <= 0 or size_result.take_profit_price <= 0:
+                    raise ValueError(f"Invalid stop/TP prices from PositionSizer: SL={size_result.stop_loss_price}, TP={size_result.take_profit_price}")
+                if size_result.stop_loss_price >= current_price:
+                    raise ValueError(f"Stop-loss price ({size_result.stop_loss_price}) must be below current price ({current_price}) for long positions")
+                if size_result.take_profit_price <= current_price:
+                    raise ValueError(f"Take-profit price ({size_result.take_profit_price}) must be above current price ({current_price}) for long positions")
+
                 if size_result.size_quote >= self.min_trade_size:
                     # Apply slippage (price goes up for buys)
                     # NOTE: Fill price is based on current candle's close price + slippage.
@@ -363,8 +375,8 @@ class Backtester:
                     fee = size_result.size_quote * self.fee_percent
                     total_cost = size_result.size_quote + fee
 
-                    # Check sufficient balance
-                    if total_cost <= quote_balance:
+                    # Check sufficient balance (use slightly more conservative check to avoid rounding issues)
+                    if total_cost <= quote_balance * Decimal("0.9999"):
                         # Execute buy
                         base_received = (size_result.size_quote / fill_price).quantize(
                             Decimal("0.00000001"), rounding=ROUND_DOWN
@@ -552,6 +564,8 @@ class Backtester:
             )
 
         # Total return
+        if initial_value == 0:
+            raise ValueError("Cannot calculate metrics with zero initial capital")
         total_return = float((final_value - initial_value) / initial_value * 100)
 
         # Trade statistics
