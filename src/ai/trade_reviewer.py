@@ -1118,17 +1118,9 @@ Trading style: POSITION TRADING (long-term)
         # Empty strings should NOT occur in production (would indicate a bug in get_trend()).
         # If empty strings appear, they are preserved for debugging (not masked as "unknown").
         # None values indicate missing/unavailable data and are replaced with "unknown".
-        htf_trend = breakdown.get("_htf_trend")
-        if htf_trend is None:
-            htf_trend = "unknown"
-
-        daily = breakdown.get("_htf_daily")
-        if daily is None:
-            daily = "unknown"
-
-        four_h = breakdown.get("_htf_4h")
-        if four_h is None:
-            four_h = "unknown"
+        htf_trend = breakdown.get("_htf_trend") if breakdown.get("_htf_trend") is not None else "unknown"
+        daily = breakdown.get("_htf_daily") if breakdown.get("_htf_daily") is not None else "unknown"
+        four_h = breakdown.get("_htf_4h") if breakdown.get("_htf_4h") is not None else "unknown"
 
         htf_line = f"\n📊 HIGHER TIMEFRAME BIAS: {htf_trend.upper()} (Daily: {daily.upper()}, 4H: {four_h.upper()})"
 
