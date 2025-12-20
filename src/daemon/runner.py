@@ -448,7 +448,8 @@ class TradingDaemon:
                     fallback_profile=settings.ai_weight_fallback_profile,
                     model=settings.ai_weight_profile_model,
                     # Use reviewer_max_tokens (800): weight profile responses are brief JSON
-                    # with 1-2 sentence reasoning (~50-100 tokens typical)
+                    # with 1-2 sentence reasoning (~50-100 tokens typical, 800 provides 8x buffer).
+                    # This is a decision-making use case (like trade reviews), not research.
                     max_tokens=settings.ai_reviewer_max_tokens,
                 ),
             )
