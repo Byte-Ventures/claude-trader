@@ -18,7 +18,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Event
+from threading import Event, Lock
 from typing import Optional, Union
 
 import structlog
@@ -130,6 +130,7 @@ class TradingDaemon:
         # Sentiment fetch failure tracking
         self._sentiment_fetch_failures: int = 0  # Track consecutive sentiment fetch failures
         self._last_sentiment_fetch_success: Optional[datetime] = None  # Last successful fetch time
+        self._sentiment_lock = Lock()  # Protect sentiment failure counter from race conditions
 
         # Create persistent event loop for async operations (avoids repeated asyncio.run())
         self._loop = asyncio.new_event_loop()
@@ -1450,8 +1451,9 @@ class TradingDaemon:
                         reason="fetch_returned_none",
                         impact="extreme_fear_override_disabled",
                     )
-                    # Increment failure counter
-                    self._sentiment_fetch_failures += 1
+                    # Increment failure counter (protected by lock)
+                    with self._sentiment_lock:
+                        self._sentiment_fetch_failures += 1
                     self._check_sentiment_failure_threshold()
             except Exception as e:
                 logger.warning(
@@ -1459,8 +1461,9 @@ class TradingDaemon:
                     error=str(e),
                     impact="extreme_fear_override_disabled",
                 )
-                # Increment failure counter
-                self._sentiment_fetch_failures += 1
+                # Increment failure counter (protected by lock)
+                with self._sentiment_lock:
+                    self._sentiment_fetch_failures += 1
                 self._check_sentiment_failure_threshold()
 
         # Calculate signal with HTF context and sentiment
@@ -3231,32 +3234,41 @@ class TradingDaemon:
         threshold = self.settings.sentiment_failure_alert_threshold
 
         # Only alert when we first cross the threshold
-        if self._sentiment_fetch_failures == threshold:
-            # Calculate time since last success with error handling
+        with self._sentiment_lock:
+            if self._sentiment_fetch_failures != threshold:
+                return
+
+            # Calculate time since last success with error handling (inside lock for consistency)
             try:
                 if self._last_sentiment_fetch_success is None:
                     time_since_success = "none (check API connectivity)"
                 else:
                     minutes_ago = (datetime.now(timezone.utc) - self._last_sentiment_fetch_success).total_seconds() / 60
-                    time_since_success = f"{minutes_ago:.0f} minutes ago"
+                    if minutes_ago < 1:
+                        time_since_success = "just now (< 1 minute ago)"
+                    else:
+                        time_since_success = f"{minutes_ago:.0f} minutes ago"
             except Exception:
                 # If time calculation fails (e.g., system clock issues), use fallback
                 time_since_success = "unknown"
 
-            logger.error(
-                "sentiment_fetch_failure_threshold_exceeded",
-                consecutive_failures=self._sentiment_fetch_failures,
-                threshold=threshold,
-                last_success=time_since_success,
-                impact="extreme_fear_override_disabled",
-            )
+            failures_count = self._sentiment_fetch_failures
 
-            self.notifier.notify_error(
-                f"Sentiment API failing: {self._sentiment_fetch_failures} consecutive failures. "
-                f"Last success: {time_since_success}. "
-                f"Extreme fear override is disabled until sentiment API recovers.",
-                "Sentiment Fetch Failure Alert"
-            )
+        # Perform logging and notifications outside the lock to minimize lock hold time
+        logger.error(
+            "sentiment_fetch_failure_threshold_exceeded",
+            consecutive_failures=failures_count,
+            threshold=threshold,
+            last_success=time_since_success,
+            impact="extreme_fear_override_disabled",
+        )
+
+        self.notifier.notify_error(
+            f"Sentiment API failing: {failures_count} consecutive failures. "
+            f"Last success: {time_since_success}. "
+            f"Extreme fear override is disabled until sentiment API recovers.",
+            "Sentiment Fetch Failure Alert"
+        )
 
     def _record_sentiment_success(self) -> None:
         """Record successful sentiment fetch and notify recovery if needed.
@@ -3273,13 +3285,14 @@ class TradingDaemon:
         This is intentional - we want to know about API health globally.
         """
         threshold = self.settings.sentiment_failure_alert_threshold
-        was_in_alert_state = self._sentiment_fetch_failures >= threshold
 
-        # Reset failure counter on success
-        self._sentiment_fetch_failures = 0
-        self._last_sentiment_fetch_success = datetime.now(timezone.utc)
+        # Atomically check and reset state under lock
+        with self._sentiment_lock:
+            was_in_alert_state = self._sentiment_fetch_failures >= threshold
+            self._sentiment_fetch_failures = 0
+            self._last_sentiment_fetch_success = datetime.now(timezone.utc)
 
-        # Notify recovery if we were previously failing
+        # Notify recovery if we were previously failing (outside lock to minimize hold time)
         if was_in_alert_state:
             self.notifier.notify_info(
                 "Sentiment API has recovered. Extreme fear override is now active.",
@@ -3573,8 +3586,9 @@ class TradingDaemon:
                             reason="fetch_returned_none",
                             impact="extreme_fear_override_disabled",
                         )
-                        # Increment failure counter
-                        self._sentiment_fetch_failures += 1
+                        # Increment failure counter (protected by lock)
+                        with self._sentiment_lock:
+                            self._sentiment_fetch_failures += 1
                         self._check_sentiment_failure_threshold()
                 except Exception as e:
                     logger.warning(
@@ -3582,8 +3596,9 @@ class TradingDaemon:
                         error=str(e),
                         impact="extreme_fear_override_disabled",
                     )
-                    # Increment failure counter
-                    self._sentiment_fetch_failures += 1
+                    # Increment failure counter (protected by lock)
+                    with self._sentiment_lock:
+                        self._sentiment_fetch_failures += 1
                     self._check_sentiment_failure_threshold()
 
             # Calculate price changes from candles

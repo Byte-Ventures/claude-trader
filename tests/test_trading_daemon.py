@@ -3812,7 +3812,7 @@ class TestSentimentFailureTracking:
         # Verify alert message contains time information
         call_args = daemon_with_sentiment.notifier.notify_error.call_args
         message = call_args[0][0]
-        assert "minutes ago" in message or "none (check API connectivity)" in message
+        assert "minutes ago" in message or "none (check API connectivity)" in message or "just now" in message
 
     def test_time_calculation_error_handling(self, daemon_with_sentiment):
         """Test that time calculation errors are handled gracefully."""
