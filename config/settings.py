@@ -1231,6 +1231,7 @@ class Settings(BaseSettings):
 
             if not has_new_reviewer and not has_new_research:
                 # Migrate: use old value for research (longer), use default 800 for reviewer (shorter)
+                data["ai_reviewer_max_tokens"] = 800
                 data["ai_research_max_tokens"] = int(old_max_tokens)
                 warnings.warn(
                     f"AI_MAX_TOKENS={old_max_tokens} is deprecated. "
