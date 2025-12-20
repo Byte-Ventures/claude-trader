@@ -391,6 +391,8 @@ class TradingDaemon:
 
         # Cache minimum required candles for MTF trend calculation (performance optimization)
         # This value is constant based on indicator settings and doesn't change during runtime
+        # Mirrors Settings._get_min_required_candles() but uses signal_scorer's actual values
+        # (which are set from settings in __init__ above)
         self._min_required_candles = max(
             self.signal_scorer.ema_slow_period,
             self.signal_scorer.bollinger_period,

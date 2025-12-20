@@ -952,6 +952,21 @@ class Settings(BaseSettings):
             )
         return self
 
+    def _get_min_required_candles(self) -> int:
+        """Calculate minimum candles needed for all indicators.
+
+        This centralizes the logic for determining minimum required candles,
+        ensuring consistency between config validation and runtime checks.
+
+        Returns:
+            Maximum of all indicator periods (EMA slow, Bollinger, MACD slow)
+        """
+        return max(
+            self.ema_slow,
+            self.bollinger_period,
+            self.macd_slow,
+        )
+
     @model_validator(mode="after")
     def validate_mtf_candle_limits(self) -> "Settings":
         """Validate MTF candle limits are sufficient for indicator calculations.
@@ -964,7 +979,7 @@ class Settings(BaseSettings):
         If candle limits are less than the longest indicator period,
         get_trend() will always return neutral due to insufficient data.
         """
-        min_required = max(self.ema_slow, self.bollinger_period, self.macd_slow)
+        min_required = self._get_min_required_candles()
 
         if self.mtf_daily_candle_limit < min_required:
             raise ValueError(
@@ -1182,7 +1197,10 @@ class Settings(BaseSettings):
                 try:
                     limit_val = int(old_mtf_limit)
                     data["mtf_daily_candle_limit"] = limit_val
-                    # Scale 4H proportionally using module constant
+                    # Scale 4H proportionally using module constant (MTF_4H_SCALE_FACTOR = 84/50 = 1.68)
+                    # This maintains proportional lookback periods: 4H has ~6 candles/day vs 1 for daily
+                    # min(200, ...) ensures we don't exceed 4H upper bound (MTF_4H_CANDLE_LIMIT max)
+                    # max(26, ...) ensures we meet minimum indicator requirements
                     scaled_4h = min(200, max(26, int(limit_val * MTF_4H_SCALE_FACTOR)))
                     data["mtf_4h_candle_limit"] = scaled_4h
                     warnings.warn(
