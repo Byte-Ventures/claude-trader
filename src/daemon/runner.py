@@ -1457,7 +1457,7 @@ class TradingDaemon:
                         impact="extreme_fear_override_disabled",
                     )
                     # Record failure atomically (increments counter and checks threshold)
-                    self._record_sentiment_failure()
+                    self._record_sentiment_failure(context="trading")
             except Exception as e:
                 logger.warning(
                     "sentiment_fetch_failed_during_trade_evaluation",
@@ -1465,7 +1465,7 @@ class TradingDaemon:
                     impact="extreme_fear_override_disabled",
                 )
                 # Record failure atomically (increments counter and checks threshold)
-                self._record_sentiment_failure()
+                self._record_sentiment_failure(context="trading")
 
         # Calculate signal with HTF context and sentiment
         signal_result = self.signal_scorer.calculate_score(
@@ -3230,13 +3230,16 @@ class TradingDaemon:
             logger.warning("cramer_portfolio_fetch_error", error=str(e))
             return None
 
-    def _record_sentiment_failure(self) -> None:
+    def _record_sentiment_failure(self, context: str = "unknown") -> None:
         """Atomically record sentiment fetch failure and alert if threshold is exceeded.
 
         This method:
         1. Increments the failure counter
         2. Checks if the threshold is exceeded
         3. Alerts if this is the first time we cross the threshold
+
+        Args:
+            context: The context where failure occurred ("trading" or "dashboard")
 
         Thread-safe: All counter operations are atomic under lock.
         """
@@ -3255,6 +3258,7 @@ class TradingDaemon:
                         "sentiment_fetch_failures_above_threshold",
                         consecutive_failures=failures_count,
                         threshold=threshold,
+                        context=context,
                     )
                 return
 
@@ -3267,7 +3271,10 @@ class TradingDaemon:
                 time_since_success = "none (check API connectivity)"
             else:
                 minutes_ago = (datetime.now(timezone.utc) - last_success_timestamp).total_seconds() / 60
-                if minutes_ago < 1:
+                if minutes_ago < 0:
+                    # Timestamp is in the future - clock skew detected
+                    time_since_success = "unknown (clock skew detected)"
+                elif minutes_ago < 1:
                     time_since_success = "just now (< 1 minute ago)"
                 else:
                     time_since_success = f"{minutes_ago:.0f} minutes ago"
@@ -3282,6 +3289,7 @@ class TradingDaemon:
             threshold=threshold,
             last_success=time_since_success,
             impact="extreme_fear_override_disabled",
+            context=context,
         )
 
         self.notifier.notify_error(
@@ -3608,7 +3616,7 @@ class TradingDaemon:
                             impact="extreme_fear_override_disabled",
                         )
                         # Record failure atomically (increments counter and checks threshold)
-                        self._record_sentiment_failure()
+                        self._record_sentiment_failure(context="dashboard")
                 except Exception as e:
                     logger.warning(
                         "sentiment_fetch_failed_during_dashboard",
@@ -3616,7 +3624,7 @@ class TradingDaemon:
                         impact="extreme_fear_override_disabled",
                     )
                     # Record failure atomically (increments counter and checks threshold)
-                    self._record_sentiment_failure()
+                    self._record_sentiment_failure(context="dashboard")
 
             # Calculate price changes from candles
             price_change_1h = None
