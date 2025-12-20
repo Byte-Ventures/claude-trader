@@ -928,6 +928,35 @@ class TradingDaemon:
         # Same candle, same direction - skip review
         return True, f"veto_cooldown (same candle, direction={signal_action})"
 
+    def _record_veto_timestamp(self, candles) -> None:
+        """
+        Record veto timestamp using candle's market time instead of wall-clock time.
+
+        This avoids edge cases at candle boundaries where wall-clock time might
+        advance to the next candle while processing the current one.
+
+        Args:
+            candles: DataFrame containing candle data with timestamp column
+        """
+        import pandas as pd
+
+        # Use candle timestamp (market time) instead of wall-clock time
+        # to avoid edge cases at candle boundaries
+        if not candles.empty:
+            candle_timestamp = candles.iloc[-1]["timestamp"]
+            # Type safety check for financial system
+            if not isinstance(candle_timestamp, datetime):
+                logger.warning(
+                    "candle_timestamp_type_mismatch",
+                    type=type(candle_timestamp).__name__,
+                    message="Expected datetime, falling back to current time"
+                )
+                candle_timestamp = datetime.now(timezone.utc)
+        else:
+            candle_timestamp = datetime.now(timezone.utc)
+
+        self._last_veto_timestamp = candle_timestamp
+
     def _get_timeframe_trend(self, granularity: str, cache_minutes: int) -> str:
         """
         Get trend for a specific timeframe with caching.
@@ -2149,10 +2178,7 @@ class TradingDaemon:
                             if review.final_veto_action == VetoAction.SKIP.value:
                                 logger.info("trade_vetoed", reason=review.judge_reasoning)
                                 # Record veto for cooldown (skip reviews until next candle)
-                                # Use candle timestamp (market time) instead of wall-clock time
-                                # to avoid edge cases at candle boundaries
-                                candle_timestamp = candles.iloc[-1]["timestamp"] if not candles.empty else datetime.now(timezone.utc)
-                                self._last_veto_timestamp = candle_timestamp
+                                self._record_veto_timestamp(candles)
                                 self._last_veto_direction = signal_result.action
                                 return  # Skip this iteration
                             elif review.final_veto_action == VetoAction.REDUCE.value:
@@ -2162,10 +2188,7 @@ class TradingDaemon:
                                     multiplier=f"{claude_veto_multiplier:.2f}",
                                 )
                                 # Record veto for cooldown (skip reviews until next candle)
-                                # Use candle timestamp (market time) instead of wall-clock time
-                                # to avoid edge cases at candle boundaries
-                                candle_timestamp = candles.iloc[-1]["timestamp"] if not candles.empty else datetime.now(timezone.utc)
-                                self._last_veto_timestamp = candle_timestamp
+                                self._record_veto_timestamp(candles)
                                 self._last_veto_direction = signal_result.action
                             # Tiered system: skip or reduce only (no delay)
 
