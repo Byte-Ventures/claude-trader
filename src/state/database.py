@@ -825,6 +825,14 @@ class Database:
                             action, threshold_used, trade_executed
                         FROM signal_history_old
                     """))
+                    # Verify data was copied correctly before dropping old table
+                    old_count = conn.execute(text("SELECT COUNT(*) FROM signal_history_old")).scalar()
+                    new_count = conn.execute(text("SELECT COUNT(*) FROM signal_history")).scalar()
+                    if old_count != new_count:
+                        raise RuntimeError(
+                            f"Migration verification failed: old table has {old_count} rows, "
+                            f"new table has {new_count} rows"
+                        )
                     conn.execute(text("DROP TABLE signal_history_old"))
                     # Recreate indexes (IF NOT EXISTS for idempotency)
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_signal_history_timestamp ON signal_history (timestamp)"))
@@ -2059,8 +2067,8 @@ class Database:
         cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
         with self.session() as session:
-            # Build query with optimal filter ordering for index usage
-            # Filter by is_paper first to leverage ix_signal_history_paper_timestamp
+            # Build query - filter by is_paper first for clarity
+            # SQLite's query optimizer will choose the appropriate index
             query = session.query(SignalHistory)
             if is_paper is not None:
                 query = query.filter(SignalHistory.is_paper == is_paper)
@@ -2068,6 +2076,7 @@ class Database:
 
             # Delete old records
             deleted_count = query.delete(synchronize_session=False)
+            session.commit()  # Explicit commit for clarity in financial system
 
             if deleted_count > 0:
                 logger.info(

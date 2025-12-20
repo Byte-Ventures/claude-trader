@@ -2448,3 +2448,34 @@ def test_cleanup_signal_history_invalid_retention_days(db):
 
     with pytest.raises(ValueError, match="retention_days must be between 1 and 365"):
         db.cleanup_signal_history(retention_days=366)
+
+
+def test_cleanup_signal_history_uses_config_default(db):
+    """Test cleanup uses SIGNAL_HISTORY_RETENTION_DAYS from config when retention_days=None."""
+    from config.settings import get_settings
+
+    settings = get_settings()
+    now = datetime.now(timezone.utc)
+
+    # Create record older than config default
+    with db.session() as session:
+        old = SignalHistory(
+            symbol="BTC-USD",
+            timestamp=now - timedelta(days=settings.signal_history_retention_days + 1),
+            is_paper=True,
+            current_price="50000",
+            rsi_score=10.0,
+            macd_score=5.0,
+            bollinger_score=-5.0,
+            ema_score=8.0,
+            volume_score=2.0,
+            raw_score=20.0,
+            final_score=20.0,
+            action="hold",
+            threshold_used=60,
+        )
+        session.add(old)
+
+    # Call without retention_days parameter - should use config default
+    deleted = db.cleanup_signal_history()
+    assert deleted == 1
