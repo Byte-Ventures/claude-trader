@@ -1925,22 +1925,81 @@ def test_get_timeframe_trend_caching(htf_mock_settings, mock_exchange_client, mo
                 # Mock signal scorer get_trend
                 daemon.signal_scorer.get_trend = Mock(return_value="bullish")
 
-                # First call should fetch
+                # First call should fetch (cache miss)
                 trend1 = daemon._get_timeframe_trend("ONE_DAY", 60)
 
                 # Verify get_candles was called
                 assert mock_exchange_client.get_candles.called
+                # Verify cache miss counter incremented
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 0
 
                 # Reset mock to verify caching
                 mock_exchange_client.get_candles.reset_mock()
                 daemon.signal_scorer.get_trend.reset_mock()
 
-                # Second call within cache period should use cache
+                # Second call within cache period should use cache (cache hit)
                 trend2 = daemon._get_timeframe_trend("ONE_DAY", 60)
 
                 # Should NOT call get_candles again (cache hit)
                 assert not mock_exchange_client.get_candles.called
                 assert trend1 == trend2 == "bullish"
+                # Verify cache hit counter incremented
+                assert daemon._htf_cache_misses == 1  # Still 1
+                assert daemon._htf_cache_hits == 1    # Now 1
+
+
+def test_get_timeframe_trend_cache_expiration(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test HTF cache expiration and counter accumulation over multiple refresh cycles."""
+    from datetime import datetime, timezone, timedelta
+    from unittest.mock import patch
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Mock signal scorer get_trend
+                daemon.signal_scorer.get_trend = Mock(return_value="bullish")
+
+                # Call 1: First fetch (cache miss)
+                trend1 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                assert trend1 == "bullish"
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 0
+
+                # Call 2: Within cache period (cache hit)
+                trend2 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                assert trend2 == "bullish"
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 1
+
+                # Fast-forward time to expire cache (61 minutes > 60 minute cache)
+                mock_now = datetime.now(timezone.utc) + timedelta(minutes=61)
+                with patch('src.daemon.runner.datetime') as mock_datetime:
+                    mock_datetime.now.return_value = mock_now
+                    # Need to also patch timedelta to work with mocked datetime
+                    mock_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+
+                    # Update daemon's last fetch to be 61 minutes ago
+                    daemon._daily_last_fetch = mock_now - timedelta(minutes=61)
+
+                    # Call 3: Cache expired (cache miss)
+                    daemon.signal_scorer.get_trend.return_value = "bearish"
+                    trend3 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                    assert trend3 == "bearish"
+                    assert daemon._htf_cache_misses == 2
+                    assert daemon._htf_cache_hits == 1
+
+                # Call 4: Within new cache period (cache hit)
+                trend4 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                assert trend4 == "bearish"
+                assert daemon._htf_cache_misses == 2
+                assert daemon._htf_cache_hits == 2
+
+                # Verify counters accumulated correctly over multiple cycles
+                assert daemon._htf_cache_misses == 2  # Two fetches
+                assert daemon._htf_cache_hits == 2    # Two cache hits
 
 
 def test_get_timeframe_trend_fail_open(htf_mock_settings, mock_database):
@@ -1965,6 +2024,42 @@ def test_get_timeframe_trend_fail_open(htf_mock_settings, mock_database):
                 trend = daemon._get_timeframe_trend("ONE_DAY", 60)
 
                 assert trend == "neutral"
+                # Verify cache miss counter incremented on error path
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 0
+
+
+def test_get_timeframe_trend_insufficient_data(htf_mock_settings, mock_database):
+    """Test HTF trend returns neutral on insufficient candle data."""
+    import pandas as pd
+
+    # Create client that returns insufficient candles
+    mock_client = Mock()
+    mock_client.get_current_price.return_value = Decimal("50000")
+    # Return only 10 candles when 50 are required (ema_slow_period)
+    mock_client.get_candles.return_value = pd.DataFrame({
+        'timestamp': range(10),
+        'close': [50000] * 10
+    })
+    mock_client.get_balance.return_value = Balance("USD", Decimal("1000"), Decimal("0"))
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                htf_mock_settings.mtf_enabled = True
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Clear any cached trend
+                daemon._daily_last_fetch = None
+                daemon._daily_trend = "neutral"
+
+                # Should return neutral when insufficient data
+                trend = daemon._get_timeframe_trend("ONE_DAY", 60)
+
+                assert trend == "neutral"
+                # Verify cache miss counter incremented on insufficient data path
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 0
 
 
 def test_invalidate_htf_cache(htf_mock_settings, mock_exchange_client, mock_database):
