@@ -258,6 +258,29 @@ class SignalScorer:
         # MACD dynamic scaling parameters
         self.macd_interval_multipliers = macd_interval_multipliers
 
+    def get_min_candles(self) -> int:
+        """
+        Get minimum number of candles required for indicator calculations.
+
+        Returns the maximum of all indicator periods to ensure sufficient
+        historical data for accurate signal calculation.
+
+        Returns:
+            Minimum number of candles needed for all indicators
+
+        Example:
+            >>> scorer = SignalScorer(ema_slow=21, bollinger_period=20)
+            >>> scorer.get_min_candles()
+            26
+        """
+        return max(
+            self.ema_slow_period,
+            self.bollinger_period,
+            self.macd_slow,  # MACD slow period (26 by default)
+            self.rsi_period,
+            self.atr_period,
+        )
+
     def update_settings(
         self,
         threshold: Optional[int] = None,

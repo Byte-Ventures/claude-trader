@@ -18,9 +18,6 @@ from src.strategy.position_sizer import PositionSizer, PositionSizeConfig
 
 logger = structlog.get_logger(__name__)
 
-# Maximum profit factor value to use when there are no losses (avoids infinity)
-# This indicates "no losses occurred" rather than truly infinite profit factor
-MAX_PROFIT_FACTOR = 999.0
 
 # Maximum dataset size to prevent memory exhaustion
 # This is a conservative limit to prevent DOS via large datasets
@@ -51,8 +48,8 @@ class BacktestTrade:
 class BacktestMetrics:
     """Performance metrics from a backtest run.
 
-    Note: profit_factor will be set to MAX_PROFIT_FACTOR (999.0) when there are
-    profits but no losses, indicating "no losses occurred" rather than infinity.
+    Note: profit_factor will be set to float('inf') when there are
+    profits but no losses, indicating infinite profit factor.
     """
 
     # Returns
@@ -93,6 +90,8 @@ class BacktestResult:
     def summary(self) -> str:
         """Generate human-readable summary."""
         m = self.metrics
+        # Format profit factor: display "N/A" for infinity, otherwise show as number
+        pf_display = "N/A" if m.profit_factor == float('inf') else f"{m.profit_factor:.2f}"
         return f"""
 Backtest Results
 ================
@@ -100,7 +99,7 @@ Total Return: {m.total_return:.2f}%
 Sharpe Ratio: {m.sharpe_ratio:.2f}
 Max Drawdown: {m.max_drawdown:.2f}%
 Win Rate: {m.win_rate:.1f}%
-Profit Factor: {m.profit_factor:.2f}
+Profit Factor: {pf_display}
 Total Trades: {m.total_trades}
 
 Portfolio:
@@ -267,14 +266,10 @@ class Backtester:
         open_position: Optional[BacktestTrade] = None
 
         # Need minimum candles for indicators
-        # Use defensive attribute access in case SignalScorer internals change
-        # IMPORTANT: These fallback values (21, 20, 26) must match SignalScorer's
-        # default parameters. If SignalScorer defaults change, update these values.
-        # Values correspond to: EMA slow period, Bollinger period, MACD slow period
+        # Use SignalScorer.get_min_candles() to ensure we always have sufficient data
+        # without hardcoded fallback values that could become stale
         min_candles = max(
-            getattr(self.signal_scorer, "ema_slow_period", 21),
-            getattr(self.signal_scorer, "bollinger_period", 20),
-            26,  # MACD slow
+            self.signal_scorer.get_min_candles(),
             self.position_sizer.atr_period,  # ATR period for position sizing
         )
 
@@ -619,11 +614,11 @@ class Backtester:
         # a $10 profit on a $50 trade (20%) for portfolio performance
         gross_profit = sum(float(t.pnl or 0) for t in winning_trades)
         gross_loss = abs(sum(float(t.pnl or 0) for t in losing_trades))
-        # If no losses but profits exist, use MAX_PROFIT_FACTOR; if both zero, use 0.0
+        # If no losses but profits exist, use float('inf'); if both zero, use 0.0
         if gross_loss > 0:
             profit_factor = gross_profit / gross_loss
         elif gross_profit > 0:
-            profit_factor = MAX_PROFIT_FACTOR
+            profit_factor = float('inf')
         else:
             profit_factor = 0.0
 
