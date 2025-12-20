@@ -571,6 +571,7 @@ function updateDashboard(state) {
                 // Same candle period - update high/low/close (open is preserved as first price)
                 // Note: JS Math.max/min on floats may introduce minor precision errors (~1e-15).
                 // This is acceptable for chart display; backend uses Decimal for exact values.
+                // IMPORTANT: Use backend API for trading decisions, not dashboard display values
                 currentCandle.high = Math.max(currentCandle.high, price);
                 currentCandle.low = Math.min(currentCandle.low, price);
                 currentCandle.close = price;
