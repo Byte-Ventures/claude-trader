@@ -1006,9 +1006,18 @@ class SignalScorer:
             )
 
         breakdown["htf_bias"] = htf_adjustment
-        breakdown["_htf_trend"] = htf_bias if htf_bias is not None else "unknown"
-        breakdown["_htf_daily"] = htf_daily if htf_daily is not None else "unknown"
-        breakdown["_htf_4h"] = htf_4h if htf_4h is not None else "unknown"
+        # Use explicit None checks for null safety (avoid masking empty strings)
+        breakdown["_htf_trend"] = htf_bias
+        if breakdown["_htf_trend"] is None:
+            breakdown["_htf_trend"] = "unknown"
+
+        breakdown["_htf_daily"] = htf_daily
+        if breakdown["_htf_daily"] is None:
+            breakdown["_htf_daily"] = "unknown"
+
+        breakdown["_htf_4h"] = htf_4h
+        if breakdown["_htf_4h"] is None:
+            breakdown["_htf_4h"] = "unknown"
 
         # Clamp score to -100 to +100
         total_score = max(-100, min(100, total_score))
