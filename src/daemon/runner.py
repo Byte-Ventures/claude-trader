@@ -14,6 +14,7 @@ import math
 import signal
 import subprocess
 import time
+import traceback
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from concurrent.futures import ThreadPoolExecutor
@@ -961,7 +962,7 @@ class TradingDaemon:
             # Unexpected errors - log at error level but still fail-open
             # Cache miss was already counted above when we decided to fetch
             # Financial bot should never crash due to HTF analysis failure
-            logger.error("htf_fetch_unexpected_error", timeframe=granularity, error=str(e), error_type=type(e).__name__)
+            logger.error("htf_fetch_unexpected_error", timeframe=granularity, error=str(e), error_type=type(e).__name__, traceback=traceback.format_exc())
             return cached_trend or "neutral"
 
     def _get_htf_bias(self) -> tuple[str, Optional[str], Optional[str]]:
