@@ -2149,7 +2149,10 @@ class TradingDaemon:
                             if review.final_veto_action == VetoAction.SKIP.value:
                                 logger.info("trade_vetoed", reason=review.judge_reasoning)
                                 # Record veto for cooldown (skip reviews until next candle)
-                                self._last_veto_timestamp = datetime.now(timezone.utc)
+                                # Use candle timestamp (market time) instead of wall-clock time
+                                # to avoid edge cases at candle boundaries
+                                candle_timestamp = candles.iloc[-1]["timestamp"] if not candles.empty else datetime.now(timezone.utc)
+                                self._last_veto_timestamp = candle_timestamp
                                 self._last_veto_direction = signal_result.action
                                 return  # Skip this iteration
                             elif review.final_veto_action == VetoAction.REDUCE.value:
@@ -2159,7 +2162,10 @@ class TradingDaemon:
                                     multiplier=f"{claude_veto_multiplier:.2f}",
                                 )
                                 # Record veto for cooldown (skip reviews until next candle)
-                                self._last_veto_timestamp = datetime.now(timezone.utc)
+                                # Use candle timestamp (market time) instead of wall-clock time
+                                # to avoid edge cases at candle boundaries
+                                candle_timestamp = candles.iloc[-1]["timestamp"] if not candles.empty else datetime.now(timezone.utc)
+                                self._last_veto_timestamp = candle_timestamp
                                 self._last_veto_direction = signal_result.action
                             # Tiered system: skip or reduce only (no delay)
 
