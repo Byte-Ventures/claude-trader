@@ -24,6 +24,7 @@ from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 import pandas as pd
+import os
 
 from src.state.database import (
     Database,
@@ -1556,6 +1557,22 @@ def test_database_path_validation():
         # Try to create database outside allowed directories (/tmp and data/)
         with pytest.raises(ValueError, match="must be within"):
             Database(Path("/etc/passwd"))
+
+
+def test_database_rejects_tmp_in_production():
+    """Verify /tmp is rejected when not in test mode."""
+    with patch.dict(os.environ, {}, clear=True):  # Clear PYTEST_CURRENT_TEST
+        with patch("pathlib.Path.cwd", return_value=Path("/home/project")):
+            with pytest.raises(ValueError, match="must be within"):
+                Database(Path("/tmp/should_fail.db"))
+
+
+def test_database_allows_tmp_in_test_mode(tmp_path):
+    """Verify /tmp paths are allowed during pytest execution."""
+    # This test runs with PYTEST_CURRENT_TEST set automatically
+    db_path = tmp_path / "test.db"
+    db = Database(db_path)  # Should not raise
+    assert db.db_path == db_path.resolve()
 
 
 def test_database_creates_parent_directory(tmp_path):
