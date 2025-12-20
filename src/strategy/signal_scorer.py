@@ -1001,7 +1001,7 @@ class SignalScorer:
                 htf_daily=htf_daily if htf_daily is not None else "unknown",
                 htf_4h=htf_4h if htf_4h is not None else "unknown",
                 sentiment=sentiment_category,
-                signal_direction="bullish" if total_score > 0 else "bearish",
+                signal_direction="bullish" if score_before > 0 else "bearish",
                 score_before=score_before,
                 score_after=total_score,
                 adjustment=htf_adjustment,
