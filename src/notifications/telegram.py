@@ -650,7 +650,8 @@ class TelegramNotifier:
         if len(error) > MAX_LEN:
             # For stack traces, prioritize start + end (error type at both locations)
             # For other errors, keep first 400 + last 100 to preserve error message
-            if 'Traceback' in error or '  File ' in error:
+            # Detect Python tracebacks and JavaScript stack traces more reliably
+            if 'Traceback' in error or 'File "' in error or '\n  at ' in error:
                 error = error[:250] + "..." + error[-250:]
             else:
                 error = error[:400] + "..." + error[-100:]

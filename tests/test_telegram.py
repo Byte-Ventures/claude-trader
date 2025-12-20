@@ -469,6 +469,24 @@ def test_notify_error_handles_unicode(notifier, mock_bot):
     mock_bot.send_message.assert_called()
 
 
+def test_notify_error_handles_unicode_at_boundary(notifier, mock_bot):
+    """Test unicode characters at exact truncation boundaries don't break."""
+    # Test emoji at the 250-char boundary (stack trace truncation)
+    # Create string with emoji at position 249-250 to test slicing doesn't break multi-byte chars
+    stack_trace = "Traceback:\n" + "a" * 238 + "🔥" + "b" * 300
+    notifier.notify_error(error=stack_trace, context="boundary_test")
+
+    # Should not raise exceptions and should successfully send
+    mock_bot.send_message.assert_called()
+
+    # Verify message is valid (no unicode errors)
+    call_args = mock_bot.send_message.call_args
+    message = call_args.kwargs.get("text", call_args.args[1] if len(call_args.args) > 1 else "")
+    assert isinstance(message, str)
+    assert len(message) > 0
+    assert "..." in message  # Truncation occurred
+
+
 def test_notify_error_truncates_stack_traces_with_balanced_split(notifier, mock_bot):
     """Test stack traces use balanced 250/250 truncation to preserve error type at both ends."""
     # Create a realistic stack trace with 600 chars
