@@ -13,6 +13,9 @@ import warnings
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Migration constant: 4H has 6 candles/day vs 1 for daily, scale factor: 84/50 = 1.68
+MTF_4H_SCALE_FACTOR = 1.68
+
 
 class TradingMode(str, Enum):
     """Trading mode selection."""
@@ -661,13 +664,13 @@ class Settings(BaseSettings):
     # recent price action with finer granularity while keeping API/memory usage reasonable.
     mtf_daily_candle_limit: int = Field(
         default=50,
-        ge=26,  # Conservative default minimum (26 = default MACD slow). Actual minimum validated against max(ema_slow, bollinger_period, macd_slow)
+        ge=26,  # Conservative minimum assuming default indicators. Actual minimum validated against max(ema_slow, bollinger_period, macd_slow) in model validator
         le=100,  # ~14 weeks - longer periods dilute trend signals in crypto
         description="Candles for daily trend analysis (50 = ~7 weeks, must be >= longest indicator period)"
     )
     mtf_4h_candle_limit: int = Field(
         default=84,
-        ge=26,  # Conservative default minimum (26 = default MACD slow). Actual minimum validated against max(ema_slow, bollinger_period, macd_slow)
+        ge=26,  # Conservative minimum assuming default indicators. Actual minimum validated against max(ema_slow, bollinger_period, macd_slow) in model validator
         le=200,  # ~33 days - finer granularity captures recent price action
         description="Candles for 4H trend analysis (84 = 14 days, must be >= longest indicator period)"
     )
@@ -1179,10 +1182,8 @@ class Settings(BaseSettings):
                 try:
                     limit_val = int(old_mtf_limit)
                     data["mtf_daily_candle_limit"] = limit_val
-                    # 4H needs more candles (6 per day vs 1), scale up proportionally
-                    # Old default was 50 for daily, new 4H default is 84 (14 days worth)
-                    # Scale: 84/50 = 1.68, round to nearest sensible value
-                    scaled_4h = min(200, max(26, int(limit_val * 1.68)))
+                    # Scale 4H proportionally using module constant
+                    scaled_4h = min(200, max(26, int(limit_val * MTF_4H_SCALE_FACTOR)))
                     data["mtf_4h_candle_limit"] = scaled_4h
                     warnings.warn(
                         f"MTF_CANDLE_LIMIT={old_mtf_limit} is deprecated. "

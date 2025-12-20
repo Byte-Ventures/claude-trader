@@ -389,6 +389,14 @@ class TradingDaemon:
             macd_interval_multipliers=settings.macd_interval_multipliers,
         )
 
+        # Cache minimum required candles for MTF trend calculation (performance optimization)
+        # This value is constant based on indicator settings and doesn't change during runtime
+        self._min_required_candles = max(
+            self.signal_scorer.ema_slow_period,
+            self.signal_scorer.bollinger_period,
+            self.signal_scorer.macd_slow,
+        )
+
         self.position_sizer = PositionSizer(
             config=PositionSizeConfig(
                 risk_per_trade_percent=settings.risk_per_trade_percent,
@@ -884,17 +892,12 @@ class TradingDaemon:
             )
 
             # Validate candles before processing - need enough data for trend calculation
-            min_required = max(
-                self.signal_scorer.ema_slow_period,
-                self.signal_scorer.bollinger_period,
-                self.signal_scorer.macd_slow,
-            )
-            if candles is None or candles.empty or len(candles) < min_required:
+            if candles is None or candles.empty or len(candles) < self._min_required_candles:
                 logger.warning(
                     "htf_insufficient_data",
                     timeframe=granularity,
                     candle_count=len(candles) if candles is not None and not candles.empty else 0,
-                    required=min_required,
+                    required=self._min_required_candles,
                 )
                 return cached_trend or "neutral"
 
