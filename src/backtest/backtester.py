@@ -597,7 +597,7 @@ class Backtester:
             # Calculate annualization factor from actual data frequency
             time_diffs = equity_df["timestamp"].diff()
             avg_period_seconds = time_diffs.dt.total_seconds().median()
-            if avg_period_seconds <= 0:
+            if pd.isna(avg_period_seconds) or avg_period_seconds <= 0:
                 raise ValueError(
                     f"Cannot determine data frequency for annualization: avg_period_seconds={avg_period_seconds}. "
                     "This indicates invalid or constant timestamps in the equity curve."
@@ -612,7 +612,7 @@ class Backtester:
             # Formula: (mean_return - risk_free_rate) / std_return * sqrt(periods_per_year)
             mean_return = equity_df["returns"].mean()
             std_return = equity_df["returns"].std()
-            if std_return > 0:
+            if std_return > 0 and not pd.isna(mean_return):
                 sharpe_ratio = (mean_return / std_return) * (periods_per_year ** 0.5)
             else:
                 sharpe_ratio = 0.0
