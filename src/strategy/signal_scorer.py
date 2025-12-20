@@ -981,9 +981,9 @@ class SignalScorer:
             total_score += htf_adjustment
             logger.info(
                 "htf_bias_applied",
-                htf_bias=htf_bias or "neutral",
-                htf_daily=htf_daily,
-                htf_4h=htf_4h,
+                htf_bias=htf_bias if htf_bias is not None else "unknown",
+                htf_daily=htf_daily if htf_daily is not None else "unknown",
+                htf_4h=htf_4h if htf_4h is not None else "unknown",
                 sentiment=sentiment_category,
                 signal_direction="bullish" if total_score > 0 else "bearish",
                 adjustment=htf_adjustment,
@@ -991,9 +991,9 @@ class SignalScorer:
             )
 
         breakdown["htf_bias"] = htf_adjustment
-        breakdown["_htf_trend"] = htf_bias if htf_bias is not None else "disabled"
-        breakdown["_htf_daily"] = htf_daily if htf_daily is not None else "disabled"
-        breakdown["_htf_4h"] = htf_4h if htf_4h is not None else "disabled"
+        breakdown["_htf_trend"] = htf_bias if htf_bias is not None else "unknown"
+        breakdown["_htf_daily"] = htf_daily if htf_daily is not None else "unknown"
+        breakdown["_htf_4h"] = htf_4h if htf_4h is not None else "unknown"
 
         # Clamp score to -100 to +100
         total_score = max(-100, min(100, total_score))
