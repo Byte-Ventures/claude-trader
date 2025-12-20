@@ -1119,12 +1119,9 @@ Trading style: POSITION TRADING (long-term)
         # If empty strings appear, they are preserved for debugging (not masked as "unknown").
         # None values indicate missing/unavailable data and are replaced with "unknown".
         # See also: src/strategy/signal_scorer.py for similar pattern
-        htf_trend_raw = breakdown.get("_htf_trend")
-        htf_trend = htf_trend_raw if htf_trend_raw is not None else "unknown"
-        daily_raw = breakdown.get("_htf_daily")
-        daily = daily_raw if daily_raw is not None else "unknown"
-        four_h_raw = breakdown.get("_htf_4h")
-        four_h = four_h_raw if four_h_raw is not None else "unknown"
+        htf_trend = breakdown.get("_htf_trend") if breakdown.get("_htf_trend") is not None else "unknown"
+        daily = breakdown.get("_htf_daily") if breakdown.get("_htf_daily") is not None else "unknown"
+        four_h = breakdown.get("_htf_4h") if breakdown.get("_htf_4h") is not None else "unknown"
 
         htf_line = f"\n📊 HIGHER TIMEFRAME BIAS: {htf_trend.upper()} (Daily: {daily.upper()}, 4H: {four_h.upper()})"
 
