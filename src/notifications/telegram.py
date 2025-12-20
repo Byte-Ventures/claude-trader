@@ -650,8 +650,9 @@ class TelegramNotifier:
         """Send notification for system error."""
         MAX_LEN = self.MAX_ERROR_MSG_LENGTH
 
-        # Calculate dedup key BEFORE truncation to avoid collision on similar errors
-        # that only differ in their middle portions
+        # Calculate dedup key BEFORE truncation using full error text.
+        # This ensures deduplication is based on the complete error, preventing
+        # false collisions when different errors have identical truncated forms.
         dedup_key = f"{error}:{context}"
 
         if len(error) > MAX_LEN:
@@ -715,9 +716,13 @@ class TelegramNotifier:
 
             # Re-truncate with aggressive limits
             if len(error) > per_field_budget:
-                error = error[:per_field_budget - 3] + "..."
+                # Remove existing ellipsis if present to avoid "..."..."
+                error_clean = error.rstrip('.') if error.endswith('...') else error
+                error = error_clean[:per_field_budget - 3] + "..."
             if len(context) > per_field_budget:
-                context = context[:per_field_budget - 3] + "..."
+                # Remove existing ellipsis if present to avoid "..."..."
+                context_clean = context.rstrip('.') if context.endswith('...') else context
+                context = context_clean[:per_field_budget - 3] + "..."
 
             # Rebuild message
             message = (
