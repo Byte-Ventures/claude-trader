@@ -78,6 +78,7 @@ from pathlib import Path
 from threading import Event, Lock
 from typing import Optional, Union
 
+import pandas as pd
 import structlog
 
 from config.settings import Settings, TradingMode, VetoAction, AIFailureMode, request_reload, reload_pending, reload_settings
@@ -928,7 +929,7 @@ class TradingDaemon:
         # Same candle, same direction - skip review
         return True, f"veto_cooldown (same candle, direction={signal_action})"
 
-    def _record_veto_timestamp(self, candles) -> None:
+    def _record_veto_timestamp(self, candles: pd.DataFrame) -> None:
         """
         Record veto timestamp using candle's market time instead of wall-clock time.
 
@@ -938,8 +939,6 @@ class TradingDaemon:
         Args:
             candles: DataFrame containing candle data with timestamp column
         """
-        import pandas as pd
-
         # Use candle timestamp (market time) instead of wall-clock time
         # to avoid edge cases at candle boundaries
         if not candles.empty:
