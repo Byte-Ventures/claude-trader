@@ -647,11 +647,15 @@ class TelegramNotifier:
         # (Telegram API limit is 4096, but shorter messages are more actionable)
         MAX_LEN = 500
 
+        # Calculate dedup key BEFORE truncation to avoid collision on similar errors
+        # that only differ in their middle portions
+        dedup_key = f"{error}:{context}"
+
         if len(error) > MAX_LEN:
             # For stack traces, prioritize start + end (error type at both locations)
             # For other errors, keep first 400 + last 100 to preserve error message
             # Detect Python tracebacks and JavaScript stack traces more reliably
-            if 'Traceback' in error or 'File "' in error or '\n  at ' in error:
+            if 'Traceback' in error or '  File "' in error or '\n  at ' in error:
                 error = error[:250] + "..." + error[-250:]
             else:
                 error = error[:400] + "..." + error[-100:]
@@ -668,7 +672,6 @@ class TelegramNotifier:
         )
 
         # Deduplicate error messages
-        dedup_key = f"{error}:{context}"
         if not self._should_send("error", dedup_key):
             return
 

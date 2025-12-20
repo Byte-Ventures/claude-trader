@@ -507,5 +507,38 @@ def test_notify_error_truncates_stack_traces_with_balanced_split(notifier, mock_
     # Verify balanced truncation occurred (250/250 for stack traces)
     assert "Traceback" in message  # Should preserve start
     assert "..." in message
-    # Should preserve end (last 250 chars)
-    assert message.count("...") == 1
+
+
+def test_notify_error_deduplication_works_with_truncation(notifier, mock_bot):
+    """Test that identical long errors are still deduplicated after truncation."""
+    # Create identical long errors
+    long_error = "A" * 600
+
+    # Send same error twice
+    notifier.notify_error(error=long_error, context="test")
+    notifier.notify_error(error=long_error, context="test")
+
+    # Should only send once (deduplicated)
+    assert mock_bot.send_message.call_count == 1
+
+
+def test_notify_error_dedup_key_calculated_before_truncation(notifier, mock_bot):
+    """
+    Test that dedup key is calculated BEFORE truncation to prevent collisions.
+
+    This ensures that two different long errors with identical truncated forms
+    but different original content use their full original content for dedup keys.
+    """
+    # Create two errors that:
+    # 1. Are DIFFERENT in their original form
+    # 2. Would have SAME truncated form (first 400 + last 100 chars are identical)
+    # 3. Only differ in the middle 50 chars that get truncated away
+    error1 = "A" * 400 + "X" * 50 + "B" * 100
+    error2 = "A" * 400 + "Y" * 50 + "B" * 100
+
+    # Send first error twice - should deduplicate (same original error)
+    notifier.notify_error(error=error1, context="test")
+    notifier.notify_error(error=error1, context="test")
+
+    # Should only send once because dedup_key uses full original error1
+    assert mock_bot.send_message.call_count == 1

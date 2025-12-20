@@ -1335,8 +1335,7 @@ class TradingDaemon:
                         unrealized_pnl=str(unrealized_pnl),
                         combined_loss_pct=f"{combined_loss_pct:.1f}%",
                     )
-                    # Note: Error messages are auto-truncated in notify_error() if needed.
-                    # This particular message uses fixed-format percentage which is always short.
+                    # No truncation needed - fixed-format percentage is always short
                     self.notifier.notify_error(
                         f"Combined loss {combined_loss_pct:.1f}% exceeds daily limit",
                         "Unrealized loss warning"
