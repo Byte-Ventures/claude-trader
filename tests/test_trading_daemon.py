@@ -250,6 +250,7 @@ def mock_database():
     db.get_current_position.return_value = None  # No open position
     db.get_state.return_value = None  # No saved dashboard state
     db.save_state.return_value = None  # Void method
+    db.set_state.return_value = None  # Void method (used for dashboard state)
     db.get_daily_stats.return_value = None  # No daily stats
     db.get_or_create_daily_stats.return_value = Mock(
         date=datetime.now(timezone.utc).date(),
@@ -2279,6 +2280,70 @@ def test_mark_signal_trade_executed_with_valid_id(htf_mock_settings, mock_exchan
 
                 # Verify update was called with trade_executed=True
                 mock_query.update.assert_called_once_with({"trade_executed": True})
+
+
+def test_dashboard_state_includes_htf_when_mtf_enabled(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test dashboard state includes HTF bias data when MTF is enabled."""
+    # Track calls to set_state
+    set_state_calls = []
+    mock_database.set_state = Mock(side_effect=lambda key, value: set_state_calls.append((key, value)))
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Mock HTF methods to return known values
+                daemon._get_htf_bias = Mock(return_value=("bullish", "bullish", "bullish"))
+
+                # Run one trading iteration
+                daemon._trading_iteration()
+
+                # Find dashboard_state call
+                dashboard_calls = [call for call in set_state_calls if call[0] == "dashboard_state"]
+                assert len(dashboard_calls) > 0, "dashboard_state should be set"
+
+                dashboard_state = dashboard_calls[0][1]
+
+                # Verify htf_bias field exists and has correct structure
+                assert "htf_bias" in dashboard_state, "htf_bias field should exist when MTF enabled"
+                assert dashboard_state["htf_bias"] is not None, "htf_bias should not be None"
+                assert "daily_trend" in dashboard_state["htf_bias"]
+                assert "four_hour_trend" in dashboard_state["htf_bias"]
+                assert "combined_bias" in dashboard_state["htf_bias"]
+
+                # Verify the values match what _get_htf_bias returned
+                assert dashboard_state["htf_bias"]["daily_trend"] == "bullish"
+                assert dashboard_state["htf_bias"]["four_hour_trend"] == "bullish"
+                assert dashboard_state["htf_bias"]["combined_bias"] == "bullish"
+
+
+def test_dashboard_state_excludes_htf_when_mtf_disabled(mock_settings, mock_exchange_client, mock_database):
+    """Test dashboard state excludes HTF bias data when MTF is disabled."""
+    # Ensure MTF is disabled
+    mock_settings.mtf_enabled = False
+
+    # Track calls to set_state
+    set_state_calls = []
+    mock_database.set_state = Mock(side_effect=lambda key, value: set_state_calls.append((key, value)))
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                # Run one trading iteration
+                daemon._trading_iteration()
+
+                # Find dashboard_state call
+                dashboard_calls = [call for call in set_state_calls if call[0] == "dashboard_state"]
+                assert len(dashboard_calls) > 0, "dashboard_state should be set"
+
+                dashboard_state = dashboard_calls[0][1]
+
+                # Verify htf_bias field is None when MTF disabled
+                assert "htf_bias" in dashboard_state, "htf_bias field should exist"
+                assert dashboard_state["htf_bias"] is None, "htf_bias should be None when MTF disabled"
 
 
 # ============================================================================
