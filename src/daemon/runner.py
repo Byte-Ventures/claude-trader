@@ -969,6 +969,15 @@ class TradingDaemon:
 
         Called every iteration to enable post-mortem analysis of trades.
 
+        Args:
+            signal_result: The calculated signal with scores and metadata
+            current_price: Current market price
+            htf_bias: Higher timeframe bias (bullish/bearish/neutral)
+            daily_trend: Daily trend direction
+            four_hour_trend: 4-hour trend direction
+            threshold: Signal threshold used for trading decision
+            trade_executed: Whether a trade was executed based on this signal
+
         Returns:
             The signal history record ID, or None if storage failed.
         """
