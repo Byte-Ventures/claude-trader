@@ -766,8 +766,9 @@ class Database:
                 sh_schema = result.scalar()
                 # Check if table exists and timestamp is nullable (doesn't have NOT NULL constraint)
                 if sh_schema and "timestamp DATETIME" in sh_schema and "timestamp DATETIME NOT NULL" not in sh_schema:
-                    # Begin explicit transaction for migration
-                    # SQLite auto-starts transactions, but we make it explicit for clarity
+                    # Transaction handling for migration:
+                    # SQLite implicitly begins a transaction for DDL/DML statements
+                    # We explicitly commit/rollback to ensure data integrity in this financial system
                     try:
                         # First, check if there are any NULL timestamps (there shouldn't be)
                         null_check = conn.execute(text("SELECT COUNT(*) FROM signal_history WHERE timestamp IS NULL")).scalar()
@@ -2071,33 +2072,43 @@ class Database:
             settings = get_settings()
             retention_days = settings.signal_history_retention_days
 
-        # Runtime validation for retention_days parameter
+        # Runtime validation (config validation at ge=1, le=365 already enforces this
+        # for default value, but explicit parameter passing needs validation)
         if retention_days < 1 or retention_days > 365:
             raise ValueError("retention_days must be between 1 and 365")
 
         cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
         with self.session() as session:
-            # Build query with filters that utilize composite indexes for performance
-            # Index usage:
-            # - When is_paper=None: Uses ix_signal_history_timestamp (single-column index)
-            # - When is_paper specified: Uses ix_signal_history_paper_timestamp (is_paper, timestamp)
-            # SQLite's query optimizer will automatically select the appropriate index
-            query = session.query(SignalHistory)
-            if is_paper is not None:
-                query = query.filter(SignalHistory.is_paper == is_paper)
-            query = query.filter(SignalHistory.timestamp < cutoff)
+            try:
+                # Build query with filters that utilize composite indexes for performance
+                # Index usage:
+                # - When is_paper=None: Uses ix_signal_history_timestamp (single-column index)
+                # - When is_paper specified: Uses ix_signal_history_paper_timestamp (is_paper, timestamp)
+                # SQLite's query optimizer will automatically select the appropriate index
+                query = session.query(SignalHistory)
+                if is_paper is not None:
+                    query = query.filter(SignalHistory.is_paper == is_paper)
+                query = query.filter(SignalHistory.timestamp < cutoff)
 
-            # Delete old records
-            deleted_count = query.delete(synchronize_session=False)
-            session.commit()  # Explicit commit for clarity in financial system
+                # Delete old records
+                deleted_count = query.delete(synchronize_session=False)
+                session.commit()  # Explicit commit for clarity in financial system
 
-            if deleted_count > 0:
-                logger.info(
-                    "signal_history_cleanup",
-                    deleted=deleted_count,
+                if deleted_count > 0:
+                    logger.info(
+                        "signal_history_cleanup",
+                        deleted=deleted_count,
+                        retention_days=retention_days,
+                        cutoff=cutoff.isoformat(),
+                        is_paper=is_paper,
+                    )
+                return deleted_count
+            except Exception as e:
+                logger.error(
+                    "signal_history_cleanup_failed",
+                    error=str(e),
                     retention_days=retention_days,
-                    cutoff=cutoff.isoformat(),
-                    is_paper=is_paper,
+                    is_paper=is_paper
                 )
-            return deleted_count
+                raise
