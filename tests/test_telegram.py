@@ -542,3 +542,33 @@ def test_notify_error_dedup_key_calculated_before_truncation(notifier, mock_bot)
 
     # Should only send once because dedup_key uses full original error1
     assert mock_bot.send_message.call_count == 1
+
+
+def test_notify_error_false_positive_stack_trace_detection(notifier, mock_bot):
+    """
+    Test that regular error messages containing File keyword are NOT treated as stack traces.
+
+    False positives should use 400/100 truncation instead of 250/250 balanced split.
+    """
+    # Create an error message that contains "File" but is NOT a stack trace
+    # Example: "Cannot open File config.json not found"
+    # This should NOT be detected as a stack trace and should use 400/100 truncation
+    false_positive_error = (
+        "Cannot open File config.json not found. " +
+        "X" * 600  # Make it long enough to trigger truncation
+    )
+
+    notifier.notify_error(error=false_positive_error, context="Test")
+
+    mock_bot.send_message.assert_called()
+    call_args = mock_bot.send_message.call_args
+    message = call_args.kwargs.get("text", call_args.args[1] if len(call_args.args) > 1 else "")
+
+    # Should use 400/100 truncation (not 250/250 for stack traces)
+    # The beginning should be preserved (first 400 chars)
+    assert "Cannot open File config.json not found." in message
+    # Should have truncation indicator
+    assert "..." in message
+    # Verify it's treating this as regular error (400/100), not stack trace (250/250)
+    # If it were 250/250, we'd lose more of the beginning
+    assert message.count("X") > 50  # Should have many X's from the beginning preserved

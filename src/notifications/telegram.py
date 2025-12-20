@@ -655,8 +655,14 @@ class TelegramNotifier:
         if len(error) > MAX_LEN:
             # For stack traces, prioritize start + end (error type at both locations)
             # For other errors, keep first 400 + last 100 to preserve error message
-            # Detect Python tracebacks and JavaScript stack traces more reliably
-            if 'Traceback' in error or '\n  File "' in error or '\n  at ' in error:
+            # Detect Python tracebacks (Traceback + File + line) and JavaScript stack traces (at + line)
+            # This ensures we only treat actual stack traces as such, not regular error messages
+            # that happen to contain keywords like "File" or "at"
+            is_stack_trace = (
+                ('Traceback' in error and '\n  File "' in error and ', line ' in error) or  # Python
+                ('\n  at ' in error and ':' in error)  # JavaScript
+            )
+            if is_stack_trace:
                 error = error[:250] + "..." + error[-250:]
             else:
                 error = error[:400] + "..." + error[-100:]
@@ -664,7 +670,11 @@ class TelegramNotifier:
         if len(context) > MAX_LEN:
             # Apply same smart truncation to context - balanced split for stack traces,
             # preserve beginning for regular text (usually more relevant)
-            if 'Traceback' in context or '\n  File "' in context or '\n  at ' in context:
+            is_context_stack_trace = (
+                ('Traceback' in context and '\n  File "' in context and ', line ' in context) or  # Python
+                ('\n  at ' in context and ':' in context)  # JavaScript
+            )
+            if is_context_stack_trace:
                 context = context[:250] + "..." + context[-250:]
             else:
                 context = context[:400] + "..." + context[-100:]
