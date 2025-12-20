@@ -11,8 +11,14 @@
 
 set -e
 
-# Default database path
-DB_PATH="${1:-data/trading.db}"
+# Check if sqlite3 is installed
+if ! command -v sqlite3 &> /dev/null; then
+    echo "Error: sqlite3 command not found. Install with: sudo apt-get install sqlite3"
+    exit 1
+fi
+
+# Default database path with absolute path resolution
+DB_PATH="$(readlink -f "${1:-data/trading.db}")"
 
 # Check if database file exists
 if [ ! -f "$DB_PATH" ]; then
