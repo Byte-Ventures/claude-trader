@@ -33,6 +33,9 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+# Pre-compiled regex patterns for stack trace detection (performance optimization)
+_PYTHON_STACK_TRACE_PATTERN = re.compile(r'\n  File ".*", line \d+')
+_JS_STACK_TRACE_PATTERN = re.compile(r'\n\s+at ')
 
 # Default cooldown periods for different message types (seconds)
 # These prevent spam - same message won't repeat within cooldown period
@@ -666,70 +669,71 @@ class TelegramNotifier:
         if from_end:
             # Truncate from end
             candidate = text[-max_len:]
-            # Encode and decode to clean up any broken unicode characters at boundaries
-            # errors='ignore' removes broken characters, then decode back to string
-            return candidate.encode('utf-8', errors='ignore').decode('utf-8')
         else:
             # Truncate from start
             candidate = text[:max_len]
-            # Encode and decode to clean up any broken unicode characters at boundaries
-            return candidate.encode('utf-8', errors='ignore').decode('utf-8')
+
+        # Only encode/decode if string contains non-ASCII characters (performance optimization)
+        if candidate.isascii():
+            return candidate
+        # Encode and decode to clean up any broken unicode characters at boundaries
+        # errors='ignore' removes broken characters, then decode back to string
+        return candidate.encode('utf-8', errors='ignore').decode('utf-8')
+
+    def _truncate_message_field(self, text: str, max_len: int) -> str:
+        """
+        Truncate error/context field with smart stack trace detection.
+
+        For stack traces: preserves start + end (250 + ... + 250)
+        For regular text: preserves beginning (400 + ... + 100)
+
+        Args:
+            text: Text to truncate
+            max_len: Maximum length (typically MAX_ERROR_MSG_LENGTH = 500)
+
+        Returns:
+            Truncated text (may be up to max_len + ELLIPSIS_LEN = 503 chars)
+        """
+        if len(text) <= max_len:
+            return text
+
+        # Log full text for debugging before truncation
+        logger.debug(f"Truncating long message field ({len(text)} chars)",
+                    text_preview=text[:100])
+
+        # Early exit check - if neither keyword present, skip expensive regex
+        is_stack_trace = False
+        if 'Traceback' in text or 'File "' in text or ' at ' in text:
+            # For stack traces, prioritize start + end (error type at both locations)
+            # For other errors, keep first 400 + last 100 to preserve error message
+            # Improved detection to handle edge cases:
+            # - Multiple consecutive frames indicate stack trace
+            # - Partial stack traces (middle section only)
+            # - Python tracebacks and JavaScript stack traces
+            # Use pre-compiled regex for performance and better accuracy
+            is_stack_trace = (
+                len(_PYTHON_STACK_TRACE_PATTERN.findall(text)) >= 2 or  # Multiple Python frames with line numbers
+                len(_JS_STACK_TRACE_PATTERN.findall(text)) >= 2 or      # Multiple JavaScript frames
+                ('Traceback' in text and 'File "' in text)              # Single frame Python
+            )
+        if is_stack_trace:
+            return self._safe_truncate(text, 250) + self.ELLIPSIS + self._safe_truncate(text, 250, from_end=True)
+        else:
+            return self._safe_truncate(text, 400) + self.ELLIPSIS + self._safe_truncate(text, 100, from_end=True)
 
     def notify_error(self, error: str, context: str = "") -> None:
         """Send notification for system error."""
         MAX_LEN = self.MAX_ERROR_MSG_LENGTH
 
-        # Calculate dedup key BEFORE truncation using full error text.
-        # This ensures deduplication is based on the complete error, preventing
-        # false collisions when different errors have identical truncated forms.
-        # Example: Two 600-char errors with different endings would both truncate
-        # to the same first 500 chars, but have different dedup keys based on full text.
+        # Truncate error and context fields
+        error = self._truncate_message_field(error, MAX_LEN)
+        context = self._truncate_message_field(context, MAX_LEN)
+
+        # Calculate dedup key AFTER truncation using truncated error text.
+        # This ensures deduplication is based on what the user actually sees.
+        # If two different long errors have identical truncated forms, they will
+        # be deduplicated, preventing duplicate notifications with identical visible content.
         dedup_key = f"{error}:{context}"
-
-        if len(error) > MAX_LEN:
-            # Log full error for debugging before truncation
-            logger.debug(f"Truncating long error message ({len(error)} chars)",
-                        error_preview=error[:100])
-
-            # Early exit check - if neither keyword present, skip expensive regex
-            is_stack_trace = False
-            if 'Traceback' in error or 'File "' in error or ' at ' in error:
-                # For stack traces, prioritize start + end (error type at both locations)
-                # For other errors, keep first 400 + last 100 to preserve error message
-                # Improved detection to handle edge cases:
-                # - Multiple consecutive frames indicate stack trace
-                # - Partial stack traces (middle section only)
-                # - Python tracebacks and JavaScript stack traces
-                # Use regex for flexible indentation matching (handles varying spaces/tabs)
-                is_stack_trace = (
-                    len(re.findall(r'\n\s+File "', error)) >= 2 or  # Multiple Python frames (flexible indentation)
-                    len(re.findall(r'\n\s+at ', error)) >= 2 or      # Multiple JavaScript frames (flexible indentation)
-                    ('Traceback' in error and 'File "' in error)  # Single frame Python
-                )
-            if is_stack_trace:
-                error = self._safe_truncate(error, 250) + self.ELLIPSIS + self._safe_truncate(error, 250, from_end=True)
-            else:
-                error = self._safe_truncate(error, 400) + self.ELLIPSIS + self._safe_truncate(error, 100, from_end=True)
-
-        if len(context) > MAX_LEN:
-            # Log full context for debugging before truncation
-            logger.debug(f"Truncating long context message ({len(context)} chars)",
-                        context_preview=context[:100])
-
-            # Early exit check - if neither keyword present, skip expensive regex
-            is_context_stack_trace = False
-            if 'Traceback' in context or 'File "' in context or ' at ' in context:
-                # Apply same smart truncation to context - balanced split for stack traces,
-                # preserve beginning for regular text (usually more relevant)
-                is_context_stack_trace = (
-                    len(re.findall(r'\n\s+File "', context)) >= 2 or  # Multiple Python frames (flexible indentation)
-                    len(re.findall(r'\n\s+at ', context)) >= 2 or      # Multiple JavaScript frames (flexible indentation)
-                    ('Traceback' in context and 'File "' in context)  # Single frame Python
-                )
-            if is_context_stack_trace:
-                context = self._safe_truncate(context, 250) + self.ELLIPSIS + self._safe_truncate(context, 250, from_end=True)
-            else:
-                context = self._safe_truncate(context, 400) + self.ELLIPSIS + self._safe_truncate(context, 100, from_end=True)
 
         message = (
             f"❌ <b>System Error</b>\n\n"
@@ -757,11 +761,19 @@ class TelegramNotifier:
             if len(error) > per_field_budget:
                 # Remove existing ellipsis if present to avoid "..."..."
                 error_clean = error[:-self.ELLIPSIS_LEN] if error.endswith(self.ELLIPSIS) else error
-                error = self._safe_truncate(error_clean, per_field_budget - self.ELLIPSIS_LEN) + self.ELLIPSIS
+                # Only add ellipsis if we actually truncated
+                if len(error_clean) > per_field_budget - self.ELLIPSIS_LEN:
+                    error = self._safe_truncate(error_clean, per_field_budget - self.ELLIPSIS_LEN) + self.ELLIPSIS
+                else:
+                    error = error_clean
             if len(context) > per_field_budget:
                 # Remove existing ellipsis if present to avoid "..."..."
                 context_clean = context[:-self.ELLIPSIS_LEN] if context.endswith(self.ELLIPSIS) else context
-                context = self._safe_truncate(context_clean, per_field_budget - self.ELLIPSIS_LEN) + self.ELLIPSIS
+                # Only add ellipsis if we actually truncated
+                if len(context_clean) > per_field_budget - self.ELLIPSIS_LEN:
+                    context = self._safe_truncate(context_clean, per_field_budget - self.ELLIPSIS_LEN) + self.ELLIPSIS
+                else:
+                    context = context_clean
 
             # Rebuild message
             message = (
