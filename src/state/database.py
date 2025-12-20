@@ -41,6 +41,8 @@ from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 import structlog
 
+from config.settings import get_settings
+
 logger = structlog.get_logger(__name__)
 
 Base = declarative_base()
@@ -824,10 +826,10 @@ class Database:
                         FROM signal_history_old
                     """))
                     conn.execute(text("DROP TABLE signal_history_old"))
-                    # Recreate indexes
-                    conn.execute(text("CREATE INDEX ix_signal_history_timestamp ON signal_history (timestamp)"))
-                    conn.execute(text("CREATE INDEX ix_signal_history_paper_timestamp ON signal_history (is_paper, timestamp)"))
-                    conn.execute(text("CREATE INDEX ix_signal_history_symbol_paper_time ON signal_history (symbol, is_paper, timestamp)"))
+                    # Recreate indexes (IF NOT EXISTS for idempotency)
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_signal_history_timestamp ON signal_history (timestamp)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_signal_history_paper_timestamp ON signal_history (is_paper, timestamp)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_signal_history_symbol_paper_time ON signal_history (symbol, is_paper, timestamp)"))
                     conn.commit()
                     logger.info("migrated_signal_history_timestamp_not_null")
             except Exception as e:
@@ -2045,9 +2047,10 @@ class Database:
                 sqlite3 data/trading.db "VACUUM;"
             This is especially important after the first cleanup on large databases.
         """
-        # Use default value if not explicitly provided
+        # Use default value from config if not explicitly provided
         if retention_days is None:
-            retention_days = 90  # Default: 90 days (matches SIGNAL_HISTORY_RETENTION_DAYS in settings)
+            settings = get_settings()
+            retention_days = settings.signal_history_retention_days
 
         # Runtime validation for retention_days parameter
         if retention_days < 1 or retention_days > 365:
@@ -2056,33 +2059,22 @@ class Database:
         cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
         with self.session() as session:
-            try:
-                # Build query with optimal filter ordering for index usage
-                # Filter by is_paper first to leverage ix_signal_history_paper_timestamp
-                query = session.query(SignalHistory)
-                if is_paper is not None:
-                    query = query.filter(SignalHistory.is_paper == is_paper)
-                query = query.filter(SignalHistory.timestamp < cutoff)
+            # Build query with optimal filter ordering for index usage
+            # Filter by is_paper first to leverage ix_signal_history_paper_timestamp
+            query = session.query(SignalHistory)
+            if is_paper is not None:
+                query = query.filter(SignalHistory.is_paper == is_paper)
+            query = query.filter(SignalHistory.timestamp < cutoff)
 
-                # Delete old records
-                deleted_count = query.delete(synchronize_session=False)
-                session.commit()  # Always commit - explicit transaction boundary
-                if deleted_count > 0:
-                    logger.info(
-                        "signal_history_cleanup",
-                        deleted=deleted_count,
-                        retention_days=retention_days,
-                        cutoff=cutoff.isoformat(),
-                        is_paper=is_paper,
-                    )
-                return deleted_count
+            # Delete old records
+            deleted_count = query.delete(synchronize_session=False)
 
-            except Exception as e:
-                session.rollback()  # Explicit rollback for financial system integrity
-                logger.error(
-                    "signal_history_cleanup_failed",
-                    error=str(e),
+            if deleted_count > 0:
+                logger.info(
+                    "signal_history_cleanup",
+                    deleted=deleted_count,
                     retention_days=retention_days,
+                    cutoff=cutoff.isoformat(),
                     is_paper=is_paper,
                 )
-                raise  # Re-raise after logging for visibility
+            return deleted_count
