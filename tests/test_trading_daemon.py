@@ -28,6 +28,21 @@ from src.strategy.signal_scorer import SignalResult, IndicatorValues
 
 
 # ============================================================================
+# Helper Functions
+# ============================================================================
+
+def assert_candle_limit(call_args, expected_limit):
+    """
+    Assert that get_candles was called with the expected limit.
+
+    Handles both positional and keyword argument calling patterns.
+    """
+    args, kwargs = call_args
+    actual = kwargs.get('limit') or (args[2] if len(args) >= 3 else None)
+    assert actual == expected_limit, f"Expected limit={expected_limit}, got args={args}, kwargs={kwargs}"
+
+
+# ============================================================================
 # Fixtures - Mocked Components
 # ============================================================================
 
@@ -1983,10 +1998,8 @@ def test_get_timeframe_trend_uses_correct_candle_limits(htf_mock_settings, mock_
                 # Test ONE_DAY uses mtf_daily_candle_limit (50)
                 daemon._get_timeframe_trend("ONE_DAY", 60)
                 # Verify get_candles was called with correct limit
-                # call_args is a tuple: (args, kwargs) or just args for positional-only
+                assert_candle_limit(mock_exchange_client.get_candles.call_args, 50)
                 args, kwargs = mock_exchange_client.get_candles.call_args
-                assert kwargs.get('limit') == 50 or (len(args) >= 3 and args[2] == 50), \
-                    f"Expected limit=50, got args={args}, kwargs={kwargs}"
                 assert kwargs.get('granularity') == "ONE_DAY" or (len(args) >= 2 and args[1] == "ONE_DAY")
 
                 # Reset mock
@@ -1998,9 +2011,8 @@ def test_get_timeframe_trend_uses_correct_candle_limits(htf_mock_settings, mock_
                 # Test FOUR_HOUR uses mtf_4h_candle_limit (84)
                 daemon._get_timeframe_trend("FOUR_HOUR", 30)
                 # Verify get_candles was called with correct limit
+                assert_candle_limit(mock_exchange_client.get_candles.call_args, 84)
                 args, kwargs = mock_exchange_client.get_candles.call_args
-                assert kwargs.get('limit') == 84 or (len(args) >= 3 and args[2] == 84), \
-                    f"Expected limit=84, got args={args}, kwargs={kwargs}"
                 assert kwargs.get('granularity') == "FOUR_HOUR" or (len(args) >= 2 and args[1] == "FOUR_HOUR")
 
 

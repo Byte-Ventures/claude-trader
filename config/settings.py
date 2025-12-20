@@ -661,13 +661,13 @@ class Settings(BaseSettings):
     # recent price action with finer granularity while keeping API/memory usage reasonable.
     mtf_daily_candle_limit: int = Field(
         default=50,
-        ge=26,  # Conservative minimum - actual minimum depends on indicator settings (see validate_mtf_candle_limits)
+        ge=26,  # Conservative default minimum (26 = default MACD slow). Actual minimum validated against max(ema_slow, bollinger_period, macd_slow)
         le=100,  # ~14 weeks - longer periods dilute trend signals in crypto
         description="Candles for daily trend analysis (50 = ~7 weeks, must be >= longest indicator period)"
     )
     mtf_4h_candle_limit: int = Field(
         default=84,
-        ge=26,  # Conservative minimum - actual minimum depends on indicator settings (see validate_mtf_candle_limits)
+        ge=26,  # Conservative default minimum (26 = default MACD slow). Actual minimum validated against max(ema_slow, bollinger_period, macd_slow)
         le=200,  # ~33 days - finer granularity captures recent price action
         description="Candles for 4H trend analysis (84 = 14 days, must be >= longest indicator period)"
     )
