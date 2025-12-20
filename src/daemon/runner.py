@@ -1442,20 +1442,8 @@ class TradingDaemon:
                         category=sentiment_category,
                         value=sentiment.value,
                     )
-                    # Track if we were previously in alert state
-                    threshold = self.settings.sentiment_failure_alert_threshold
-                    was_in_alert_state = self._sentiment_fetch_failures >= threshold
-
-                    # Reset failure counter on success
-                    self._sentiment_fetch_failures = 0
-                    self._last_sentiment_fetch_success = datetime.now(timezone.utc)
-
-                    # Notify recovery if we were previously failing
-                    if was_in_alert_state:
-                        self.notifier.notify_info(
-                            "Sentiment API has recovered. Extreme fear override is now active.",
-                            "Sentiment API Recovery"
-                        )
+                    # Record success and handle recovery notification
+                    self._record_sentiment_success()
                 else:
                     logger.warning(
                         "sentiment_unavailable_for_trade_evaluation",
@@ -3270,6 +3258,34 @@ class TradingDaemon:
                 "Sentiment Fetch Failure Alert"
             )
 
+    def _record_sentiment_success(self) -> None:
+        """Record successful sentiment fetch and notify recovery if needed.
+
+        This method:
+        1. Checks if we were previously in an alert state
+        2. Resets the failure counter
+        3. Updates the last success timestamp
+        4. Notifies recovery if we were previously failing
+
+        NOTE: This is called from both _trading_iteration() and _check_hourly_analysis().
+        Both code paths share the same failure counter, so "consecutive failures" means
+        consecutive attempts across all contexts (trading + dashboard), not per-context.
+        This is intentional - we want to know about API health globally.
+        """
+        threshold = self.settings.sentiment_failure_alert_threshold
+        was_in_alert_state = self._sentiment_fetch_failures >= threshold
+
+        # Reset failure counter on success
+        self._sentiment_fetch_failures = 0
+        self._last_sentiment_fetch_success = datetime.now(timezone.utc)
+
+        # Notify recovery if we were previously failing
+        if was_in_alert_state:
+            self.notifier.notify_info(
+                "Sentiment API has recovered. Extreme fear override is now active.",
+                "Sentiment API Recovery"
+            )
+
     def _check_daily_report(self) -> None:
         """Check if we should generate daily performance report (UTC)."""
         today = datetime.now(timezone.utc).date()
@@ -3549,20 +3565,8 @@ class TradingDaemon:
                     if sentiment_result and sentiment_result.value:
                         sentiment_value = sentiment_result.value
                         sentiment_class = sentiment_result.classification or "Unknown"
-                        # Track if we were previously in alert state
-                        threshold = self.settings.sentiment_failure_alert_threshold
-                        was_in_alert_state = self._sentiment_fetch_failures >= threshold
-
-                        # Reset failure counter on success
-                        self._sentiment_fetch_failures = 0
-                        self._last_sentiment_fetch_success = datetime.now(timezone.utc)
-
-                        # Notify recovery if we were previously failing
-                        if was_in_alert_state:
-                            self.notifier.notify_info(
-                                "Sentiment API has recovered. Extreme fear override is now active.",
-                                "Sentiment API Recovery"
-                            )
+                        # Record success and handle recovery notification
+                        self._record_sentiment_success()
                     else:
                         logger.warning(
                             "sentiment_unavailable_for_dashboard",

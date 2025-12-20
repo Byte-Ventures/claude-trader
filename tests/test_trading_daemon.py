@@ -3827,3 +3827,70 @@ class TestSentimentFailureTracking:
 
         # Alert should still be sent
         daemon_with_sentiment.notifier.notify_error.assert_called_once()
+
+    def test_recovery_notification_after_alert(self, daemon_with_sentiment):
+        """Test recovery notification is sent when API recovers after alert."""
+        threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
+
+        # Simulate alert state (at exactly threshold)
+        daemon_with_sentiment._sentiment_fetch_failures = threshold
+
+        # Trigger recovery
+        daemon_with_sentiment._record_sentiment_success()
+
+        # Verify recovery notification sent
+        daemon_with_sentiment.notifier.notify_info.assert_called_once()
+        call_args = daemon_with_sentiment.notifier.notify_info.call_args
+        assert "recovered" in call_args[0][0].lower()
+        assert "Sentiment API Recovery" == call_args[0][1]
+
+        # Verify counter was reset
+        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+
+    def test_recovery_notification_after_alert_plus_failures(self, daemon_with_sentiment):
+        """Test recovery notification is sent when API recovers after threshold+N failures."""
+        threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
+
+        # Simulate alert state (threshold + 5 failures)
+        daemon_with_sentiment._sentiment_fetch_failures = threshold + 5
+
+        # Trigger recovery
+        daemon_with_sentiment._record_sentiment_success()
+
+        # Verify recovery notification sent even with extra failures
+        daemon_with_sentiment.notifier.notify_info.assert_called_once()
+        call_args = daemon_with_sentiment.notifier.notify_info.call_args
+        assert "recovered" in call_args[0][0].lower()
+
+        # Verify counter was reset
+        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+
+    def test_no_recovery_notification_when_not_in_alert(self, daemon_with_sentiment):
+        """Test recovery notification is NOT sent on normal success (not in alert state)."""
+        threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
+
+        # Simulate normal operation (below threshold)
+        daemon_with_sentiment._sentiment_fetch_failures = threshold - 1
+
+        # Trigger success
+        daemon_with_sentiment._record_sentiment_success()
+
+        # Verify NO recovery notification sent
+        daemon_with_sentiment.notifier.notify_info.assert_not_called()
+
+        # Verify counter was still reset
+        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+
+    def test_no_recovery_notification_on_first_success(self, daemon_with_sentiment):
+        """Test recovery notification is NOT sent when starting fresh (0 failures)."""
+        # Initial state (no failures)
+        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+
+        # Trigger success
+        daemon_with_sentiment._record_sentiment_success()
+
+        # Verify NO recovery notification sent
+        daemon_with_sentiment.notifier.notify_info.assert_not_called()
+
+        # Verify counter remains at 0
+        assert daemon_with_sentiment._sentiment_fetch_failures == 0
