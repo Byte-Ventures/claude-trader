@@ -108,10 +108,10 @@ Multi-timeframe confirmation using Daily + 4-Hour trends to reduce false signals
 - Signal history table (`signal_history`) stores every signal for post-mortem analysis
 
 **Why 4H instead of 6H for MTF?**
-- FOUR_HOUR provides more frequent data points (6 candles/day vs 4 for 6H)
-- More responsive to intraday trend shifts while still filtering hourly noise
+- FOUR_HOUR provides 6 candles/day vs 4 for SIX_HOUR
+- More responsive to intraday trend shifts (trade-off: potentially more noise vs the greater stability of 6H)
+- Balances between daily stability and hourly responsiveness
 - Provides good intermediate timeframe between daily and hourly trading
-- Both 4H and 6H are supported by major exchanges (Coinbase, Kraken)
 
 Note: The multi-timeframe (MTF) feature is hardcoded to use FOUR_HOUR in `runner.py:972`. The SIX_HOUR granularity remains available for other uses (primary trading timeframe, manual analysis, etc.) but is not used by MTF.
 
