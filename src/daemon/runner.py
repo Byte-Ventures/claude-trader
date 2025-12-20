@@ -3249,6 +3249,13 @@ class TradingDaemon:
 
             # Only alert when we first cross the threshold
             if failures_count != threshold:
+                # Log for troubleshooting when already past threshold
+                if failures_count > threshold:
+                    logger.debug(
+                        "sentiment_fetch_failures_above_threshold",
+                        consecutive_failures=failures_count,
+                        threshold=threshold,
+                    )
                 return
 
             # Read last success timestamp under lock
