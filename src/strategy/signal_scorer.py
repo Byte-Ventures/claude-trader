@@ -944,6 +944,7 @@ class SignalScorer:
             # Use round() to handle odd mtf_counter_penalty values correctly.
             half_penalty = round(self.mtf_counter_penalty / 2)
 
+            # ========== PROTECTION LAYER 3: Extreme Fear MTF Override ==========
             # EXTREME FEAR OVERRIDE: Only applies when daily/4H disagree (htf_bias=neutral)
             # When both timeframes agree, the existing aligned/counter logic already applies
             # full penalties, so no override is needed.
@@ -951,6 +952,17 @@ class SignalScorer:
             # During extreme fear conditions, when daily/4H disagree, apply FULL counter-penalty
             # based on daily trend (instead of the usual half penalty). This prevents 4H neutral
             # signals from neutralizing the more reliable daily trend during extreme conditions.
+            #
+            # Applied BEFORE:
+            #   - Layer 4: Dual-extreme blocking (in runner.py:2059)
+            #   - Layer 5: Extreme volatility stop widening (in runner.py:3579)
+            #
+            # Applied AFTER:
+            #   - Base indicator scoring (RSI, MACD, Bollinger, EMA, Volume)
+            #   - Normal MTF alignment logic
+            #
+            # Rationale: Daily timeframe is more reliable during crashes. When 4H shows
+            # neutral but daily shows bearish during extreme fear, trust the daily signal.
             if sentiment_category == "extreme_fear" and htf_daily == "bearish" and total_score > 0:
                 # Buying into bearish daily trend during extreme fear - apply FULL penalty
                 htf_adjustment = -self.mtf_counter_penalty

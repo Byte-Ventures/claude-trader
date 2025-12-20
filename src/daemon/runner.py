@@ -7,6 +7,62 @@ Orchestrates all components:
 - Order execution
 - Safety system checks
 - State persistence
+
+MARKET PROTECTION LAYERS (applied in this order):
+
+1. REGIME THRESHOLD ADJUSTMENTS (MarketRegime.calculate)
+   - Modifies signal threshold based on sentiment/volatility/trend
+   - Example: Extreme fear + bearish trend → threshold +10
+   - Applied: Before action determination (line ~1687)
+   - See: src/strategy/regime.py
+
+2. REGIME POSITION SIZING (MarketRegime.calculate)
+   - Multiplier applied to position size (0.7x to 1.3x)
+   - Example: Extreme volatility → 0.8x position size
+   - Applied: In safety_multiplier calculation (line ~2035)
+   - See: src/strategy/regime.py
+
+3. EXTREME FEAR MTF OVERRIDE (SignalScorer.calculate_score)
+   - Full counter-penalty when daily/4H disagree during extreme fear
+   - Prevents 4H neutral from overriding bearish daily during crashes
+   - Applied: During signal score calculation (line ~755)
+   - See: src/strategy/signal_scorer.py:755
+
+4. DUAL-EXTREME BLOCKING (_trading_iteration)
+   - Blocks buys when sentiment=extreme_fear AND volatility=extreme
+   - Applied: AFTER signal calculation, BEFORE order execution (line ~2059)
+   - See: Block check at line ~2059
+
+5. EXTREME VOLATILITY STOP WIDENING (_create_trailing_stop)
+   - 2.0x ATR stops vs 1.5x during extreme volatility
+   - Applied: During stop loss calculation (line ~3579)
+   - See: Stop creation at line ~3579
+
+MULTIPLIER STACKING:
+final_position = base_size * regime_mult * throttle_mult * ai_veto_mult * safety_mult
+
+EXAMPLE INTERACTION: All layers active
+
+Scenario: Extreme fear (20) + extreme volatility during bear market
+
+Layer 1 (Threshold): +10 points (harder to buy)
+  - Signal must be 65 instead of 55
+
+Layer 2 (Position): 0.7x multiplier
+  - $100 normal position → $70
+
+Layer 3 (MTF): -30 point penalty (full, not -15)
+  - Signal score reduced more aggressively
+
+Layer 4 (Blocking): BLOCKS the trade entirely
+  - Dual-extreme condition detected
+  - Trade rejected before execution
+
+Layer 5 (Stops): 2.0x ATR (would apply if Layer 4 didn't block)
+  - Wider stops to handle volatility
+
+Net effect: Trade blocked. If it weren't blocked, position would be
+70% of normal size with wider stops.
 """
 
 import asyncio
@@ -1779,7 +1835,24 @@ class TradingDaemon:
             except Exception as e:
                 logger.warning("weight_profile_update_failed", error=str(e))
 
-        # Apply regime and AI threshold adjustments to determine effective action
+        # ========== PROTECTION LAYER 1: Regime Threshold Adjustments ==========
+        # Apply regime-based threshold adjustments to determine effective action
+        # Modifies signal threshold based on sentiment/volatility/trend.
+        #
+        # Examples:
+        #   - Extreme fear + bearish trend → threshold +10 (harder to buy)
+        #   - Extreme greed + bullish trend → threshold +10 (harder to buy)
+        #   - High volatility → threshold +5 (require stronger signals)
+        #
+        # Applied BEFORE:
+        #   - Action determination (buy/sell/hold decision)
+        #   - Layer 4: Dual-extreme blocking (line ~2059)
+        #
+        # Applied AFTER:
+        #   - Signal score calculation (signal_scorer.calculate_score)
+        #   - Layer 3: Extreme fear MTF override (signal_scorer.py:755)
+        #
+        # See: src/strategy/regime.py for calculation logic
         base_threshold = self.settings.signal_threshold + regime.threshold_adjustment
         ai_buy_adj = self._get_ai_threshold_adjustment("buy")
         ai_sell_adj = self._get_ai_threshold_adjustment("sell")
@@ -2164,11 +2237,45 @@ class TradingDaemon:
             )
             return
 
+        # ========== PROTECTION LAYER 2: Regime Position Sizing ==========
         # Get safety multiplier (including Claude veto and regime adjustments)
+        # Multiplier applied to position size based on market conditions.
+        #
+        # Examples:
+        #   - Extreme volatility → 0.8x position size
+        #   - Extreme fear → 0.7x position size (more conservative)
+        #   - Extreme greed → 1.0x position size (neutral)
+        #   - Optimal conditions → 1.3x position size (more aggressive)
+        #
+        # Applied AFTER:
+        #   - Layer 1: Regime threshold adjustments (line ~1687)
+        #   - Action determination (buy/sell decision)
+        #
+        # Applied BEFORE:
+        #   - Layer 4: Dual-extreme blocking (line ~2059)
+        #   - Order execution
+        #
+        # Final position calculation:
+        #   final_position = base_size * regime_mult * throttle_mult * ai_veto_mult * safety_mult
+        #
+        # See: src/strategy/regime.py for multiplier calculation logic
         safety_multiplier = self.validator.get_position_multiplier() * claude_veto_multiplier * regime.position_multiplier
 
+        # ========== PROTECTION LAYER 4: Dual-Extreme Blocking ==========
         # Check for dual-extreme conditions before attempting any buy
         # Post-mortem #135: These conditions create unfavorable risk/reward for entries
+        #
+        # Applied AFTER:
+        #   - Layer 1: Regime threshold adjustments (line ~1687)
+        #   - Layer 2: Regime position sizing (included in safety_multiplier above)
+        #   - Layer 3: Extreme fear MTF override (in signal_scorer.py:755)
+        #
+        # Applied BEFORE:
+        #   - Order execution
+        #
+        # Rationale: Extreme fear + extreme volatility = unfavorable R:R ratio
+        # Even if signal is strong, entry during dual-extreme conditions often
+        # results in being stopped out during continued volatility/panic selling.
         if (
             effective_action == "buy"
             and self.settings.block_trades_extreme_conditions
@@ -3846,8 +3953,14 @@ class TradingDaemon:
             # Use the LARGER of ATR-based distance or minimum percentage distance
             # This ensures stop is never too tight on low-volatility timeframes
             #
-            # During extreme volatility, use wider stop multiplier to avoid
-            # being stopped out by normal price fluctuations
+            # ========== PROTECTION LAYER 5: Extreme Volatility Stop Widening ==========
+            # During extreme volatility, use wider stop multiplier (2.0x vs 1.5x ATR)
+            # to avoid being stopped out by normal price fluctuations.
+            #
+            # Multiplier: 1.5x (normal) → 2.0x (extreme)
+            #
+            # Applied during position sizing calculation (position_sizer.py uses same logic)
+            # This layer works independently - widens stops regardless of other layers.
             stop_multiplier = self.settings.stop_loss_atr_multiplier
             if volatility == "extreme":
                 stop_multiplier = self.settings.stop_loss_atr_multiplier_extreme
