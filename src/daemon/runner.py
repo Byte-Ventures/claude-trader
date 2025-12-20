@@ -117,6 +117,10 @@ class TradingDaemon:
         self._daily_last_fetch: Optional[datetime] = None
         self._4h_trend: str = "neutral"
         self._4h_last_fetch: Optional[datetime] = None
+        # HTF cache performance metrics (accumulate over daemon lifetime)
+        # Note: Counters grow unbounded for long-running processes, but this is acceptable
+        # for observability purposes. With typical cache durations (minutes to hours),
+        # overflow would only occur after months of continuous operation.
         self._htf_cache_hits: int = 0
         self._htf_cache_misses: int = 0
 
@@ -890,6 +894,10 @@ class TradingDaemon:
             self._htf_cache_hits += 1
             return cached_trend
 
+        # Cache is stale or non-existent - count as cache miss
+        # We count the miss once here, regardless of fetch outcome
+        self._htf_cache_misses += 1
+
         # Select appropriate candle limit based on timeframe
         if granularity == "ONE_DAY":
             candle_limit = self.settings.mtf_daily_candle_limit
@@ -910,8 +918,6 @@ class TradingDaemon:
                 self.signal_scorer.macd_slow,
             )
             if candles is None or candles.empty or len(candles) < min_required:
-                # Count as cache miss - we attempted to fetch but got insufficient data
-                self._htf_cache_misses += 1
                 logger.warning(
                     "htf_insufficient_data",
                     timeframe=granularity,
@@ -919,9 +925,6 @@ class TradingDaemon:
                     required=min_required,
                 )
                 return cached_trend or "neutral"
-
-            # Only count as cache miss if we successfully fetched new data
-            self._htf_cache_misses += 1
 
             trend = self.signal_scorer.get_trend(candles)
 
@@ -946,15 +949,13 @@ class TradingDaemon:
         except (ConnectionError, TimeoutError, OSError, ValueError, KeyError, NotImplementedError) as e:
             # Expected failures: network issues, API errors, data parsing issues,
             # or unsupported granularity (NotImplementedError).
-            # Count as cache miss - we attempted to fetch but failed
-            self._htf_cache_misses += 1
+            # Cache miss was already counted above when we decided to fetch
             # Fail-open: return cached trend or neutral, never block trading
             logger.warning("htf_fetch_failed", timeframe=granularity, error=str(e), error_type=type(e).__name__)
             return cached_trend or "neutral"
         except Exception as e:
             # Unexpected errors - log at error level but still fail-open
-            # Count as cache miss for unexpected errors too
-            self._htf_cache_misses += 1
+            # Cache miss was already counted above when we decided to fetch
             # Financial bot should never crash due to HTF analysis failure
             logger.error("htf_fetch_unexpected_error", timeframe=granularity, error=str(e), error_type=type(e).__name__)
             return cached_trend or "neutral"

@@ -1948,6 +1948,59 @@ def test_get_timeframe_trend_caching(htf_mock_settings, mock_exchange_client, mo
                 assert daemon._htf_cache_hits == 1    # Now 1
 
 
+def test_get_timeframe_trend_cache_expiration(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test HTF cache expiration and counter accumulation over multiple refresh cycles."""
+    from datetime import datetime, timezone, timedelta
+    from unittest.mock import patch
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Mock signal scorer get_trend
+                daemon.signal_scorer.get_trend = Mock(return_value="bullish")
+
+                # Call 1: First fetch (cache miss)
+                trend1 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                assert trend1 == "bullish"
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 0
+
+                # Call 2: Within cache period (cache hit)
+                trend2 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                assert trend2 == "bullish"
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 1
+
+                # Fast-forward time to expire cache (61 minutes > 60 minute cache)
+                mock_now = datetime.now(timezone.utc) + timedelta(minutes=61)
+                with patch('src.daemon.runner.datetime') as mock_datetime:
+                    mock_datetime.now.return_value = mock_now
+                    # Need to also patch timedelta to work with mocked datetime
+                    mock_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+
+                    # Update daemon's last fetch to be 61 minutes ago
+                    daemon._daily_last_fetch = mock_now - timedelta(minutes=61)
+
+                    # Call 3: Cache expired (cache miss)
+                    daemon.signal_scorer.get_trend.return_value = "bearish"
+                    trend3 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                    assert trend3 == "bearish"
+                    assert daemon._htf_cache_misses == 2
+                    assert daemon._htf_cache_hits == 1
+
+                # Call 4: Within new cache period (cache hit)
+                trend4 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                assert trend4 == "bearish"
+                assert daemon._htf_cache_misses == 2
+                assert daemon._htf_cache_hits == 2
+
+                # Verify counters accumulated correctly over multiple cycles
+                assert daemon._htf_cache_misses == 2  # Two fetches
+                assert daemon._htf_cache_hits == 2    # Two cache hits
+
+
 def test_get_timeframe_trend_fail_open(htf_mock_settings, mock_database):
     """Test HTF trend returns neutral on API errors (fail-open)."""
     # Create client that fails on get_candles
