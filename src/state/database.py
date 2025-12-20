@@ -13,6 +13,7 @@ Tables:
 """
 
 import json
+import os
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -441,16 +442,23 @@ class Database:
         # Resolve to absolute path and validate
         db_path = db_path.resolve()
         allowed_root = (Path.cwd() / "data").resolve()
-        tmp_root = Path("/tmp").resolve()
 
+        # Check if database path is within the allowed project data directory
         try:
             db_path.relative_to(allowed_root)
         except ValueError:
-            # Allow /tmp for testing purposes
-            try:
-                db_path.relative_to(tmp_root)
-            except ValueError:
-                raise ValueError(f"Database path must be within {allowed_root} or {tmp_root}")
+            # Allow /tmp ONLY in test environments (pytest execution)
+            # This prevents production data loss from /tmp cleanup on system reboot
+            is_test_env = os.environ.get("PYTEST_CURRENT_TEST") is not None
+
+            if is_test_env:
+                tmp_root = Path("/tmp").resolve()
+                try:
+                    db_path.relative_to(tmp_root)
+                except ValueError:
+                    raise ValueError(f"Database path must be within {allowed_root}")
+            else:
+                raise ValueError(f"Database path must be within {allowed_root}")
 
         self.db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
