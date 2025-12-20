@@ -880,6 +880,8 @@ class TradingDaemon:
 
             # Validate candles before processing - need enough data for trend calculation
             if candles is None or candles.empty or len(candles) < self.signal_scorer.ema_slow_period:
+                # Count as cache miss - we attempted to fetch but got insufficient data
+                self._htf_cache_misses += 1
                 logger.warning(
                     "htf_insufficient_data",
                     timeframe=granularity,
@@ -912,11 +914,15 @@ class TradingDaemon:
         except (ConnectionError, TimeoutError, OSError, ValueError, KeyError, NotImplementedError) as e:
             # Expected failures: network issues, API errors, data parsing issues,
             # or unsupported granularity (NotImplementedError).
+            # Count as cache miss - we attempted to fetch but failed
+            self._htf_cache_misses += 1
             # Fail-open: return cached trend or neutral, never block trading
             logger.warning("htf_fetch_failed", timeframe=granularity, error=str(e), error_type=type(e).__name__)
             return cached_trend or "neutral"
         except Exception as e:
             # Unexpected errors - log at error level but still fail-open
+            # Count as cache miss for unexpected errors too
+            self._htf_cache_misses += 1
             # Financial bot should never crash due to HTF analysis failure
             logger.error("htf_fetch_unexpected_error", timeframe=granularity, error=str(e), error_type=type(e).__name__)
             return cached_trend or "neutral"

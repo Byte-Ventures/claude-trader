@@ -1952,6 +1952,42 @@ def test_get_timeframe_trend_fail_open(htf_mock_settings, mock_database):
                 trend = daemon._get_timeframe_trend("ONE_DAY", 60)
 
                 assert trend == "neutral"
+                # Verify cache miss counter incremented on error path
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 0
+
+
+def test_get_timeframe_trend_insufficient_data(htf_mock_settings, mock_database):
+    """Test HTF trend returns neutral on insufficient candle data."""
+    import pandas as pd
+
+    # Create client that returns insufficient candles
+    mock_client = Mock()
+    mock_client.get_current_price.return_value = Decimal("50000")
+    # Return only 10 candles when 50 are required (ema_slow_period)
+    mock_client.get_candles.return_value = pd.DataFrame({
+        'timestamp': range(10),
+        'close': [50000] * 10
+    })
+    mock_client.get_balance.return_value = Balance("USD", Decimal("1000"), Decimal("0"))
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                htf_mock_settings.mtf_enabled = True
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Clear any cached trend
+                daemon._daily_last_fetch = None
+                daemon._daily_trend = "neutral"
+
+                # Should return neutral when insufficient data
+                trend = daemon._get_timeframe_trend("ONE_DAY", 60)
+
+                assert trend == "neutral"
+                # Verify cache miss counter incremented on insufficient data path
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 0
 
 
 def test_invalidate_htf_cache(htf_mock_settings, mock_exchange_client, mock_database):
