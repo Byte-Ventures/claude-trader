@@ -1931,7 +1931,7 @@ class Database:
     # Signal history methods
     def cleanup_signal_history(
         self,
-        retention_days: int = 90,
+        retention_days: Optional[int] = None,
         is_paper: Optional[bool] = None,
     ) -> int:
         """
@@ -1943,33 +1943,47 @@ class Database:
 
         Args:
             retention_days: Number of days to retain (older records deleted).
-                Default is 90 days. The SIGNAL_HISTORY_RETENTION_DAYS config
-                parameter is available for reference but must be explicitly
-                passed to this method.
+                If None, uses SIGNAL_HISTORY_RETENTION_DAYS from config (default: 90).
+                Must be between 1 and 365 days.
             is_paper: Filter by paper/live mode (None = clean both)
 
         Returns:
             Number of records deleted
 
         Raises:
-            ValueError: If retention_days is less than 1
+            ValueError: If retention_days is less than 1 or greater than 365
 
         Note:
             This method must be called explicitly (e.g., via admin script or
             scheduled task). Automated cleanup from the daemon is planned for
             future implementation. This operation is safe to run during trading -
-            uses indexed timestamp column for efficient deletion. Consider running
-            during low-activity hours and following up with VACUUM for database
-            optimization.
+            uses indexed timestamp column for efficient deletion.
+
+            For large databases (1M+ records), the first cleanup may take several
+            seconds. Consider running during low-activity hours.
+
+            After cleanup, run VACUUM to reclaim disk space:
+                sqlite3 data/trading.db "VACUUM;"
+            This is especially important after the first cleanup on large databases.
         """
+        # Use config value if not explicitly provided
+        if retention_days is None:
+            retention_days = self.settings.signal_history_retention_days
+
         # Runtime validation for retention_days parameter
-        if retention_days < 1:
-            raise ValueError("retention_days must be >= 1")
+        if retention_days < 1 or retention_days > 365:
+            raise ValueError("retention_days must be between 1 and 365")
 
         cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
         with self.session() as session:
             try:
+                # Get total record count before cleanup for metrics
+                total_query = session.query(SignalHistory)
+                if is_paper is not None:
+                    total_query = total_query.filter(SignalHistory.is_paper == is_paper)
+                total_before = total_query.count()
+
                 query = session.query(SignalHistory).filter(
                     SignalHistory.timestamp < cutoff
                 )
@@ -1983,6 +1997,8 @@ class Database:
                     logger.info(
                         "signal_history_cleanup",
                         deleted=deleted_count,
+                        total_before=total_before,
+                        total_after=total_before - deleted_count,
                         retention_days=retention_days,
                         cutoff=cutoff.isoformat(),
                         is_paper=is_paper,

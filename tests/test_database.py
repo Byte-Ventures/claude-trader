@@ -2440,8 +2440,11 @@ def test_cleanup_signal_history_both_modes(db):
 
 def test_cleanup_signal_history_invalid_retention_days(db):
     """Test cleanup raises ValueError for invalid retention_days."""
-    with pytest.raises(ValueError, match="retention_days must be >= 1"):
+    with pytest.raises(ValueError, match="retention_days must be between 1 and 365"):
         db.cleanup_signal_history(retention_days=0)
 
-    with pytest.raises(ValueError, match="retention_days must be >= 1"):
+    with pytest.raises(ValueError, match="retention_days must be between 1 and 365"):
         db.cleanup_signal_history(retention_days=-10)
+
+    with pytest.raises(ValueError, match="retention_days must be between 1 and 365"):
+        db.cleanup_signal_history(retention_days=366)
