@@ -7,6 +7,62 @@ Orchestrates all components:
 - Order execution
 - Safety system checks
 - State persistence
+
+MARKET PROTECTION LAYERS (applied in this order):
+
+1. REGIME THRESHOLD ADJUSTMENTS (MarketRegime.calculate)
+   - Modifies signal threshold based on sentiment/volatility/trend
+   - Example: Extreme fear + bearish trend → threshold +10
+   - Applied: Before action determination (line ~1687)
+   - See: src/strategy/regime.py
+
+2. REGIME POSITION SIZING (MarketRegime.calculate)
+   - Multiplier applied to position size (0.7x to 1.3x)
+   - Example: Extreme volatility → 0.8x position size
+   - Applied: In safety_multiplier calculation (line ~2035)
+   - See: src/strategy/regime.py
+
+3. EXTREME FEAR MTF OVERRIDE (SignalScorer.calculate_score)
+   - Full counter-penalty when daily/4H disagree during extreme fear
+   - Prevents 4H neutral from overriding bearish daily during crashes
+   - Applied: During signal score calculation (line ~755)
+   - See: src/strategy/signal_scorer.py:755
+
+4. DUAL-EXTREME BLOCKING (_trading_iteration)
+   - Blocks buys when sentiment=extreme_fear AND volatility=extreme
+   - Applied: AFTER signal calculation, BEFORE order execution (line ~2059)
+   - See: Block check at line ~2059
+
+5. EXTREME VOLATILITY STOP WIDENING (_create_trailing_stop)
+   - 2.0x ATR stops vs 1.5x during extreme volatility
+   - Applied: During stop loss calculation (line ~3579)
+   - See: Stop creation at line ~3579
+
+MULTIPLIER STACKING:
+final_position = base_size * regime_mult * throttle_mult * ai_veto_mult * safety_mult
+
+EXAMPLE INTERACTION: All layers active
+
+Scenario: Extreme fear (20) + extreme volatility during bear market
+
+Layer 1 (Threshold): +10 points (harder to buy)
+  - Signal must be 65 instead of 55
+
+Layer 2 (Position): 0.7x multiplier
+  - $100 normal position → $70
+
+Layer 3 (MTF): -30 point penalty (full, not -15)
+  - Signal score reduced more aggressively
+
+Layer 4 (Blocking): BLOCKS the trade entirely
+  - Dual-extreme condition detected
+  - Trade rejected before execution
+
+Layer 5 (Stops): 2.0x ATR (would apply if Layer 4 didn't block)
+  - Wider stops to handle volatility
+
+Net effect: Trade blocked. If it weren't blocked, position would be
+70% of normal size with wider stops.
 """
 
 import asyncio
@@ -14,11 +70,12 @@ import math
 import signal
 import subprocess
 import time
+import traceback
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Event
+from threading import Event, Lock
 from typing import Optional, Union
 
 import structlog
@@ -35,7 +92,7 @@ from src.safety.trade_cooldown import TradeCooldown, TradeCooldownConfig
 from src.safety.validator import OrderValidator, OrderRequest, ValidatorConfig
 from sqlalchemy.exc import SQLAlchemyError
 from src.state.database import BotMode, Database, SignalHistory
-from src.strategy.signal_scorer import SignalScorer
+from src.strategy.signal_scorer import SignalScorer, SignalResult
 from src.strategy.weight_profile_selector import (
     WeightProfileSelector,
     ProfileSelectorConfig,
@@ -52,7 +109,6 @@ ASYNC_TIMEOUT_SECONDS = 120
 
 # Interval for periodic stop protection checks (seconds)
 STOP_PROTECTION_CHECK_INTERVAL_SECONDS = 300  # 5 minutes
-
 
 class TradingDaemon:
     """
@@ -116,8 +172,13 @@ class TradingDaemon:
         # Multi-Timeframe state (for HTF bias caching)
         self._daily_trend: str = "neutral"
         self._daily_last_fetch: Optional[datetime] = None
-        self._6h_trend: str = "neutral"
-        self._6h_last_fetch: Optional[datetime] = None
+        self._4h_trend: str = "neutral"
+        self._4h_last_fetch: Optional[datetime] = None
+        # HTF cache performance metrics (accumulate over daemon lifetime)
+        # Note: Counters grow unbounded, but Python ints have arbitrary precision
+        # (no overflow). Safe for 24/7 operation.
+        self._htf_cache_hits: int = 0
+        self._htf_cache_misses: int = 0
 
         # Signal history tracking for marking executed trades.
         # Thread-safety note: This is safe because TradingDaemon runs single-threaded.
@@ -126,6 +187,16 @@ class TradingDaemon:
         # iterations can occur because the main loop is synchronous.
         self._current_signal_id: Optional[int] = None
         self._signal_history_failures: int = 0  # Track consecutive storage failures
+
+        # Sentiment fetch failure tracking
+        # Thread-safety note: Lock is needed because sentiment fetches occur in both
+        # _trading_iteration() and _check_hourly_analysis(). While the main loop is
+        # synchronous, these methods could theoretically access the counter at overlapping
+        # times if async operations or future refactoring creates concurrency. The lock
+        # ensures atomic counter updates and prevents race conditions during increment/reset.
+        self._sentiment_fetch_failures: int = 0  # Track consecutive sentiment fetch failures
+        self._last_sentiment_fetch_success: Optional[datetime] = None  # Last successful fetch time
+        self._sentiment_lock = Lock()  # Protect sentiment failure counter from race conditions
 
         # Create persistent event loop for async operations (avoids repeated asyncio.run())
         self._loop = asyncio.new_event_loop()
@@ -271,7 +342,9 @@ class TradingDaemon:
                 market_research_cache_minutes=settings.market_research_cache_minutes,
                 candle_interval=settings.candle_interval,
                 signal_threshold=settings.signal_threshold,
-                max_tokens=settings.ai_max_tokens,
+                mtf_enabled=settings.mtf_enabled,
+                reviewer_max_tokens=settings.ai_reviewer_max_tokens,
+                research_max_tokens=settings.ai_research_max_tokens,
                 api_timeout=settings.ai_api_timeout,
             )
             logger.info(
@@ -386,6 +459,7 @@ class TradingDaemon:
             extreme_rsi_lower=settings.extreme_rsi_lower,
             extreme_rsi_upper=settings.extreme_rsi_upper,
             trend_filter_penalty=settings.trend_filter_penalty,
+            macd_interval_multipliers=settings.macd_interval_multipliers,
         )
 
         self.position_sizer = PositionSizer(
@@ -435,7 +509,10 @@ class TradingDaemon:
                     cache_minutes=self._get_candle_interval_minutes(),
                     fallback_profile=settings.ai_weight_fallback_profile,
                     model=settings.ai_weight_profile_model,
-                    max_tokens=settings.ai_max_tokens,
+                    # Use reviewer_max_tokens (800): weight profile responses are brief JSON
+                    # with 1-2 sentence reasoning (~50-100 tokens typical, 800 provides 8x buffer).
+                    # This is a decision-making use case (like trade reviews), not research.
+                    max_tokens=settings.ai_reviewer_max_tokens,
                 ),
             )
             # Restore last weight profile from database
@@ -562,6 +639,7 @@ class TradingDaemon:
             if bb_range > 0:
                 return (float(price) - indicators.bb_lower) / bb_range
         return None
+
 
     def _validate_trading_pair(self, trading_pair: str) -> None:
         """
@@ -742,11 +820,17 @@ class TradingDaemon:
             # Update AI recommendation TTL
             self._ai_recommendation_ttl_minutes = new_settings.ai_recommendation_ttl_minutes
 
-            # Invalidate HTF cache if MTF settings changed
-            mtf_settings = {"mtf_enabled", "mtf_4h_enabled", "mtf_candle_limit",
-                           "mtf_daily_cache_minutes", "mtf_4h_cache_minutes",
-                           "mtf_aligned_boost", "mtf_counter_penalty"}
-            if mtf_settings & set(changes.keys()):
+            # Invalidate HTF cache if MTF settings or indicator periods changed
+            # Indicator periods affect trend calculation, so cache must be invalidated
+            # Cache-affecting parameters: mtf_enabled, mtf_4h_enabled, mtf_daily_candle_limit,
+            # mtf_4h_candle_limit, mtf_daily_cache_minutes, mtf_4h_cache_minutes, ema_slow,
+            # bollinger_period, macd_slow
+            # Note: mtf_aligned_boost and mtf_counter_penalty are NOT included as they
+            # only affect score calculation, not trend fetching
+            mtf_cache_affecting_settings = {"mtf_enabled", "mtf_4h_enabled", "mtf_daily_candle_limit", "mtf_4h_candle_limit",
+                                           "mtf_daily_cache_minutes", "mtf_4h_cache_minutes",
+                                           "ema_slow", "bollinger_period", "macd_slow"}
+            if mtf_cache_affecting_settings & set(changes.keys()):
                 self._invalidate_htf_cache()
 
             logger.info(
@@ -849,7 +933,7 @@ class TradingDaemon:
         Get trend for a specific timeframe with caching.
 
         Args:
-            granularity: Candle granularity (e.g., "ONE_DAY", "SIX_HOUR")
+            granularity: Candle granularity ("ONE_DAY" or "FOUR_HOUR")
             cache_minutes: Cache TTL in minutes
 
         Returns:
@@ -859,28 +943,46 @@ class TradingDaemon:
         if granularity == "ONE_DAY":
             last_fetch = self._daily_last_fetch
             cached_trend = self._daily_trend
-        else:  # SIX_HOUR
-            last_fetch = self._6h_last_fetch
-            cached_trend = self._6h_trend
+        elif granularity == "FOUR_HOUR":
+            last_fetch = self._4h_last_fetch
+            cached_trend = self._4h_trend
+        else:
+            raise ValueError(f"Unsupported granularity for HTF: {granularity}")
 
         now = datetime.now(timezone.utc)
         if last_fetch and (now - last_fetch) < timedelta(minutes=cache_minutes):
+            self._htf_cache_hits += 1
             return cached_trend
+
+        # Cache is stale or non-existent - count as cache miss
+        # We count the miss once here, regardless of fetch outcome
+        self._htf_cache_misses += 1
+
+        # Select appropriate candle limit based on timeframe
+        if granularity == "ONE_DAY":
+            candle_limit = self.settings.mtf_daily_candle_limit
+        else:  # FOUR_HOUR
+            candle_limit = self.settings.mtf_4h_candle_limit
 
         try:
             candles = self.client.get_candles(
                 self.settings.trading_pair,
                 granularity=granularity,
-                limit=self.settings.mtf_candle_limit,
+                limit=candle_limit,
             )
 
             # Validate candles before processing - need enough data for trend calculation
-            if candles is None or candles.empty or len(candles) < self.signal_scorer.ema_slow_period:
+            min_required = max(
+                self.signal_scorer.ema_slow_period,
+                self.signal_scorer.bollinger_period,
+                self.signal_scorer.macd_slow,
+            )
+            if candles is None or candles.empty or len(candles) < min_required:
                 logger.warning(
                     "htf_insufficient_data",
                     timeframe=granularity,
                     candle_count=len(candles) if candles is not None and not candles.empty else 0,
-                    required=self.signal_scorer.ema_slow_period,
+                    required=min_required,
                 )
                 return cached_trend or "neutral"
 
@@ -890,36 +992,49 @@ class TradingDaemon:
             if granularity == "ONE_DAY":
                 self._daily_trend = trend
                 self._daily_last_fetch = now
+            elif granularity == "FOUR_HOUR":
+                self._4h_trend = trend
+                self._4h_last_fetch = now
             else:
-                self._6h_trend = trend
-                self._6h_last_fetch = now
+                raise ValueError(f"Unsupported granularity for HTF: {granularity}")
 
-            logger.info("htf_trend_updated", timeframe=granularity, trend=trend)
+            logger.info(
+                "htf_trend_updated",
+                timeframe=granularity,
+                trend=trend,
+                cache_hits=self._htf_cache_hits,
+                cache_misses=self._htf_cache_misses,
+            )
             return trend
         except (ConnectionError, TimeoutError, OSError, ValueError, KeyError, NotImplementedError) as e:
             # Expected failures: network issues, API errors, data parsing issues,
             # or unsupported granularity (NotImplementedError).
+            # Cache miss was already counted above when we decided to fetch
             # Fail-open: return cached trend or neutral, never block trading
             logger.warning("htf_fetch_failed", timeframe=granularity, error=str(e), error_type=type(e).__name__)
             return cached_trend or "neutral"
         except Exception as e:
             # Unexpected errors - log at error level but still fail-open
+            # Cache miss was already counted above when we decided to fetch
             # Financial bot should never crash due to HTF analysis failure
-            logger.error("htf_fetch_unexpected_error", timeframe=granularity, error=str(e), error_type=type(e).__name__)
+            logger.error("htf_fetch_unexpected_error", timeframe=granularity, error=str(e), error_type=type(e).__name__, traceback=traceback.format_exc())
             return cached_trend or "neutral"
 
-    def _get_htf_bias(self) -> tuple[str, str, str]:
+    def _get_htf_bias(self) -> tuple[str, Optional[str], Optional[str]]:
         """
-        Get combined HTF bias from daily + 6-hour trends.
+        Get combined HTF bias from daily + 4-hour trends.
 
         Returns:
-            Tuple of (combined_bias, daily_trend, 6h_trend)
+            Tuple of (combined_bias, daily_trend, 4h_trend)
             - Both bullish → "bullish"
             - Both bearish → "bearish"
             - Mixed/neutral → "neutral"
+            - daily_trend is None when mtf_enabled=False
+            - 4h_trend is None when mtf_4h_enabled=False
         """
         if not self.settings.mtf_enabled:
-            return "neutral", "neutral", "neutral"
+            # When MTF is disabled, we don't fetch ANY HTF data, so both trends should be None
+            return "neutral", None, None
 
         daily = self._get_timeframe_trend("ONE_DAY", self.settings.mtf_daily_cache_minutes)
 
@@ -928,8 +1043,11 @@ class TradingDaemon:
             # Daily-only mode: simpler, fewer API calls
             return daily, daily, None
 
-        # Use FOUR_HOUR instead of SIX_HOUR for broader exchange compatibility
-        # (Kraken doesn't support 6-hour candles, only 4-hour)
+        # MTF uses FOUR_HOUR (not SIX_HOUR) because:
+        # - More frequent data points (6 candles/day vs 4 for 6H)
+        # - More responsive to intraday trend shifts while still filtering hourly noise
+        # - Provides good intermediate timeframe between daily and hourly trading
+        # Note: SIX_HOUR remains a valid granularity for other uses, just not for MTF
         four_hour = self._get_timeframe_trend("FOUR_HOUR", self.settings.mtf_4h_cache_minutes)
 
         # Combine: both must agree for strong bias
@@ -950,16 +1068,16 @@ class TradingDaemon:
         the next iteration uses fresh data with the new parameters.
         """
         self._daily_last_fetch = None
-        self._6h_last_fetch = None
+        self._4h_last_fetch = None
         logger.info("htf_cache_invalidated")
 
     def _store_signal_history(
         self,
-        signal_result,
+        signal_result: SignalResult,
         current_price: Decimal,
         htf_bias: str,
-        daily_trend: str,
-        four_hour_trend: str,
+        daily_trend: Optional[str],
+        four_hour_trend: Optional[str],
         threshold: int,
         trade_executed: bool = False,
     ) -> Optional[int]:
@@ -967,6 +1085,15 @@ class TradingDaemon:
         Store signal calculation for historical analysis.
 
         Called every iteration to enable post-mortem analysis of trades.
+
+        Args:
+            signal_result (SignalResult): The calculated signal with scores and metadata
+            current_price (Decimal): Current market price
+            htf_bias (str): Higher timeframe bias (bullish/bearish/neutral)
+            daily_trend (str): Daily trend direction
+            four_hour_trend (str): 4-hour trend direction
+            threshold (int): Signal threshold used for trading decision
+            trade_executed (bool, optional): Whether a trade was executed based on this signal. Defaults to False.
 
         Returns:
             The signal history record ID, or None if storage failed.
@@ -1014,14 +1141,15 @@ class TradingDaemon:
                 error_type=type(e).__name__,
                 consecutive_failures=self._signal_history_failures,
             )
-            # Alert at 10 failures, then every 50 additional failures (60, 110, 160...)
-            if self._signal_history_failures == 10 or (
-                self._signal_history_failures > 10
-                and (self._signal_history_failures - 10) % 50 == 0
+            # Alert at threshold failures, then every 50 additional failures
+            threshold = self.settings.signal_history_failure_threshold
+            if self._signal_history_failures == threshold or (
+                self._signal_history_failures > threshold
+                and (self._signal_history_failures - threshold) % 50 == 0
             ):
                 self.notifier.notify_error(
                     f"Signal history storage failing ({self._signal_history_failures} consecutive failures)",
-                    context=f"Last error: {e}",
+                    context=f"Last error: {str(e)}",
                 )
             return None
 
@@ -1299,6 +1427,7 @@ class TradingDaemon:
                         unrealized_pnl=str(unrealized_pnl),
                         combined_loss_pct=f"{combined_loss_pct:.1f}%",
                     )
+                    # No truncation needed - fixed-format percentage is always short
                     self.notifier.notify_error(
                         f"Combined loss {combined_loss_pct:.1f}% exceeds daily limit",
                         "Unrealized loss warning"
@@ -1419,6 +1548,11 @@ class TradingDaemon:
             )
 
         # Get HTF bias for multi-timeframe confirmation
+        # NOTE: _get_htf_bias() handles MTF configuration:
+        # - MTF disabled: returns ("neutral", None, None)
+        # - MTF enabled, 4H disabled: returns (daily, daily, None)
+        # - MTF fully enabled: returns (combined, daily, four_hour)
+        # These variables are used in signal calculation AND dashboard state, ensuring consistency
         htf_bias, daily_trend, four_hour_trend = self._get_htf_bias()
 
         # Fetch sentiment before signal calculation to enable extreme fear override in MTF logic.
@@ -1437,18 +1571,24 @@ class TradingDaemon:
                         category=sentiment_category,
                         value=sentiment.value,
                     )
+                    # Record success and handle recovery notification
+                    self._record_sentiment_success()
                 else:
                     logger.warning(
                         "sentiment_unavailable_for_trade_evaluation",
                         reason="fetch_returned_none",
                         impact="extreme_fear_override_disabled",
                     )
+                    # Record failure atomically (increments counter and checks threshold)
+                    self._record_sentiment_failure(context="trading")
             except Exception as e:
                 logger.warning(
                     "sentiment_fetch_failed_during_trade_evaluation",
                     error=str(e),
                     impact="extreme_fear_override_disabled",
                 )
+                # Record failure atomically (increments counter and checks threshold)
+                self._record_sentiment_failure(context="trading")
 
         # Calculate signal with HTF context and sentiment
         signal_result = self.signal_scorer.calculate_score(
@@ -1697,7 +1837,24 @@ class TradingDaemon:
             except Exception as e:
                 logger.warning("weight_profile_update_failed", error=str(e))
 
-        # Apply regime and AI threshold adjustments to determine effective action
+        # ========== PROTECTION LAYER 1: Regime Threshold Adjustments ==========
+        # Apply regime-based threshold adjustments to determine effective action
+        # Modifies signal threshold based on sentiment/volatility/trend.
+        #
+        # Examples:
+        #   - Extreme fear + bearish trend → threshold +10 (harder to buy)
+        #   - Extreme greed + bullish trend → threshold +10 (harder to buy)
+        #   - High volatility → threshold +5 (require stronger signals)
+        #
+        # Applied BEFORE:
+        #   - Action determination (buy/sell/hold decision)
+        #   - Layer 4: Dual-extreme blocking (line ~2059)
+        #
+        # Applied AFTER:
+        #   - Signal score calculation (signal_scorer.calculate_score)
+        #   - Layer 3: Extreme fear MTF override (signal_scorer.py:755)
+        #
+        # See: src/strategy/regime.py for calculation logic
         base_threshold = self.settings.signal_threshold + regime.threshold_adjustment
         ai_buy_adj = self._get_ai_threshold_adjustment("buy")
         ai_sell_adj = self._get_ai_threshold_adjustment("sell")
@@ -1783,6 +1940,11 @@ class TradingDaemon:
                 "confidence": self._last_weight_profile_confidence,
                 "reasoning": self._last_weight_profile_reasoning,
             } if self.weight_profile_selector else None,
+            "htf_bias": {
+                "daily_trend": daily_trend,
+                "four_hour_trend": four_hour_trend,
+                "combined_bias": htf_bias,
+            } if self.settings.mtf_enabled else None,
             "safety": {
                 "circuit_breaker": self.circuit_breaker.level.name,
                 "can_trade": self.circuit_breaker.can_trade,
@@ -2077,11 +2239,45 @@ class TradingDaemon:
             )
             return
 
+        # ========== PROTECTION LAYER 2: Regime Position Sizing ==========
         # Get safety multiplier (including Claude veto and regime adjustments)
+        # Multiplier applied to position size based on market conditions.
+        #
+        # Examples:
+        #   - Extreme volatility → 0.8x position size
+        #   - Extreme fear → 0.7x position size (more conservative)
+        #   - Extreme greed → 1.0x position size (neutral)
+        #   - Optimal conditions → 1.3x position size (more aggressive)
+        #
+        # Applied AFTER:
+        #   - Layer 1: Regime threshold adjustments (line ~1687)
+        #   - Action determination (buy/sell decision)
+        #
+        # Applied BEFORE:
+        #   - Layer 4: Dual-extreme blocking (line ~2059)
+        #   - Order execution
+        #
+        # Final position calculation:
+        #   final_position = base_size * regime_mult * throttle_mult * ai_veto_mult * safety_mult
+        #
+        # See: src/strategy/regime.py for multiplier calculation logic
         safety_multiplier = self.validator.get_position_multiplier() * claude_veto_multiplier * regime.position_multiplier
 
+        # ========== PROTECTION LAYER 4: Dual-Extreme Blocking ==========
         # Check for dual-extreme conditions before attempting any buy
         # Post-mortem #135: These conditions create unfavorable risk/reward for entries
+        #
+        # Applied AFTER:
+        #   - Layer 1: Regime threshold adjustments (line ~1687)
+        #   - Layer 2: Regime position sizing (included in safety_multiplier above)
+        #   - Layer 3: Extreme fear MTF override (in signal_scorer.py:755)
+        #
+        # Applied BEFORE:
+        #   - Order execution
+        #
+        # Rationale: Extreme fear + extreme volatility = unfavorable R:R ratio
+        # Even if signal is strong, entry during dual-extreme conditions often
+        # results in being stopped out during continued volatility/panic selling.
         if (
             effective_action == "buy"
             and self.settings.block_trades_extreme_conditions
@@ -3213,6 +3409,104 @@ class TradingDaemon:
             logger.warning("cramer_portfolio_fetch_error", error=str(e))
             return None
 
+    def _record_sentiment_failure(self, context: str = "unknown") -> None:
+        """Atomically record sentiment fetch failure and alert if threshold is exceeded.
+
+        This method:
+        1. Increments the failure counter
+        2. Checks if the threshold is exceeded
+        3. Alerts if this is the first time we cross the threshold
+
+        Args:
+            context: The context where failure occurred ("trading" or "dashboard")
+
+        Thread-safe: All counter operations are atomic under lock.
+        """
+        threshold = self.settings.sentiment_failure_alert_threshold
+
+        # Atomically increment and check threshold under lock
+        with self._sentiment_lock:
+            self._sentiment_fetch_failures += 1
+            failures_count = self._sentiment_fetch_failures
+
+            # Only alert when we first cross the threshold
+            if failures_count != threshold:
+                # Log for troubleshooting when already past threshold
+                if failures_count > threshold:
+                    logger.debug(
+                        "sentiment_fetch_failures_above_threshold",
+                        consecutive_failures=failures_count,
+                        threshold=threshold,
+                        context=context,
+                    )
+                return
+
+            # Read last success timestamp under lock
+            last_success_timestamp = self._last_sentiment_fetch_success
+
+        # Calculate time since last success outside lock (only read operation needs protection)
+        try:
+            if last_success_timestamp is None:
+                time_since_success = "none (check API connectivity)"
+            else:
+                minutes_ago = (datetime.now(timezone.utc) - last_success_timestamp).total_seconds() / 60
+                if minutes_ago < 0:
+                    # Timestamp is in the future - clock skew detected
+                    time_since_success = "unknown (clock skew detected)"
+                elif minutes_ago < 1:
+                    time_since_success = "just now (< 1 minute ago)"
+                else:
+                    time_since_success = f"{minutes_ago:.0f} minutes ago"
+        except Exception:
+            # If time calculation fails (e.g., system clock issues), use fallback
+            time_since_success = "unknown"
+
+        # Perform logging and notifications outside the lock to minimize lock hold time
+        logger.error(
+            "sentiment_fetch_failure_threshold_exceeded",
+            consecutive_failures=failures_count,
+            threshold=threshold,
+            last_success=time_since_success,
+            impact="extreme_fear_override_disabled",
+            context=context,
+        )
+
+        self.notifier.notify_error(
+            f"Sentiment API failing: {failures_count} consecutive failures. "
+            f"Last success: {time_since_success}. "
+            f"Extreme fear override is disabled until sentiment API recovers.",
+            "Sentiment Fetch Failure Alert"
+        )
+
+    def _record_sentiment_success(self) -> None:
+        """Record successful sentiment fetch and notify recovery if needed.
+
+        This method:
+        1. Checks if we were previously in an alert state
+        2. Resets the failure counter
+        3. Updates the last success timestamp
+        4. Notifies recovery if we were previously failing
+
+        NOTE: This is called from both _trading_iteration() and _check_hourly_analysis().
+        Both code paths share the same failure counter, so "consecutive failures" means
+        consecutive attempts across all contexts (trading + dashboard), not per-context.
+        This is intentional - we want to know about API health globally.
+        """
+        threshold = self.settings.sentiment_failure_alert_threshold
+
+        # Atomically check and reset state under lock
+        with self._sentiment_lock:
+            was_in_alert_state = self._sentiment_fetch_failures >= threshold
+            self._sentiment_fetch_failures = 0
+            self._last_sentiment_fetch_success = datetime.now(timezone.utc)
+
+        # Notify recovery if we were previously failing (outside lock to minimize hold time)
+        if was_in_alert_state:
+            self.notifier.notify_info(
+                "Sentiment API has recovered. Extreme fear override is now active.",
+                "Sentiment API Recovery"
+            )
+
     def _check_daily_report(self) -> None:
         """Check if we should generate daily performance report (UTC)."""
         today = datetime.now(timezone.utc).date()
@@ -3492,8 +3786,24 @@ class TradingDaemon:
                     if sentiment_result and sentiment_result.value:
                         sentiment_value = sentiment_result.value
                         sentiment_class = sentiment_result.classification or "Unknown"
+                        # Record success and handle recovery notification
+                        self._record_sentiment_success()
+                    else:
+                        logger.warning(
+                            "sentiment_unavailable_for_dashboard",
+                            reason="fetch_returned_none",
+                            impact="extreme_fear_override_disabled",
+                        )
+                        # Record failure atomically (increments counter and checks threshold)
+                        self._record_sentiment_failure(context="dashboard")
                 except Exception as e:
-                    logger.debug("sentiment_fetch_skipped", error=str(e))
+                    logger.warning(
+                        "sentiment_fetch_failed_during_dashboard",
+                        error=str(e),
+                        impact="extreme_fear_override_disabled",
+                    )
+                    # Record failure atomically (increments counter and checks threshold)
+                    self._record_sentiment_failure(context="dashboard")
 
             # Calculate price changes from candles
             price_change_1h = None
@@ -3645,8 +3955,14 @@ class TradingDaemon:
             # Use the LARGER of ATR-based distance or minimum percentage distance
             # This ensures stop is never too tight on low-volatility timeframes
             #
-            # During extreme volatility, use wider stop multiplier to avoid
-            # being stopped out by normal price fluctuations
+            # ========== PROTECTION LAYER 5: Extreme Volatility Stop Widening ==========
+            # During extreme volatility, use wider stop multiplier (2.0x vs 1.5x ATR)
+            # to avoid being stopped out by normal price fluctuations.
+            #
+            # Multiplier: 1.5x (normal) → 2.0x (extreme)
+            #
+            # Applied during position sizing calculation (position_sizer.py uses same logic)
+            # This layer works independently - widens stops regardless of other layers.
             stop_multiplier = self.settings.stop_loss_atr_multiplier
             if volatility == "extreme":
                 stop_multiplier = self.settings.stop_loss_atr_multiplier_extreme

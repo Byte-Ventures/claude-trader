@@ -34,8 +34,12 @@ let lastCandleUpdate = 0;
 /** Pending candle update timeout, ensures final throttled update is applied */
 let pendingCandleUpdate = null;
 
+/** Timestamp of last stale candle warning, for throttling console spam */
+let lastStaleWarning = 0;
+
 const MAX_RECONNECT_ATTEMPTS = 10;
 const CANDLE_UPDATE_THROTTLE_MS = 1000;  // Throttle candle updates to 1/second
+const STALE_WARNING_THROTTLE_MS = 60000;  // Throttle stale candle warnings to 1/minute
 const BASE_RECONNECT_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 30000;
 const MAX_SEEN_NOTIFICATIONS = 100;  // Prevent memory leak from unbounded Set
@@ -389,14 +393,6 @@ function connectWebSocket() {
 
 // Update dashboard with new state
 function updateDashboard(state) {
-    // Update price
-    const priceEl = document.getElementById('current-price');
-    const price = parseFloat(state.price);
-    priceEl.textContent = formatCurrency(price);
-
-    // Update trading pair
-    document.getElementById('trading-pair').textContent = state.trading_pair;
-
     // Update signal
     const signalEl = document.getElementById('signal-score');
     const score = state.signal.score;
@@ -426,6 +422,46 @@ function updateDashboard(state) {
     } else {
         document.getElementById('weight-profile-value').textContent = 'Disabled';
         document.getElementById('weight-profile-confidence').textContent = '--';
+    }
+
+    // Update HTF bias
+    const htfBiasCard = document.getElementById('htf-bias-card');
+    const htfBias = state.htf_bias;
+    if (htfBias) {
+        htfBiasCard.style.display = 'block';
+
+        const trendEmoji = {
+            'bullish': '📈',
+            'bearish': '📉',
+            'neutral': '↔️'
+        };
+
+        const biasEmoji = htfBias.combined_bias === 'bullish' ? '✅' :
+                         htfBias.combined_bias === 'bearish' ? '❌' :
+                         '⚖️';
+
+        // Defensive check: Pydantic guarantees combined_bias is non-null Literal["bullish", "bearish", "neutral"]
+        // but we check anyway for runtime safety in JavaScript
+        const biasText = htfBias.combined_bias
+            ? htfBias.combined_bias.charAt(0).toUpperCase() + htfBias.combined_bias.slice(1)
+            : 'Unknown';
+        document.getElementById('htf-combined-bias').textContent = `${biasEmoji} ${biasText}`;
+
+        const dailyEmoji = htfBias.daily_trend
+            ? (trendEmoji[htfBias.daily_trend] || '↔️')
+            : '↔️';
+
+        // Only show 4H trend if available (when mtf_4h_enabled=true)
+        if (htfBias.four_hour_trend) {
+            const fourHourEmoji = trendEmoji[htfBias.four_hour_trend] || '↔️';
+            document.getElementById('htf-trends').textContent =
+                `Daily: ${dailyEmoji} | 4H: ${fourHourEmoji}`;
+        } else {
+            // Daily-only mode: hide 4H label for cleaner display
+            document.getElementById('htf-trends').textContent = `Daily: ${dailyEmoji}`;
+        }
+    } else {
+        htfBiasCard.style.display = 'none';
     }
 
     // Update circuit breaker
@@ -527,6 +563,7 @@ function updateDashboard(state) {
                 // Same candle period - update high/low/close (open is preserved as first price)
                 // Note: JS Math.max/min on floats may introduce minor precision errors (~1e-15).
                 // This is acceptable for chart display; backend uses Decimal for exact values.
+                // IMPORTANT: Use backend API for trading decisions, not dashboard display values
                 currentCandle.high = Math.max(currentCandle.high, price);
                 currentCandle.low = Math.min(currentCandle.low, price);
                 currentCandle.close = price;
@@ -544,7 +581,11 @@ function updateDashboard(state) {
             } else {
                 // candleTime < currentCandle.time - skip stale update to avoid chart error
                 // This can happen due to WebSocket reconnect lag or minor clock skew between server/client
-                console.warn(`Skipping stale candle update (reconnect lag or clock skew): new=${candleTime} (${new Date(candleTime * 1000).toISOString()}), current=${currentCandle.time} (${new Date(currentCandle.time * 1000).toISOString()}), interval=${candleIntervalSeconds}s`);
+                // Throttle warnings to 1/minute to avoid console spam during network issues
+                if (now - lastStaleWarning >= STALE_WARNING_THROTTLE_MS) {
+                    console.warn(`Skipping stale candle update (reconnect lag or clock skew): new=${candleTime} (${new Date(candleTime * 1000).toISOString()}), current=${currentCandle.time} (${new Date(currentCandle.time * 1000).toISOString()}), interval=${candleIntervalSeconds}s`);
+                    lastStaleWarning = now;
+                }
             }
 
             // Update price line (only if we updated the candle)
@@ -583,7 +624,6 @@ function updateBreakdownBar(id, value) {
 
 // Update config display
 function updateConfig(config) {
-    document.getElementById('trading-pair').textContent = config.trading_pair;
     document.getElementById('signal-threshold').textContent = `Threshold: |${config.signal_threshold}|`;
     if (config.candle_interval) {
         candleIntervalSeconds = parseIntervalToSeconds(config.candle_interval);

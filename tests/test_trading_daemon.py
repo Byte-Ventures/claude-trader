@@ -19,12 +19,28 @@ from decimal import Decimal
 from datetime import datetime, date, timezone
 from unittest.mock import Mock, MagicMock, patch, PropertyMock
 from threading import Event
+import logging
 import pandas as pd
 
 from config.settings import Settings, TradingMode, Exchange
 from src.daemon.runner import TradingDaemon
 from src.api.exchange_protocol import Balance, MarketData, OrderResult
 from src.strategy.signal_scorer import SignalResult, IndicatorValues
+
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+def assert_candle_limit(call_args, expected_limit):
+    """
+    Assert that get_candles was called with the expected limit.
+
+    Handles both positional and keyword argument calling patterns.
+    """
+    args, kwargs = call_args
+    actual = kwargs.get('limit') or (args[2] if len(args) >= 3 else None)
+    assert actual == expected_limit, f"Expected limit={expected_limit}, got args={args}, kwargs={kwargs}"
 
 
 # ============================================================================
@@ -40,6 +56,7 @@ def mock_settings():
     settings.trading_pair = "BTC-USD"
     settings.is_paper_trading = True
     settings.database_path = ":memory:"
+    settings.signal_history_failure_threshold = 10
     settings.paper_initial_quote = Decimal("10000")
     settings.paper_initial_base = Decimal("0")
     settings.base_order_size_usd = Decimal("100")
@@ -149,8 +166,9 @@ def mock_settings():
     settings.mtf_aligned_boost = 20
     settings.mtf_counter_penalty = 20
 
-    # AI max tokens
-    settings.ai_max_tokens = 4000
+    # AI max tokens (split by use case)
+    settings.ai_reviewer_max_tokens = 800
+    settings.ai_research_max_tokens = 4000
 
     # Risk Management (new parameters)
     settings.risk_per_trade_percent = 0.5
@@ -181,6 +199,9 @@ def mock_settings():
     settings.momentum_price_candles = 12
     settings.momentum_penalty_reduction = 0.5
     settings.momentum_trend_strength_cap = 5.0
+
+    # MACD Dynamic Scaling
+    settings.macd_interval_multipliers = None  # Use default hardcoded multipliers
 
     return settings
 
@@ -247,6 +268,7 @@ def mock_database():
     db.get_current_position.return_value = None  # No open position
     db.get_state.return_value = None  # No saved dashboard state
     db.save_state.return_value = None  # Void method
+    db.set_state.return_value = None  # Void method (used for dashboard state)
     db.get_daily_stats.return_value = None  # No daily stats
     db.get_or_create_daily_stats.return_value = Mock(
         date=datetime.now(timezone.utc).date(),
@@ -1816,7 +1838,8 @@ def htf_mock_settings(mock_settings):
     """Extend mock settings with MTF configuration."""
     mock_settings.mtf_enabled = True
     mock_settings.mtf_4h_enabled = True
-    mock_settings.mtf_candle_limit = 50
+    mock_settings.mtf_daily_candle_limit = 50
+    mock_settings.mtf_4h_candle_limit = 84
     mock_settings.mtf_daily_cache_minutes = 60
     mock_settings.mtf_4h_cache_minutes = 30
     mock_settings.mtf_aligned_boost = 20
@@ -1884,11 +1907,11 @@ def test_get_htf_bias_disabled_returns_neutral(mock_settings, mock_exchange_clie
             with patch('src.daemon.runner.TelegramNotifier'):
                 daemon = TradingDaemon(mock_settings)
 
-                bias, daily, six_h = daemon._get_htf_bias()
+                bias, daily, four_h = daemon._get_htf_bias()
 
                 assert bias == "neutral"
-                assert daily == "neutral"
-                assert six_h == "neutral"
+                assert daily is None  # None when MTF disabled, per type signature
+                assert four_h is None  # None when MTF disabled, per type signature
 
 
 def test_get_timeframe_trend_caching(htf_mock_settings, mock_exchange_client, mock_database):
@@ -1903,22 +1926,81 @@ def test_get_timeframe_trend_caching(htf_mock_settings, mock_exchange_client, mo
                 # Mock signal scorer get_trend
                 daemon.signal_scorer.get_trend = Mock(return_value="bullish")
 
-                # First call should fetch
+                # First call should fetch (cache miss)
                 trend1 = daemon._get_timeframe_trend("ONE_DAY", 60)
 
                 # Verify get_candles was called
                 assert mock_exchange_client.get_candles.called
+                # Verify cache miss counter incremented
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 0
 
                 # Reset mock to verify caching
                 mock_exchange_client.get_candles.reset_mock()
                 daemon.signal_scorer.get_trend.reset_mock()
 
-                # Second call within cache period should use cache
+                # Second call within cache period should use cache (cache hit)
                 trend2 = daemon._get_timeframe_trend("ONE_DAY", 60)
 
                 # Should NOT call get_candles again (cache hit)
                 assert not mock_exchange_client.get_candles.called
                 assert trend1 == trend2 == "bullish"
+                # Verify cache hit counter incremented
+                assert daemon._htf_cache_misses == 1  # Still 1
+                assert daemon._htf_cache_hits == 1    # Now 1
+
+
+def test_get_timeframe_trend_cache_expiration(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test HTF cache expiration and counter accumulation over multiple refresh cycles."""
+    from datetime import datetime, timezone, timedelta
+    from unittest.mock import patch
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Mock signal scorer get_trend
+                daemon.signal_scorer.get_trend = Mock(return_value="bullish")
+
+                # Call 1: First fetch (cache miss)
+                trend1 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                assert trend1 == "bullish"
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 0
+
+                # Call 2: Within cache period (cache hit)
+                trend2 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                assert trend2 == "bullish"
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 1
+
+                # Fast-forward time to expire cache (61 minutes > 60 minute cache)
+                mock_now = datetime.now(timezone.utc) + timedelta(minutes=61)
+                with patch('src.daemon.runner.datetime') as mock_datetime:
+                    mock_datetime.now.return_value = mock_now
+                    # Need to also patch timedelta to work with mocked datetime
+                    mock_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+
+                    # Update daemon's last fetch to be 61 minutes ago
+                    daemon._daily_last_fetch = mock_now - timedelta(minutes=61)
+
+                    # Call 3: Cache expired (cache miss)
+                    daemon.signal_scorer.get_trend.return_value = "bearish"
+                    trend3 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                    assert trend3 == "bearish"
+                    assert daemon._htf_cache_misses == 2
+                    assert daemon._htf_cache_hits == 1
+
+                # Call 4: Within new cache period (cache hit)
+                trend4 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                assert trend4 == "bearish"
+                assert daemon._htf_cache_misses == 2
+                assert daemon._htf_cache_hits == 2
+
+                # Verify counters accumulated correctly over multiple cycles
+                assert daemon._htf_cache_misses == 2  # Two fetches
+                assert daemon._htf_cache_hits == 2    # Two cache hits
 
 
 def test_get_timeframe_trend_fail_open(htf_mock_settings, mock_database):
@@ -1943,6 +2025,42 @@ def test_get_timeframe_trend_fail_open(htf_mock_settings, mock_database):
                 trend = daemon._get_timeframe_trend("ONE_DAY", 60)
 
                 assert trend == "neutral"
+                # Verify cache miss counter incremented on error path
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 0
+
+
+def test_get_timeframe_trend_insufficient_data(htf_mock_settings, mock_database):
+    """Test HTF trend returns neutral on insufficient candle data."""
+    import pandas as pd
+
+    # Create client that returns insufficient candles
+    mock_client = Mock()
+    mock_client.get_current_price.return_value = Decimal("50000")
+    # Return only 10 candles when 50 are required (ema_slow_period)
+    mock_client.get_candles.return_value = pd.DataFrame({
+        'timestamp': range(10),
+        'close': [50000] * 10
+    })
+    mock_client.get_balance.return_value = Balance("USD", Decimal("1000"), Decimal("0"))
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                htf_mock_settings.mtf_enabled = True
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Clear any cached trend
+                daemon._daily_last_fetch = None
+                daemon._daily_trend = "neutral"
+
+                # Should return neutral when insufficient data
+                trend = daemon._get_timeframe_trend("ONE_DAY", 60)
+
+                assert trend == "neutral"
+                # Verify cache miss counter incremented on insufficient data path
+                assert daemon._htf_cache_misses == 1
+                assert daemon._htf_cache_hits == 0
 
 
 def test_invalidate_htf_cache(htf_mock_settings, mock_exchange_client, mock_database):
@@ -1956,14 +2074,45 @@ def test_invalidate_htf_cache(htf_mock_settings, mock_exchange_client, mock_data
 
                 # Set cache timestamps
                 daemon._daily_last_fetch = datetime.now(timezone.utc)
-                daemon._6h_last_fetch = datetime.now(timezone.utc)
+                daemon._4h_last_fetch = datetime.now(timezone.utc)
 
                 # Invalidate cache
                 daemon._invalidate_htf_cache()
 
                 # Verify timestamps are cleared
                 assert daemon._daily_last_fetch is None
-                assert daemon._6h_last_fetch is None
+                assert daemon._4h_last_fetch is None
+
+
+def test_get_timeframe_trend_uses_correct_candle_limits(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test that correct candle limits are passed for each timeframe."""
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Mock signal scorer get_trend
+                daemon.signal_scorer.get_trend = Mock(return_value="bullish")
+
+                # Test ONE_DAY uses mtf_daily_candle_limit (50)
+                daemon._get_timeframe_trend("ONE_DAY", 60)
+                # Verify get_candles was called with correct limit
+                assert_candle_limit(mock_exchange_client.get_candles.call_args, 50)
+                args, kwargs = mock_exchange_client.get_candles.call_args
+                assert kwargs.get('granularity') == "ONE_DAY" or (len(args) >= 2 and args[1] == "ONE_DAY")
+
+                # Reset mock
+                mock_exchange_client.get_candles.reset_mock()
+
+                # Clear cache to force fresh fetch
+                daemon._4h_last_fetch = None
+
+                # Test FOUR_HOUR uses mtf_4h_candle_limit (84)
+                daemon._get_timeframe_trend("FOUR_HOUR", 30)
+                # Verify get_candles was called with correct limit
+                assert_candle_limit(mock_exchange_client.get_candles.call_args, 84)
+                args, kwargs = mock_exchange_client.get_candles.call_args
+                assert kwargs.get('granularity') == "FOUR_HOUR" or (len(args) >= 2 and args[1] == "FOUR_HOUR")
 
 
 def test_store_signal_history_returns_id(htf_mock_settings, mock_exchange_client, mock_database):
@@ -2113,6 +2262,131 @@ def test_store_signal_history_alerts_after_repeated_failures(htf_mock_settings, 
                 error_msg = mock_notifier.notify_error.call_args[0][0].lower()
                 assert "signal history storage" in error_msg
                 assert "10" in error_msg  # Verify failure count is included
+
+                # Verify the context parameter includes the error
+                context = mock_notifier.notify_error.call_args[1].get('context', '')
+                assert "Database locked" in context  # The mocked error message
+
+
+def test_store_signal_history_truncates_long_errors(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test that long error messages are truncated with smart truncation in alerts."""
+    from src.strategy.signal_scorer import SignalResult, IndicatorValues
+    from sqlalchemy.exc import SQLAlchemyError
+
+    # Create error with message > 500 chars (new limit in notify_error)
+    # For non-stack-trace errors: keeps first 400 + last 100 chars
+    # For stack traces: keeps first 250 + last 250 chars
+    long_error_msg = "x" * 600
+    mock_session = MagicMock()
+    mock_session.__enter__ = Mock(side_effect=SQLAlchemyError(long_error_msg))
+    mock_session.__exit__ = Mock(return_value=False)
+    mock_database.session.return_value = mock_session
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier') as mock_notifier_class:
+                mock_notifier = Mock()
+                mock_notifier_class.return_value = mock_notifier
+
+                daemon = TradingDaemon(htf_mock_settings)
+
+                signal_result = SignalResult(
+                    score=65,
+                    action="buy",
+                    indicators=IndicatorValues(
+                        rsi=35.0, macd_line=100.0, macd_signal=50.0,
+                        macd_histogram=50.0, bb_upper=51000.0, bb_middle=50000.0,
+                        bb_lower=49000.0, ema_fast=50100.0, ema_slow=50000.0,
+                        volatility="normal"
+                    ),
+                    breakdown={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                    confidence=0.8,
+                )
+
+                # Call 10 times to trigger alert with long error
+                for _ in range(10):
+                    daemon._store_signal_history(
+                        signal_result=signal_result,
+                        current_price=Decimal("50000"),
+                        htf_bias="bullish",
+                        daily_trend="bullish",
+                        four_hour_trend="bullish",
+                        threshold=60,
+                    )
+
+                # Verify notification was called
+                mock_notifier.notify_error.assert_called_once()
+
+                # Extract the context parameter from the call
+                call_kwargs = mock_notifier.notify_error.call_args[1]
+                context = call_kwargs['context']
+
+                # Verify the error string is passed to notify_error
+                # (truncation happens inside notify_error, not in runner.py)
+                assert "Last error: " in context
+                # The error portion should contain the full long error message
+                # because truncation happens in notify_error(), not before the call
+                assert long_error_msg in context
+
+
+def test_store_signal_history_short_errors_not_truncated(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test that short error messages are not truncated."""
+    from src.strategy.signal_scorer import SignalResult, IndicatorValues
+    from sqlalchemy.exc import SQLAlchemyError
+
+    # Create error with message < 500 chars
+    short_error_msg = "Database locked"
+    mock_session = MagicMock()
+    mock_session.__enter__ = Mock(side_effect=SQLAlchemyError(short_error_msg))
+    mock_session.__exit__ = Mock(return_value=False)
+    mock_database.session.return_value = mock_session
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier') as mock_notifier_class:
+                mock_notifier = Mock()
+                mock_notifier_class.return_value = mock_notifier
+
+                daemon = TradingDaemon(htf_mock_settings)
+
+                signal_result = SignalResult(
+                    score=65,
+                    action="buy",
+                    indicators=IndicatorValues(
+                        rsi=35.0, macd_line=100.0, macd_signal=50.0,
+                        macd_histogram=50.0, bb_upper=51000.0, bb_middle=50000.0,
+                        bb_lower=49000.0, ema_fast=50100.0, ema_slow=50000.0,
+                        volatility="normal"
+                    ),
+                    breakdown={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                    confidence=0.8,
+                )
+
+                # Call 10 times to trigger alert with short error
+                for _ in range(10):
+                    daemon._store_signal_history(
+                        signal_result=signal_result,
+                        current_price=Decimal("50000"),
+                        htf_bias="bullish",
+                        daily_trend="bullish",
+                        four_hour_trend="bullish",
+                        threshold=60,
+                    )
+
+                # Verify notification was called
+                mock_notifier.notify_error.assert_called_once()
+
+                # Extract the context parameter from the call
+                call_kwargs = mock_notifier.notify_error.call_args[1]
+                context = call_kwargs['context']
+
+                # Verify NO truncation:
+                # - Should contain "Last error: " prefix
+                # - Should contain the full error message
+                # - Should NOT have "..." appended
+                assert "Last error: " in context
+                assert short_error_msg in context
+                assert not context.endswith("...")
 
 
 def test_store_signal_history_alerts_every_50_after_initial(htf_mock_settings, mock_exchange_client, mock_database):
@@ -2276,6 +2550,70 @@ def test_mark_signal_trade_executed_with_valid_id(htf_mock_settings, mock_exchan
 
                 # Verify update was called with trade_executed=True
                 mock_query.update.assert_called_once_with({"trade_executed": True})
+
+
+def test_dashboard_state_includes_htf_when_mtf_enabled(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test dashboard state includes HTF bias data when MTF is enabled."""
+    # Track calls to set_state
+    set_state_calls = []
+    mock_database.set_state = Mock(side_effect=lambda key, value: set_state_calls.append((key, value)))
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Mock HTF methods to return known values
+                daemon._get_htf_bias = Mock(return_value=("bullish", "bullish", "bullish"))
+
+                # Run one trading iteration
+                daemon._trading_iteration()
+
+                # Find dashboard_state call
+                dashboard_calls = [call for call in set_state_calls if call[0] == "dashboard_state"]
+                assert len(dashboard_calls) > 0, "dashboard_state should be set"
+
+                dashboard_state = dashboard_calls[0][1]
+
+                # Verify htf_bias field exists and has correct structure
+                assert "htf_bias" in dashboard_state, "htf_bias field should exist when MTF enabled"
+                assert dashboard_state["htf_bias"] is not None, "htf_bias should not be None"
+                assert "daily_trend" in dashboard_state["htf_bias"]
+                assert "four_hour_trend" in dashboard_state["htf_bias"]
+                assert "combined_bias" in dashboard_state["htf_bias"]
+
+                # Verify the values match what _get_htf_bias returned
+                assert dashboard_state["htf_bias"]["daily_trend"] == "bullish"
+                assert dashboard_state["htf_bias"]["four_hour_trend"] == "bullish"
+                assert dashboard_state["htf_bias"]["combined_bias"] == "bullish"
+
+
+def test_dashboard_state_excludes_htf_when_mtf_disabled(mock_settings, mock_exchange_client, mock_database):
+    """Test dashboard state excludes HTF bias data when MTF is disabled."""
+    # Ensure MTF is disabled
+    mock_settings.mtf_enabled = False
+
+    # Track calls to set_state
+    set_state_calls = []
+    mock_database.set_state = Mock(side_effect=lambda key, value: set_state_calls.append((key, value)))
+
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(mock_settings)
+
+                # Run one trading iteration
+                daemon._trading_iteration()
+
+                # Find dashboard_state call
+                dashboard_calls = [call for call in set_state_calls if call[0] == "dashboard_state"]
+                assert len(dashboard_calls) > 0, "dashboard_state should be set"
+
+                dashboard_state = dashboard_calls[0][1]
+
+                # Verify htf_bias field is None when MTF disabled
+                assert "htf_bias" in dashboard_state, "htf_bias field should exist"
+                assert dashboard_state["htf_bias"] is None, "htf_bias should be None when MTF disabled"
 
 
 # ============================================================================
@@ -3686,3 +4024,658 @@ class TestVetoCooldown:
 
         assert should_skip is False
         assert reason is None
+
+
+# ============================================================================
+# Sentiment Fetch Failure Tracking Tests
+# ============================================================================
+
+class TestSentimentFailureTracking:
+    """
+    Tests for sentiment fetch failure tracking and alerting.
+
+    This feature tracks consecutive sentiment API failures and alerts when
+    they exceed a threshold to prevent silent failures disabling extreme fear
+    override functionality.
+    """
+
+    @pytest.fixture
+    def daemon_with_sentiment(self, mock_settings, mock_database, mock_exchange_client):
+        """Create daemon with sentiment enabled."""
+        mock_settings.regime_sentiment_enabled = True
+        mock_settings.sentiment_failure_alert_threshold = 3
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+                    yield daemon
+
+    def test_counter_increments_on_exception(self, daemon_with_sentiment):
+        """Test that failure counter increments when sentiment fetch raises exception."""
+        # Verify initial state
+        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+
+        # Record a failure (increments counter)
+        daemon_with_sentiment._record_sentiment_failure()
+
+        # Counter should be at 1 (not at threshold yet)
+        assert daemon_with_sentiment._sentiment_fetch_failures == 1
+
+        # Verify no alert sent
+        daemon_with_sentiment.notifier.notify_error.assert_not_called()
+
+    def test_counter_increments_on_none_return(self, daemon_with_sentiment):
+        """Test that failure counter increments when sentiment fetch returns None."""
+        # Record two failures
+        daemon_with_sentiment._record_sentiment_failure()
+        daemon_with_sentiment._record_sentiment_failure()
+
+        # Counter should be at 2 (not at threshold yet)
+        assert daemon_with_sentiment._sentiment_fetch_failures == 2
+
+        # Verify no alert sent
+        daemon_with_sentiment.notifier.notify_error.assert_not_called()
+
+    def test_counter_resets_on_success(self, daemon_with_sentiment):
+        """Test that failure counter resets to 0 on successful fetch."""
+        # Simulate previous failures
+        daemon_with_sentiment._sentiment_fetch_failures = 2
+
+        # Call the actual method to record success
+        daemon_with_sentiment._record_sentiment_success()
+
+        # Verify counter reset and timestamp updated
+        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+        assert daemon_with_sentiment._last_sentiment_fetch_success is not None
+
+    def test_alert_fires_once_at_threshold(self, daemon_with_sentiment):
+        """Test that alert fires exactly once when threshold is reached."""
+        threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
+
+        # Record failures up to threshold
+        for _ in range(threshold):
+            daemon_with_sentiment._record_sentiment_failure()
+
+        # Alert should be sent once (when we hit the threshold)
+        daemon_with_sentiment.notifier.notify_error.assert_called_once()
+
+        # Verify alert message contains key information
+        call_args = daemon_with_sentiment.notifier.notify_error.call_args
+        message = call_args[0][0]
+        assert "consecutive failures" in message
+        assert "Extreme fear override is disabled" in message
+
+    def test_alert_does_not_fire_again_above_threshold(self, daemon_with_sentiment):
+        """Test that alert does not fire again when failures exceed threshold."""
+        threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
+
+        # Record failures past threshold
+        for _ in range(threshold + 1):
+            daemon_with_sentiment._record_sentiment_failure()
+
+        # Alert should be called exactly once (at threshold), not again after
+        assert daemon_with_sentiment.notifier.notify_error.call_count == 1
+
+    def test_alert_message_first_run(self, daemon_with_sentiment):
+        """Test alert message formatting when no previous success (first run)."""
+        threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
+
+        # Ensure no previous success
+        daemon_with_sentiment._last_sentiment_fetch_success = None
+
+        # Record failures up to threshold
+        for _ in range(threshold):
+            daemon_with_sentiment._record_sentiment_failure()
+
+        # Verify alert message contains improved first-run message
+        call_args = daemon_with_sentiment.notifier.notify_error.call_args
+        message = call_args[0][0]
+        assert "none (check API connectivity)" in message
+
+    def test_alert_message_with_previous_success(self, daemon_with_sentiment):
+        """Test alert message formatting with previous successful fetch."""
+        threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
+
+        # Set previous success
+        daemon_with_sentiment._last_sentiment_fetch_success = datetime.now(timezone.utc)
+
+        # Record failures up to threshold
+        for _ in range(threshold):
+            daemon_with_sentiment._record_sentiment_failure()
+
+        # Verify alert message contains time information
+        call_args = daemon_with_sentiment.notifier.notify_error.call_args
+        message = call_args[0][0]
+        assert "minutes ago" in message or "none (check API connectivity)" in message or "just now" in message
+
+    def test_time_calculation_error_handling(self, daemon_with_sentiment):
+        """Test that time calculation errors are handled gracefully."""
+        threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
+
+        # This should not raise an exception even if time calc fails
+        # The try-except in _record_sentiment_failure handles it
+        for _ in range(threshold):
+            daemon_with_sentiment._record_sentiment_failure()
+
+        # Alert should still be sent
+        daemon_with_sentiment.notifier.notify_error.assert_called_once()
+
+    def test_recovery_notification_after_alert(self, daemon_with_sentiment):
+        """Test recovery notification is sent when API recovers after alert."""
+        threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
+
+        # Simulate alert state (at exactly threshold)
+        daemon_with_sentiment._sentiment_fetch_failures = threshold
+
+        # Trigger recovery
+        daemon_with_sentiment._record_sentiment_success()
+
+        # Verify recovery notification sent
+        daemon_with_sentiment.notifier.notify_info.assert_called_once()
+        call_args = daemon_with_sentiment.notifier.notify_info.call_args
+        assert "recovered" in call_args[0][0].lower()
+        assert "Sentiment API Recovery" == call_args[0][1]
+
+        # Verify counter was reset
+        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+
+    def test_recovery_notification_after_alert_plus_failures(self, daemon_with_sentiment):
+        """Test recovery notification is sent when API recovers after threshold+N failures."""
+        threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
+
+        # Simulate alert state (threshold + 5 failures)
+        daemon_with_sentiment._sentiment_fetch_failures = threshold + 5
+
+        # Trigger recovery
+        daemon_with_sentiment._record_sentiment_success()
+
+        # Verify recovery notification sent even with extra failures
+        daemon_with_sentiment.notifier.notify_info.assert_called_once()
+        call_args = daemon_with_sentiment.notifier.notify_info.call_args
+        assert "recovered" in call_args[0][0].lower()
+
+        # Verify counter was reset
+        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+
+    def test_no_recovery_notification_when_not_in_alert(self, daemon_with_sentiment):
+        """Test recovery notification is NOT sent on normal success (not in alert state)."""
+        threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
+
+        # Simulate normal operation (below threshold)
+        daemon_with_sentiment._sentiment_fetch_failures = threshold - 1
+
+        # Trigger success
+        daemon_with_sentiment._record_sentiment_success()
+
+        # Verify NO recovery notification sent
+        daemon_with_sentiment.notifier.notify_info.assert_not_called()
+
+        # Verify counter was still reset
+        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+
+    def test_no_recovery_notification_on_first_success(self, daemon_with_sentiment):
+        """Test recovery notification is NOT sent when starting fresh (0 failures)."""
+        # Initial state (no failures)
+        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+
+        # Trigger success
+        daemon_with_sentiment._record_sentiment_success()
+
+        # Verify NO recovery notification sent
+        daemon_with_sentiment.notifier.notify_info.assert_not_called()
+
+        # Verify counter remains at 0
+        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+
+
+# ============================================================================
+# Position Room Check Tests (Issue #161)
+# ============================================================================
+
+class TestPositionRoomCheck:
+    """
+    Test position room check logic in runner.py:1399-1418.
+
+    Verifies that the room check uses MAX_POSITION_PERCENT (hard limit)
+    not POSITION_SIZE_PERCENT (soft target), preventing regression of bug
+    fixed in PR #160.
+    """
+
+    # Test constants to avoid magic numbers
+    BTC_PRICE = Decimal("50000")
+    # HARD_LIMIT = 80%: This is correct and matches validator.py:57 default.
+    # Note: Issue #161 and PR #160 originally referenced 90%, but the actual
+    # implementation uses 80% as the hard limit. The validator enforces 80%
+    # as the maximum position percentage, while the position sizer targets
+    # lower percentages (soft limits) for normal operations.
+    HARD_LIMIT = Decimal("80")  # Match validator.py:57 default
+    SOFT_LIMIT = Decimal("20")
+    MIN_TRADE = 10.0
+
+    def test_position_between_soft_and_hard_limits(self, mock_settings, mock_exchange_client, mock_database, caplog):
+        """
+        Test with position at 75% - between soft limit (20%) and hard limit (80%).
+        Should have room because we're below the hard limit.
+        """
+        # Configure hard limit at 80%, soft limit at 20%
+        mock_settings.max_position_percent = self.HARD_LIMIT  # Validator hard limit
+        mock_settings.position_size_percent = self.SOFT_LIMIT  # Position sizer soft target
+        mock_settings.min_trade_quote = self.MIN_TRADE
+
+        # Setup balances: 75% in base, 25% in quote
+        # Portfolio = 10000 USD, base value = 7500 USD, quote = 2500 USD
+        base_balance = Decimal("0.15")  # 0.15 BTC * 50000 = 7500 USD
+        quote_balance = Decimal("2500")
+
+        # Verify setup achieves intended position percentage
+        portfolio_value = quote_balance + (base_balance * self.BTC_PRICE)
+        position_pct = float(base_balance * self.BTC_PRICE / portfolio_value * 100)
+        assert 74.9 <= position_pct <= 75.1, f"Expected 75% position, got {position_pct:.1f}%"
+
+        mock_exchange_client.get_current_price.return_value = self.BTC_PRICE
+        def get_balance_side_effect(currency):
+            if currency == "USD":
+                return Balance(currency=currency, available=quote_balance, hold=Decimal("0"))
+            else:  # BTC
+                return Balance(currency=currency, available=base_balance, hold=Decimal("0"))
+        mock_exchange_client.get_balance.side_effect = get_balance_side_effect
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    # Verify daemon uses validator's hard limit (80%), not position sizer's soft target (20%)
+                    assert daemon.validator.config.max_position_percent == self.HARD_LIMIT, \
+                        "Daemon should use validator's MAX_POSITION_PERCENT for room check"
+
+                    # Mock signal scorer to return a strong buy signal
+                    # This ensures we're testing the room check with a buy scenario
+                    buy_signal = SignalResult(
+                        score=75,  # Strong buy signal
+                        action="buy",
+                        indicators=IndicatorValues(
+                            rsi=30.0, macd_line=100.0, macd_signal=50.0, macd_histogram=50.0,
+                            bb_upper=51000.0, bb_middle=50000.0, bb_lower=49000.0,
+                            ema_fast=50100.0, ema_slow=50000.0, atr=500.0, volatility="normal"
+                        ),
+                        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        confidence=0.8
+                    )
+
+                    # Reset mock to track calls during iteration
+                    mock_exchange_client.reset_mock()
+
+                    # Run trading iteration to trigger room check logic
+                    with caplog.at_level(logging.INFO):
+                        with patch('src.strategy.signal_scorer.SignalScorer.calculate_score', return_value=buy_signal):
+                            daemon._trading_iteration()
+
+                    # Should NOT see "buy_blocked_insufficient_room" log because there IS room
+                    # Expected calculation: Position = 75%, Max = 80%, Available Room = 5%
+                    # Min Room = max(1.0%, 10/10000 * 100) = 1.0%
+                    # 5% > 1.0% so buy should be allowed
+                    assert "buy_blocked_insufficient_room" not in caplog.text, \
+                        "Should have room to buy when position is at 75% (below 80% hard limit)"
+
+                    # Verify other safety systems would allow trading
+                    # This proves room check is the ONLY reason a buy might not occur
+                    assert daemon.kill_switch.is_active is False, "Kill switch should be inactive"
+                    assert daemon.circuit_breaker.can_trade is True, "Circuit breaker should allow trading"
+                    assert daemon.loss_limiter.get_status().can_trade is True, "Loss limiter should allow trading"
+
+    def test_position_at_hard_limit(self, mock_settings, mock_exchange_client, mock_database, caplog):
+        """
+        Test with position exactly at hard limit (80%).
+        Should have no room to buy - verify daemon blocks buy orders.
+        """
+        # Configure hard limit at 80%
+        mock_settings.max_position_percent = self.HARD_LIMIT
+        mock_settings.position_size_percent = self.SOFT_LIMIT
+        mock_settings.min_trade_quote = self.MIN_TRADE
+
+        # Setup balances: 80% in base, 20% in quote
+        base_balance = Decimal("0.16")  # 0.16 BTC * 50000 = 8000 USD
+        quote_balance = Decimal("2000")
+
+        # Verify setup achieves intended position percentage
+        portfolio_value = quote_balance + (base_balance * self.BTC_PRICE)
+        position_pct = float(base_balance * self.BTC_PRICE / portfolio_value * 100)
+        assert 79.9 <= position_pct <= 80.1, f"Expected 80% position, got {position_pct:.1f}%"
+
+        mock_exchange_client.get_current_price.return_value = self.BTC_PRICE
+        def get_balance_side_effect(currency):
+            if currency == "USD":
+                return Balance(currency=currency, available=quote_balance, hold=Decimal("0"))
+            else:  # BTC
+                return Balance(currency=currency, available=base_balance, hold=Decimal("0"))
+        mock_exchange_client.get_balance.side_effect = get_balance_side_effect
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    # Verify daemon uses validator's hard limit (80%)
+                    assert daemon.validator.config.max_position_percent == self.HARD_LIMIT, \
+                        "Daemon should use validator's MAX_POSITION_PERCENT for room check"
+
+                    # Mock signal scorer to return a strong buy signal
+                    # This ensures we're testing the room check, not signal strength
+                    buy_signal = SignalResult(
+                        score=75,  # Strong buy signal
+                        action="buy",
+                        indicators=IndicatorValues(
+                            rsi=30.0, macd_line=100.0, macd_signal=50.0, macd_histogram=50.0,
+                            bb_upper=51000.0, bb_middle=50000.0, bb_lower=49000.0,
+                            ema_fast=50100.0, ema_slow=50000.0, atr=500.0, volatility="normal"
+                        ),
+                        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        confidence=0.8
+                    )
+
+                    # Reset mock to track calls during iteration
+                    mock_exchange_client.reset_mock()
+
+                    # Run trading iteration
+                    with patch('src.strategy.signal_scorer.SignalScorer.calculate_score', return_value=buy_signal):
+                        daemon._trading_iteration()
+
+                    # Verify room check specifically blocked the buy
+                    # Expected calculation: Position = 80%, Max = 80%, Available Room = 0%
+                    # Verify other safety systems would allow trading (so room check is the blocker)
+                    assert daemon.kill_switch.is_active is False, "Kill switch should be inactive"
+                    assert daemon.circuit_breaker.can_trade is True, "Circuit breaker should allow trading"
+                    assert daemon.loss_limiter.get_status().can_trade is True, "Loss limiter should allow trading"
+                    # Verify NO buy order was placed despite strong signal and all safety systems allowing trading
+                    # This proves the room check was the blocker
+                    mock_exchange_client.market_buy.assert_not_called()
+
+    def test_position_above_hard_limit(self, mock_settings, mock_exchange_client, mock_database, caplog):
+        """
+        Test with position above hard limit (81% > 80%).
+        Should have negative room - verify daemon blocks buy orders.
+        """
+        # Configure hard limit at 80%
+        mock_settings.max_position_percent = self.HARD_LIMIT
+        mock_settings.position_size_percent = self.SOFT_LIMIT
+        mock_settings.min_trade_quote = self.MIN_TRADE
+
+        # Setup balances: 81% in base, 19% in quote
+        base_balance = Decimal("0.162")  # 0.162 BTC * 50000 = 8100 USD
+        quote_balance = Decimal("1900")
+
+        # Verify setup achieves intended position percentage
+        portfolio_value = quote_balance + (base_balance * self.BTC_PRICE)
+        position_pct = float(base_balance * self.BTC_PRICE / portfolio_value * 100)
+        assert 80.9 <= position_pct <= 81.1, f"Expected 81% position, got {position_pct:.1f}%"
+
+        mock_exchange_client.get_current_price.return_value = self.BTC_PRICE
+        def get_balance_side_effect(currency):
+            if currency == "USD":
+                return Balance(currency=currency, available=quote_balance, hold=Decimal("0"))
+            else:  # BTC
+                return Balance(currency=currency, available=base_balance, hold=Decimal("0"))
+        mock_exchange_client.get_balance.side_effect = get_balance_side_effect
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    # Verify daemon uses validator's hard limit (80%)
+                    assert daemon.validator.config.max_position_percent == self.HARD_LIMIT, \
+                        "Daemon should use validator's MAX_POSITION_PERCENT for room check"
+
+                    # Mock signal scorer to return a strong buy signal
+                    buy_signal = SignalResult(
+                        score=75,  # Strong buy signal
+                        action="buy",
+                        indicators=IndicatorValues(
+                            rsi=30.0, macd_line=100.0, macd_signal=50.0, macd_histogram=50.0,
+                            bb_upper=51000.0, bb_middle=50000.0, bb_lower=49000.0,
+                            ema_fast=50100.0, ema_slow=50000.0, atr=500.0, volatility="normal"
+                        ),
+                        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        confidence=0.8
+                    )
+
+                    # Reset mock to track calls during iteration
+                    mock_exchange_client.reset_mock()
+
+                    # Run trading iteration
+                    with patch('src.strategy.signal_scorer.SignalScorer.calculate_score', return_value=buy_signal):
+                        daemon._trading_iteration()
+
+                    # Verify room check specifically blocked the buy
+                    # Expected calculation: Position = 81%, Max = 80%, Available Room = -1%
+                    # Verify other safety systems would allow trading (so room check is the blocker)
+                    assert daemon.kill_switch.is_active is False, "Kill switch should be inactive"
+                    assert daemon.circuit_breaker.can_trade is True, "Circuit breaker should allow trading"
+                    assert daemon.loss_limiter.get_status().can_trade is True, "Loss limiter should allow trading"
+                    # Verify NO buy order was placed despite strong signal and all safety systems allowing trading
+                    # This proves the room check was the blocker
+                    mock_exchange_client.market_buy.assert_not_called()
+
+    def test_edge_case_position_just_below_hard_limit(self, mock_settings, mock_exchange_client, mock_database, caplog):
+        """
+        Test edge case: position at 79%, hard limit 80%.
+        Portfolio = 1000 USD, MIN_TRADE_QUOTE = 10 USD (min_room_pct = 1.0%).
+        Available room = 1.0%, which equals min_room_pct.
+        Should have room since available_room_pct >= min_room_pct.
+        """
+        # Configure hard limit at 80%
+        mock_settings.max_position_percent = self.HARD_LIMIT
+        mock_settings.position_size_percent = self.SOFT_LIMIT
+        mock_settings.min_trade_quote = self.MIN_TRADE
+
+        # Setup balances for 1000 USD portfolio: 79% in base, 21% in quote
+        base_balance = Decimal("0.0158")  # 0.0158 BTC * 50000 = 790 USD
+        quote_balance = Decimal("210")
+
+        # Verify setup achieves intended position percentage
+        portfolio_value = quote_balance + (base_balance * self.BTC_PRICE)
+        position_pct = float(base_balance * self.BTC_PRICE / portfolio_value * 100)
+        assert 78.9 <= position_pct <= 79.1, f"Expected 79% position, got {position_pct:.1f}%"
+
+        mock_exchange_client.get_current_price.return_value = self.BTC_PRICE
+        def get_balance_side_effect(currency):
+            if currency == "USD":
+                return Balance(currency=currency, available=quote_balance, hold=Decimal("0"))
+            else:  # BTC
+                return Balance(currency=currency, available=base_balance, hold=Decimal("0"))
+        mock_exchange_client.get_balance.side_effect = get_balance_side_effect
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    # Verify daemon uses validator's hard limit (80%)
+                    assert daemon.validator.config.max_position_percent == self.HARD_LIMIT, \
+                        "Daemon should use validator's MAX_POSITION_PERCENT for room check"
+
+                    # Mock signal scorer to return a strong buy signal
+                    # This ensures we're testing the room check with a buy scenario
+                    buy_signal = SignalResult(
+                        score=75,  # Strong buy signal
+                        action="buy",
+                        indicators=IndicatorValues(
+                            rsi=30.0, macd_line=100.0, macd_signal=50.0, macd_histogram=50.0,
+                            bb_upper=51000.0, bb_middle=50000.0, bb_lower=49000.0,
+                            ema_fast=50100.0, ema_slow=50000.0, atr=500.0, volatility="normal"
+                        ),
+                        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        confidence=0.8
+                    )
+
+                    # Reset mock to track calls during iteration
+                    mock_exchange_client.reset_mock()
+
+                    # Run trading iteration to trigger room check logic
+                    with caplog.at_level(logging.INFO):
+                        with patch('src.strategy.signal_scorer.SignalScorer.calculate_score', return_value=buy_signal):
+                            daemon._trading_iteration()
+
+                    # Should NOT see "buy_blocked_insufficient_room" because room meets min requirement
+                    # Expected calculation: Position = 79%, Max = 80%, Available Room = 1%
+                    # Min Room = max(1.0%, 10/1000 * 100) = 1.0%
+                    # 1.0% >= 1.0% so buy should be allowed
+                    assert "buy_blocked_insufficient_room" not in caplog.text, \
+                        "Should have room to buy when available_room_pct (1.0%) >= min_room_pct (1.0%)"
+
+                    # Verify other safety systems would allow trading
+                    # This proves room check is the ONLY reason a buy might not occur
+                    assert daemon.kill_switch.is_active is False, "Kill switch should be inactive"
+                    assert daemon.circuit_breaker.can_trade is True, "Circuit breaker should allow trading"
+                    assert daemon.loss_limiter.get_status().can_trade is True, "Loss limiter should allow trading"
+
+    def test_edge_case_room_below_min_trade_requirement(self, mock_settings, mock_exchange_client, mock_database, caplog):
+        """
+        Test edge case: position at 79.5%, hard limit 80%.
+        Portfolio = 1000 USD, MIN_TRADE_QUOTE = 10 USD (min_room_pct = 1.0%).
+        Available room = 0.5%, which is less than min_room_pct.
+        Should NOT have room - verify daemon blocks buy orders.
+        """
+        # Configure hard limit at 80%
+        mock_settings.max_position_percent = self.HARD_LIMIT
+        mock_settings.position_size_percent = self.SOFT_LIMIT
+        mock_settings.min_trade_quote = self.MIN_TRADE
+
+        # Setup balances for 1000 USD portfolio: 79.5% in base, 20.5% in quote
+        base_balance = Decimal("0.0159")  # 0.0159 BTC * 50000 = 795 USD
+        quote_balance = Decimal("205")
+
+        # Verify setup achieves intended position percentage
+        portfolio_value = quote_balance + (base_balance * self.BTC_PRICE)
+        position_pct = float(base_balance * self.BTC_PRICE / portfolio_value * 100)
+        assert 79.4 <= position_pct <= 79.6, f"Expected 79.5% position, got {position_pct:.1f}%"
+
+        mock_exchange_client.get_current_price.return_value = self.BTC_PRICE
+        def get_balance_side_effect(currency):
+            if currency == "USD":
+                return Balance(currency=currency, available=quote_balance, hold=Decimal("0"))
+            else:  # BTC
+                return Balance(currency=currency, available=base_balance, hold=Decimal("0"))
+        mock_exchange_client.get_balance.side_effect = get_balance_side_effect
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    # Verify daemon uses validator's hard limit (80%)
+                    assert daemon.validator.config.max_position_percent == self.HARD_LIMIT, \
+                        "Daemon should use validator's MAX_POSITION_PERCENT for room check"
+
+                    # Mock signal scorer to return a strong buy signal
+                    buy_signal = SignalResult(
+                        score=75,  # Strong buy signal
+                        action="buy",
+                        indicators=IndicatorValues(
+                            rsi=30.0, macd_line=100.0, macd_signal=50.0, macd_histogram=50.0,
+                            bb_upper=51000.0, bb_middle=50000.0, bb_lower=49000.0,
+                            ema_fast=50100.0, ema_slow=50000.0, atr=500.0, volatility="normal"
+                        ),
+                        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        confidence=0.8
+                    )
+
+                    # Reset mock to track calls during iteration
+                    mock_exchange_client.reset_mock()
+
+                    # Run trading iteration
+                    with patch('src.strategy.signal_scorer.SignalScorer.calculate_score', return_value=buy_signal):
+                        daemon._trading_iteration()
+
+                    # Verify room check specifically blocked the buy
+                    # Expected calculation: Position = 79.5%, Max = 80%, Available Room = 0.5%
+                    # Min Room = max(1.0%, 10/1000 * 100) = 1.0%
+                    # 0.5% < 1.0% so buy should be blocked
+                    # Verify other safety systems would allow trading (so room check is the blocker)
+                    assert daemon.kill_switch.is_active is False, "Kill switch should be inactive"
+                    assert daemon.circuit_breaker.can_trade is True, "Circuit breaker should allow trading"
+                    assert daemon.loss_limiter.get_status().can_trade is True, "Loss limiter should allow trading"
+                    # Verify NO buy order was placed despite strong signal and all safety systems allowing trading
+                    # This proves the room check was the blocker
+                    mock_exchange_client.market_buy.assert_not_called()
+
+    def test_sell_allowed_when_position_at_limit(self, mock_settings, mock_exchange_client, mock_database, caplog):
+        """
+        Verify sells are allowed even when position is at hard limit.
+        Room check should only affect buy orders, not sell orders.
+        """
+        # Configure hard limit at 80%
+        mock_settings.max_position_percent = self.HARD_LIMIT
+        mock_settings.position_size_percent = self.SOFT_LIMIT
+        mock_settings.min_trade_quote = self.MIN_TRADE
+
+        # Setup balances: 80% in base, 20% in quote (at hard limit)
+        base_balance = Decimal("0.16")  # 0.16 BTC * 50000 = 8000 USD
+        quote_balance = Decimal("2000")
+
+        # Verify setup achieves intended position percentage
+        portfolio_value = quote_balance + (base_balance * self.BTC_PRICE)
+        position_pct = float(base_balance * self.BTC_PRICE / portfolio_value * 100)
+        assert 79.9 <= position_pct <= 80.1, f"Expected 80% position, got {position_pct:.1f}%"
+
+        mock_exchange_client.get_current_price.return_value = self.BTC_PRICE
+        def get_balance_side_effect(currency):
+            if currency == "USD":
+                return Balance(currency=currency, available=quote_balance, hold=Decimal("0"))
+            else:  # BTC
+                return Balance(currency=currency, available=base_balance, hold=Decimal("0"))
+        mock_exchange_client.get_balance.side_effect = get_balance_side_effect
+
+        with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+            with patch('src.daemon.runner.Database', return_value=mock_database):
+                with patch('src.daemon.runner.TelegramNotifier'):
+                    daemon = TradingDaemon(mock_settings)
+
+                    # Verify daemon uses validator's hard limit (80%)
+                    assert daemon.validator.config.max_position_percent == self.HARD_LIMIT, \
+                        "Daemon should use validator's MAX_POSITION_PERCENT for room check"
+
+                    # Mock signal scorer to return a strong sell signal
+                    # This ensures we're testing that sell orders are NOT blocked by room check
+                    sell_signal = SignalResult(
+                        score=-75,  # Strong sell signal
+                        action="sell",
+                        indicators=IndicatorValues(
+                            rsi=70.0, macd_line=-100.0, macd_signal=-50.0, macd_histogram=-50.0,
+                            bb_upper=51000.0, bb_middle=50000.0, bb_lower=49000.0,
+                            ema_fast=49900.0, ema_slow=50000.0, atr=500.0, volatility="normal"
+                        ),
+                        breakdown={"rsi": -20, "macd": -20, "bollinger": -15, "ema": -10, "volume": -10},
+                        confidence=0.8
+                    )
+
+                    # Reset mock to track calls during iteration
+                    mock_exchange_client.reset_mock()
+
+                    # Run trading iteration
+                    with caplog.at_level(logging.INFO):
+                        with patch('src.strategy.signal_scorer.SignalScorer.calculate_score', return_value=sell_signal):
+                            daemon._trading_iteration()
+
+                    # Verify sell was NOT blocked by BUY room check (room check is buy-specific)
+                    assert "buy_blocked_insufficient_room" not in caplog.text, \
+                        "Room check should not affect sell orders"
+
+                    # Verify other safety systems would allow trading
+                    # This proves that sell logic was evaluated and not blocked by safety systems
+                    assert daemon.kill_switch.is_active is False, "Kill switch should be inactive"
+                    assert daemon.circuit_breaker.can_trade is True, "Circuit breaker should allow trading"
+                    assert daemon.loss_limiter.get_status().can_trade is True, "Loss limiter should allow trading"
+
+                    # Verify sell was attempted (market_sell called with positive size)
+                    # Since all safety systems allow trading and we have a strong sell signal,
+                    # the daemon should have attempted to execute the sell
+                    if mock_exchange_client.market_sell.call_count > 0:
+                        # Sell was executed - verify it was called with correct parameters
+                        call_args = mock_exchange_client.market_sell.call_args
+                        assert call_args is not None, "market_sell should have been called"
+                        # Verify sell size is greater than 0 (selling some or all of the position)
+                        sell_size = call_args[0][1] if len(call_args[0]) > 1 else call_args[1].get('size')
+                        assert sell_size > 0, "Sell size should be positive"

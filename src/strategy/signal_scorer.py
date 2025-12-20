@@ -175,6 +175,7 @@ class SignalScorer:
         extreme_rsi_lower: int = 25,
         extreme_rsi_upper: int = 75,
         trend_filter_penalty: int = 20,
+        macd_interval_multipliers: Optional[dict[str, float]] = None,
     ):
         """
         Initialize signal scorer.
@@ -253,6 +254,9 @@ class SignalScorer:
 
         # Trend filter parameters
         self.trend_filter_penalty = trend_filter_penalty
+
+        # MACD dynamic scaling parameters
+        self.macd_interval_multipliers = macd_interval_multipliers
 
     def update_settings(
         self,
@@ -546,7 +550,18 @@ class SignalScorer:
         rsi_score = int(rsi_signal * self.weights.rsi)
 
         # MACD component (graduated: returns -1.0 to +1.0, adaptive to candle interval)
-        macd_signal = get_macd_signal_graduated(macd_result, price, self.candle_interval)
+        # Use dynamic ATR-based scaling for better adaptability across assets and volatility regimes
+        # Enhanced validation: ensure ATR data is valid before using dynamic scaling
+        if atr_result is not None and len(atr_result.atr) > 0 and not atr_result.atr.empty:
+            macd_signal = get_macd_signal_graduated(
+                macd_result, price, self.candle_interval, atr_result, close, self.macd_interval_multipliers
+            )
+        else:
+            # Explicit fallback logging when ATR unavailable
+            logger.debug("atr_unavailable_using_static_macd_scale", candle_interval=self.candle_interval)
+            macd_signal = get_macd_signal_graduated(
+                macd_result, price, self.candle_interval, None, None, self.macd_interval_multipliers
+            )
         macd_score = int(macd_signal * self.weights.macd)
 
         # Bollinger Bands component (graduated: returns -1.0 to +1.0)
@@ -896,7 +911,7 @@ class SignalScorer:
 
         # HTF (Higher Timeframe) bias modifier
         # Purpose: Reduce false signals by aligning trades with the macro trend
-        # - Daily + 6-hour trends must agree for strong bias, otherwise neutral
+        # - Daily + 4-hour trends must agree for strong bias, otherwise neutral
         # - Expected impact: 30-50% reduction in false signals
         #
         # Application logic (asymmetric for sell signals):
@@ -929,6 +944,7 @@ class SignalScorer:
             # Use round() to handle odd mtf_counter_penalty values correctly.
             half_penalty = round(self.mtf_counter_penalty / 2)
 
+            # ========== PROTECTION LAYER 3: Extreme Fear MTF Override ==========
             # EXTREME FEAR OVERRIDE: Only applies when daily/4H disagree (htf_bias=neutral)
             # When both timeframes agree, the existing aligned/counter logic already applies
             # full penalties, so no override is needed.
@@ -936,6 +952,17 @@ class SignalScorer:
             # During extreme fear conditions, when daily/4H disagree, apply FULL counter-penalty
             # based on daily trend (instead of the usual half penalty). This prevents 4H neutral
             # signals from neutralizing the more reliable daily trend during extreme conditions.
+            #
+            # Applied BEFORE:
+            #   - Layer 4: Dual-extreme blocking (in runner.py:2059)
+            #   - Layer 5: Extreme volatility stop widening (in runner.py:3579)
+            #
+            # Applied AFTER:
+            #   - Base indicator scoring (RSI, MACD, Bollinger, EMA, Volume)
+            #   - Normal MTF alignment logic
+            #
+            # Rationale: Daily timeframe is more reliable during crashes. When 4H shows
+            # neutral but daily shows bearish during extreme fear, trust the daily signal.
             if sentiment_category == "extreme_fear" and htf_daily == "bearish" and total_score > 0:
                 # Buying into bearish daily trend during extreme fear - apply FULL penalty
                 htf_adjustment = -self.mtf_counter_penalty
@@ -978,22 +1005,31 @@ class SignalScorer:
 
         # Apply adjustment and log only if NOT already handled by extreme fear override
         if htf_adjustment != 0 and not extreme_fear_override_applied:
+            score_before = total_score
             total_score += htf_adjustment
             logger.info(
                 "htf_bias_applied",
-                htf_bias=htf_bias or "neutral",
-                htf_daily=htf_daily,
-                htf_4h=htf_4h,
+                htf_bias=htf_bias if htf_bias is not None else "unknown",
+                htf_daily=htf_daily if htf_daily is not None else "unknown",
+                htf_4h=htf_4h if htf_4h is not None else "unknown",
                 sentiment=sentiment_category,
-                signal_direction="bullish" if total_score > 0 else "bearish",
+                signal_direction="bullish" if score_before > 0 else "bearish",
+                score_before=score_before,
+                score_after=total_score,
                 adjustment=htf_adjustment,
                 partial_penalty=htf_bias == "neutral" or htf_bias is None,
             )
 
         breakdown["htf_bias"] = htf_adjustment
-        breakdown["_htf_trend"] = htf_bias if htf_bias is not None else "disabled"
-        breakdown["_htf_daily"] = htf_daily if htf_daily is not None else "disabled"
-        breakdown["_htf_4h"] = htf_4h if htf_4h is not None else "disabled"
+        # Use explicit None checks for null safety (avoid masking empty strings).
+        # HTF values are expected to be: "bullish", "bearish", "neutral", or None.
+        # Empty strings should NOT occur in production (would indicate a bug in get_trend()).
+        # If empty strings appear, they are preserved for debugging (not masked as "unknown").
+        # None values indicate missing/unavailable data and are replaced with "unknown".
+        # See also: src/ai/trade_reviewer.py for similar pattern
+        breakdown["_htf_trend"] = htf_bias if htf_bias is not None else "unknown"
+        breakdown["_htf_daily"] = htf_daily if htf_daily is not None else "unknown"
+        breakdown["_htf_4h"] = htf_4h if htf_4h is not None else "unknown"
 
         # Clamp score to -100 to +100
         total_score = max(-100, min(100, total_score))

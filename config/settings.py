@@ -191,6 +191,12 @@ class Settings(BaseSettings):
     # Strategy Parameters - ATR
     atr_period: int = Field(default=14, ge=2, le=50)
 
+    # MACD Dynamic Scaling - Interval Multipliers
+    macd_interval_multipliers: Optional[dict[str, float]] = Field(
+        default=None,
+        description="MACD dynamic scale interval multipliers. Used in production to tune histogram scaling per interval. If None, uses hardcoded defaults. Format: {\"ONE_MINUTE\": 2.0, \"FIVE_MINUTE\": 1.5, ...}"
+    )
+
     # Strategy Parameters - Signal
     signal_threshold: int = Field(
         default=60,
@@ -570,11 +576,17 @@ class Settings(BaseSettings):
         default=True,
         description="Allow AI models to search web during market analysis"
     )
-    ai_max_tokens: int = Field(
+    ai_reviewer_max_tokens: int = Field(
+        default=800,
+        ge=200,
+        le=2000,
+        description="Max tokens for trade review decisions (shorter responses)"
+    )
+    ai_research_max_tokens: int = Field(
         default=4000,
-        ge=500,
-        le=16000,
-        description="Maximum tokens for AI API responses (increase if seeing truncated JSON errors)"
+        ge=1000,
+        le=8000,
+        description="Max tokens for market research (longer responses)"
     )
     ai_api_timeout: int = Field(
         default=120,
@@ -650,11 +662,20 @@ class Settings(BaseSettings):
         default=False,
         description="Include 4-hour timeframe in MTF (false = daily-only, simpler)"
     )
-    mtf_candle_limit: int = Field(
+    # Upper bound rationale: Daily limited to 100 (~14 weeks) as longer periods dilute
+    # trend signals in volatile crypto markets. 4H allows 200 (~33 days) to capture
+    # recent price action with finer granularity while keeping API/memory usage reasonable.
+    mtf_daily_candle_limit: int = Field(
         default=50,
-        ge=20,
-        le=100,
-        description="Number of candles to fetch for HTF trend calculation"
+        ge=26,  # Conservative default minimum (26 = default MACD slow). Actual minimum validated against max(ema_slow, bollinger_period, macd_slow)
+        le=100,  # ~14 weeks - longer periods dilute trend signals in crypto
+        description="Candles for daily trend analysis (50 = ~7 weeks, must be >= longest indicator period)"
+    )
+    mtf_4h_candle_limit: int = Field(
+        default=84,
+        ge=26,  # Conservative default minimum (26 = default MACD slow). Actual minimum validated against max(ema_slow, bollinger_period, macd_slow)
+        le=200,  # ~33 days - finer granularity captures recent price action
+        description="Candles for 4H trend analysis (84 = 14 days, must be >= longest indicator period)"
     )
     mtf_daily_cache_minutes: int = Field(
         default=60,
@@ -685,6 +706,12 @@ class Settings(BaseSettings):
     database_path: Path = Field(
         default=Path("data/trading.db"),
         description="Path to SQLite database"
+    )
+    signal_history_failure_threshold: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Number of consecutive signal history storage failures before alerting"
     )
 
     # Logging
@@ -731,10 +758,26 @@ class Settings(BaseSettings):
         description="Custom sentiment-trend interaction modifiers. If None, uses hardcoded defaults in regime.py. Format: JSON object with keys like 'extreme_fear_bearish_buy' containing threshold_mult and position_mult values."
     )
 
+    # Sentiment Fetch Failure Alerting
+    sentiment_failure_alert_threshold: int = Field(
+        default=3,
+        ge=1,
+        le=100,
+        description="Number of consecutive sentiment fetch failures before alerting (default: 3)"
+    )
+
     # Cramer Mode Mode (paper trading only)
     enable_cramer_mode: bool = Field(
         default=False,
         description="Enable Cramer Mode: execute opposite trade alongside each normal trade for comparison (paper mode only)"
+    )
+
+    # Signal History Cleanup
+    signal_history_retention_days: int = Field(
+        default=90,
+        ge=1,
+        le=365,
+        description="Number of days to retain signal history records (older records are deleted during cleanup)"
     )
 
     @field_validator("ema_slow")
@@ -934,6 +977,72 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def validate_mtf_candle_limits(self) -> "Settings":
+        """Validate MTF candle limits are sufficient for indicator calculations.
+
+        The signal scorer requires enough candles to calculate all indicators:
+        - EMA slow period (default 21, max 200)
+        - Bollinger period (default 20, max 100)
+        - MACD slow period (default 26, max 100)
+
+        If candle limits are less than the longest indicator period,
+        get_trend() will always return neutral due to insufficient data.
+        """
+        min_required = max(self.ema_slow, self.bollinger_period, self.macd_slow)
+
+        if self.mtf_daily_candle_limit < min_required:
+            raise ValueError(
+                f"mtf_daily_candle_limit ({self.mtf_daily_candle_limit}) must be >= "
+                f"longest indicator period ({min_required}). Current settings: "
+                f"ema_slow={self.ema_slow}, bollinger_period={self.bollinger_period}, "
+                f"macd_slow={self.macd_slow}"
+            )
+
+        if self.mtf_4h_candle_limit < min_required:
+            raise ValueError(
+                f"mtf_4h_candle_limit ({self.mtf_4h_candle_limit}) must be >= "
+                f"longest indicator period ({min_required}). Current settings: "
+                f"ema_slow={self.ema_slow}, bollinger_period={self.bollinger_period}, "
+                f"macd_slow={self.macd_slow}"
+            )
+
+        return self
+
+    @field_validator("macd_interval_multipliers")
+    @classmethod
+    def validate_macd_interval_multipliers(cls, v: Optional[dict]) -> Optional[dict]:
+        """Validate MACD interval multipliers configuration."""
+        if v is None:
+            return None
+
+        valid_intervals = {
+            "ONE_MINUTE", "FIVE_MINUTE", "FIFTEEN_MINUTE",
+            "THIRTY_MINUTE", "ONE_HOUR", "TWO_HOUR",
+            "SIX_HOUR", "ONE_DAY"
+        }
+
+        # Check all keys are valid intervals
+        for interval in v.keys():
+            if interval not in valid_intervals:
+                raise ValueError(
+                    f"macd_interval_multipliers has invalid interval: {interval}. "
+                    f"Valid intervals: {sorted(valid_intervals)}"
+                )
+
+        # Check all values are positive floats
+        for interval, multiplier in v.items():
+            if not isinstance(multiplier, (int, float)):
+                raise ValueError(
+                    f"macd_interval_multipliers[{interval}] must be numeric, got {type(multiplier).__name__}"
+                )
+            if multiplier <= 0:
+                raise ValueError(
+                    f"macd_interval_multipliers[{interval}] must be positive, got {multiplier}"
+                )
+
+        return v
+
     @field_validator("sentiment_trend_modifiers")
     @classmethod
     def validate_sentiment_trend_modifiers(cls, v: Optional[dict]) -> Optional[dict]:
@@ -1021,6 +1130,7 @@ class Settings(BaseSettings):
 
         Maps deprecated names to new names with a deprecation warning.
         Also migrates old VETO_ACTION/VETO_THRESHOLD to tiered thresholds (v1.31.0).
+        Also migrates deprecated MTF_CANDLE_LIMIT to per-timeframe limits.
         """
         # Mapping of old CLAUDE_* vars to new names
         deprecated_mapping = {
@@ -1086,6 +1196,65 @@ class Settings(BaseSettings):
                         DeprecationWarning,
                         stacklevel=2,
                     )
+
+        # Migrate deprecated MTF_CANDLE_LIMIT to per-timeframe limits
+        # Migrate each parameter independently to handle partial upgrades
+        old_mtf_limit = os.environ.get("MTF_CANDLE_LIMIT")
+        if old_mtf_limit is not None:
+            has_new_daily = os.environ.get("MTF_DAILY_CANDLE_LIMIT") or data.get("mtf_daily_candle_limit")
+            has_new_4h = os.environ.get("MTF_4H_CANDLE_LIMIT") or data.get("mtf_4h_candle_limit")
+
+            try:
+                limit_val = int(old_mtf_limit)
+                # 4H needs more candles (6 per day vs 1), scale up proportionally
+                # Old default was 50 for daily, new 4H default is 84 (14 days worth)
+                # Scale: 84/50 = 1.68, round to nearest sensible value
+                scaled_4h = min(200, max(26, int(limit_val * 1.68)))
+
+                # Migrate each independently - user may have set only one new param
+                migrated = []
+                if not has_new_daily:
+                    data["mtf_daily_candle_limit"] = limit_val
+                    migrated.append(f"MTF_DAILY_CANDLE_LIMIT={limit_val}")
+                if not has_new_4h:
+                    data["mtf_4h_candle_limit"] = scaled_4h
+                    migrated.append(f"MTF_4H_CANDLE_LIMIT={scaled_4h}")
+
+                if migrated:
+                    warnings.warn(
+                        f"MTF_CANDLE_LIMIT={old_mtf_limit} is deprecated. "
+                        f"Migrated to {' and '.join(migrated)}. "
+                        "Update your .env to use the new parameters.",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
+            except ValueError:
+                pass  # Invalid value, let normal validation handle it
+
+        # v1.40.0: Migrate old AI_MAX_TOKENS to split settings
+        # Migrate each parameter independently to handle partial upgrades
+        old_max_tokens = os.environ.get("AI_MAX_TOKENS")
+        if old_max_tokens is not None:
+            has_new_reviewer = os.environ.get("AI_REVIEWER_MAX_TOKENS") or data.get("ai_reviewer_max_tokens")
+            has_new_research = os.environ.get("AI_RESEARCH_MAX_TOKENS") or data.get("ai_research_max_tokens")
+
+            # Migrate each independently - user may have set only one new param
+            migrated = []
+            if not has_new_reviewer:
+                data["ai_reviewer_max_tokens"] = 800
+                migrated.append("AI_REVIEWER_MAX_TOKENS=800")
+            if not has_new_research:
+                data["ai_research_max_tokens"] = int(old_max_tokens)
+                migrated.append(f"AI_RESEARCH_MAX_TOKENS={old_max_tokens}")
+
+            if migrated:
+                warnings.warn(
+                    f"AI_MAX_TOKENS={old_max_tokens} is deprecated. "
+                    f"Migrated to {' and '.join(migrated)}. "
+                    "Update your .env to use the new parameters.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
 
         return data
 
