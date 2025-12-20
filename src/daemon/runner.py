@@ -850,7 +850,7 @@ class TradingDaemon:
         Get trend for a specific timeframe with caching.
 
         Args:
-            granularity: Candle granularity (e.g., "ONE_DAY", "SIX_HOUR")
+            granularity: Candle granularity (e.g., "ONE_DAY", "FOUR_HOUR")
             cache_minutes: Cache TTL in minutes
 
         Returns:
@@ -882,12 +882,17 @@ class TradingDaemon:
             )
 
             # Validate candles before processing - need enough data for trend calculation
-            if candles is None or candles.empty or len(candles) < self.signal_scorer.ema_slow_period:
+            min_required = max(
+                self.signal_scorer.ema_slow_period,
+                self.signal_scorer.bollinger_period,
+                self.signal_scorer.macd_slow,
+            )
+            if candles is None or candles.empty or len(candles) < min_required:
                 logger.warning(
                     "htf_insufficient_data",
                     timeframe=granularity,
                     candle_count=len(candles) if candles is not None and not candles.empty else 0,
-                    required=self.signal_scorer.ema_slow_period,
+                    required=min_required,
                 )
                 return cached_trend or "neutral"
 
