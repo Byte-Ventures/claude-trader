@@ -116,8 +116,8 @@ class TradingDaemon:
         # Multi-Timeframe state (for HTF bias caching)
         self._daily_trend: str = "neutral"
         self._daily_last_fetch: Optional[datetime] = None
-        self._6h_trend: str = "neutral"
-        self._6h_last_fetch: Optional[datetime] = None
+        self._4h_trend: str = "neutral"
+        self._4h_last_fetch: Optional[datetime] = None
 
         # Signal history tracking for marking executed trades.
         # Thread-safety note: This is safe because TradingDaemon runs single-threaded.
@@ -753,11 +753,13 @@ class TradingDaemon:
             # Update AI recommendation TTL
             self._ai_recommendation_ttl_minutes = new_settings.ai_recommendation_ttl_minutes
 
-            # Invalidate HTF cache if MTF settings changed
-            mtf_settings = {"mtf_enabled", "mtf_4h_enabled", "mtf_candle_limit",
-                           "mtf_daily_cache_minutes", "mtf_4h_cache_minutes",
-                           "mtf_aligned_boost", "mtf_counter_penalty"}
-            if mtf_settings & set(changes.keys()):
+            # Invalidate HTF cache if MTF settings or indicator periods changed
+            # Indicator periods affect trend calculation, so cache must be invalidated
+            mtf_related_settings = {"mtf_enabled", "mtf_4h_enabled", "mtf_daily_candle_limit", "mtf_4h_candle_limit",
+                                   "mtf_daily_cache_minutes", "mtf_4h_cache_minutes",
+                                   "mtf_aligned_boost", "mtf_counter_penalty",
+                                   "ema_slow", "bollinger_period", "macd_slow"}
+            if mtf_related_settings & set(changes.keys()):
                 self._invalidate_htf_cache()
 
             logger.info(
@@ -860,7 +862,7 @@ class TradingDaemon:
         Get trend for a specific timeframe with caching.
 
         Args:
-            granularity: Candle granularity (e.g., "ONE_DAY", "SIX_HOUR")
+            granularity: Candle granularity (e.g., "ONE_DAY", "FOUR_HOUR")
             cache_minutes: Cache TTL in minutes
 
         Returns:
@@ -870,28 +872,39 @@ class TradingDaemon:
         if granularity == "ONE_DAY":
             last_fetch = self._daily_last_fetch
             cached_trend = self._daily_trend
-        else:  # SIX_HOUR
-            last_fetch = self._6h_last_fetch
-            cached_trend = self._6h_trend
+        else:  # FOUR_HOUR
+            last_fetch = self._4h_last_fetch
+            cached_trend = self._4h_trend
 
         now = datetime.now(timezone.utc)
         if last_fetch and (now - last_fetch) < timedelta(minutes=cache_minutes):
             return cached_trend
 
+        # Select appropriate candle limit based on timeframe
+        if granularity == "ONE_DAY":
+            candle_limit = self.settings.mtf_daily_candle_limit
+        else:  # FOUR_HOUR
+            candle_limit = self.settings.mtf_4h_candle_limit
+
         try:
             candles = self.client.get_candles(
                 self.settings.trading_pair,
                 granularity=granularity,
-                limit=self.settings.mtf_candle_limit,
+                limit=candle_limit,
             )
 
             # Validate candles before processing - need enough data for trend calculation
-            if candles is None or candles.empty or len(candles) < self.signal_scorer.ema_slow_period:
+            min_required = max(
+                self.signal_scorer.ema_slow_period,
+                self.signal_scorer.bollinger_period,
+                self.signal_scorer.macd_slow,
+            )
+            if candles is None or candles.empty or len(candles) < min_required:
                 logger.warning(
                     "htf_insufficient_data",
                     timeframe=granularity,
                     candle_count=len(candles) if candles is not None and not candles.empty else 0,
-                    required=self.signal_scorer.ema_slow_period,
+                    required=min_required,
                 )
                 return cached_trend or "neutral"
 
@@ -902,8 +915,8 @@ class TradingDaemon:
                 self._daily_trend = trend
                 self._daily_last_fetch = now
             else:
-                self._6h_trend = trend
-                self._6h_last_fetch = now
+                self._4h_trend = trend
+                self._4h_last_fetch = now
 
             logger.info("htf_trend_updated", timeframe=granularity, trend=trend)
             return trend
@@ -961,7 +974,7 @@ class TradingDaemon:
         the next iteration uses fresh data with the new parameters.
         """
         self._daily_last_fetch = None
-        self._6h_last_fetch = None
+        self._4h_last_fetch = None
         logger.info("htf_cache_invalidated")
 
     def _store_signal_history(

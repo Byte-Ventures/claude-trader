@@ -28,6 +28,21 @@ from src.strategy.signal_scorer import SignalResult, IndicatorValues
 
 
 # ============================================================================
+# Helper Functions
+# ============================================================================
+
+def assert_candle_limit(call_args, expected_limit):
+    """
+    Assert that get_candles was called with the expected limit.
+
+    Handles both positional and keyword argument calling patterns.
+    """
+    args, kwargs = call_args
+    actual = kwargs.get('limit') or (args[2] if len(args) >= 3 else None)
+    assert actual == expected_limit, f"Expected limit={expected_limit}, got args={args}, kwargs={kwargs}"
+
+
+# ============================================================================
 # Fixtures - Mocked Components
 # ============================================================================
 
@@ -1819,7 +1834,8 @@ def htf_mock_settings(mock_settings):
     """Extend mock settings with MTF configuration."""
     mock_settings.mtf_enabled = True
     mock_settings.mtf_4h_enabled = True
-    mock_settings.mtf_candle_limit = 50
+    mock_settings.mtf_daily_candle_limit = 50
+    mock_settings.mtf_4h_candle_limit = 84
     mock_settings.mtf_daily_cache_minutes = 60
     mock_settings.mtf_4h_cache_minutes = 30
     mock_settings.mtf_aligned_boost = 20
@@ -1959,14 +1975,45 @@ def test_invalidate_htf_cache(htf_mock_settings, mock_exchange_client, mock_data
 
                 # Set cache timestamps
                 daemon._daily_last_fetch = datetime.now(timezone.utc)
-                daemon._6h_last_fetch = datetime.now(timezone.utc)
+                daemon._4h_last_fetch = datetime.now(timezone.utc)
 
                 # Invalidate cache
                 daemon._invalidate_htf_cache()
 
                 # Verify timestamps are cleared
                 assert daemon._daily_last_fetch is None
-                assert daemon._6h_last_fetch is None
+                assert daemon._4h_last_fetch is None
+
+
+def test_get_timeframe_trend_uses_correct_candle_limits(htf_mock_settings, mock_exchange_client, mock_database):
+    """Test that correct candle limits are passed for each timeframe."""
+    with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
+        with patch('src.daemon.runner.Database', return_value=mock_database):
+            with patch('src.daemon.runner.TelegramNotifier'):
+                daemon = TradingDaemon(htf_mock_settings)
+
+                # Mock signal scorer get_trend
+                daemon.signal_scorer.get_trend = Mock(return_value="bullish")
+
+                # Test ONE_DAY uses mtf_daily_candle_limit (50)
+                daemon._get_timeframe_trend("ONE_DAY", 60)
+                # Verify get_candles was called with correct limit
+                assert_candle_limit(mock_exchange_client.get_candles.call_args, 50)
+                args, kwargs = mock_exchange_client.get_candles.call_args
+                assert kwargs.get('granularity') == "ONE_DAY" or (len(args) >= 2 and args[1] == "ONE_DAY")
+
+                # Reset mock
+                mock_exchange_client.get_candles.reset_mock()
+
+                # Clear cache to force fresh fetch
+                daemon._4h_last_fetch = None
+
+                # Test FOUR_HOUR uses mtf_4h_candle_limit (84)
+                daemon._get_timeframe_trend("FOUR_HOUR", 30)
+                # Verify get_candles was called with correct limit
+                assert_candle_limit(mock_exchange_client.get_candles.call_args, 84)
+                args, kwargs = mock_exchange_client.get_candles.call_args
+                assert kwargs.get('granularity') == "FOUR_HOUR" or (len(args) >= 2 and args[1] == "FOUR_HOUR")
 
 
 def test_store_signal_history_returns_id(htf_mock_settings, mock_exchange_client, mock_database):
