@@ -18,6 +18,14 @@ from src.strategy.position_sizer import PositionSizer, PositionSizeConfig
 
 logger = structlog.get_logger(__name__)
 
+# Maximum profit factor value to use when there are no losses (avoids infinity)
+# This indicates "no losses occurred" rather than truly infinite profit factor
+MAX_PROFIT_FACTOR = 999.0
+
+# Maximum dataset size to prevent memory exhaustion
+# This is a conservative limit to prevent DOS via large datasets
+MAX_DATASET_SIZE = 100000
+
 
 @dataclass
 class BacktestTrade:
@@ -41,7 +49,11 @@ class BacktestTrade:
 
 @dataclass
 class BacktestMetrics:
-    """Performance metrics from a backtest run."""
+    """Performance metrics from a backtest run.
+
+    Note: profit_factor will be set to MAX_PROFIT_FACTOR (999.0) when there are
+    profits but no losses, indicating "no losses occurred" rather than infinity.
+    """
 
     # Returns
     total_return: float  # Total portfolio return (%)
@@ -58,7 +70,7 @@ class BacktestMetrics:
     win_rate: float  # Winning trades / total trades (%)
 
     # Profitability
-    profit_factor: float  # Gross profit / gross loss
+    profit_factor: float  # Gross profit / gross loss (999.0 if no losses)
     avg_win: float  # Average winning trade (%)
     avg_loss: float  # Average losing trade (%)
     avg_trade_duration_hours: float
@@ -122,6 +134,12 @@ class Backtester:
     Limitations:
     - Long-only positions: This backtester only supports long positions (buy to open,
       sell to close). Short selling is not currently implemented.
+
+    Performance:
+    - Memory usage scales with dataset size due to DataFrame copying on each iteration
+    - Suitable for typical backtest sizes (up to ~50,000 candles)
+    - For very large datasets (>50,000 candles), consider splitting into multiple
+      time periods or implementing optimizations to reduce memory overhead
 
     Example:
         >>> bt = Backtester(
@@ -197,6 +215,12 @@ class Backtester:
         if data.empty:
             raise ValueError("Data cannot be empty")
 
+        if len(data) > MAX_DATASET_SIZE:
+            raise ValueError(
+                f"Dataset too large ({len(data)} rows). Maximum allowed is {MAX_DATASET_SIZE} rows. "
+                "Consider splitting into multiple time periods to reduce memory usage."
+            )
+
         required_cols = {"timestamp", "open", "high", "low", "close", "volume"}
         if not required_cols.issubset(data.columns):
             raise ValueError(f"Data must contain columns: {required_cols}")
@@ -244,6 +268,9 @@ class Backtester:
 
         # Need minimum candles for indicators
         # Use defensive attribute access in case SignalScorer internals change
+        # IMPORTANT: These fallback values (21, 20, 26) must match SignalScorer's
+        # default parameters. If SignalScorer defaults change, update these values.
+        # Values correspond to: EMA slow period, Bollinger period, MACD slow period
         min_candles = max(
             getattr(self.signal_scorer, "ema_slow_period", 21),
             getattr(self.signal_scorer, "bollinger_period", 20),
@@ -284,6 +311,10 @@ class Backtester:
                 raise ValueError(f"SignalScorer.calculate_score() returned invalid result: missing 'action' attribute")
             if signal_result.action not in {'buy', 'sell', 'hold'}:
                 raise ValueError(f"Invalid signal action from SignalScorer: {signal_result.action}. Must be 'buy', 'sell', or 'hold'")
+            if not hasattr(signal_result, 'score'):
+                raise ValueError(f"SignalScorer.calculate_score() returned invalid result: missing 'score' attribute")
+            if not isinstance(signal_result.score, int) or not (-100 <= signal_result.score <= 100):
+                raise ValueError(f"Invalid signal score from SignalScorer: {signal_result.score}. Must be an integer between -100 and 100")
 
             signal_counts[signal_result.action] += 1
 
@@ -380,7 +411,11 @@ class Backtester:
                     fee = size_result.size_quote * self.fee_percent
                     total_cost = size_result.size_quote + fee
 
-                    # Check sufficient balance (use slightly more conservative check to avoid rounding issues)
+                    # Check sufficient balance
+                    # Using 0.01% buffer (0.9999 multiplier) to handle floating-point-to-Decimal
+                    # conversion precision issues. This prevents rejecting valid trades due to
+                    # rounding artifacts while still protecting against insufficient balance.
+                    # Example: A balance of 100.00000001 should be treated as 100.00
                     if total_cost <= quote_balance * Decimal("0.9999"):
                         # Execute buy
                         base_received = (size_result.size_quote / fill_price).quantize(
@@ -584,13 +619,11 @@ class Backtester:
         # a $10 profit on a $50 trade (20%) for portfolio performance
         gross_profit = sum(float(t.pnl or 0) for t in winning_trades)
         gross_loss = abs(sum(float(t.pnl or 0) for t in losing_trades))
-        # If no losses but profits exist, use large finite value; if both zero, use 0.0
-        # Using 999.0 instead of infinity to avoid JSON serialization issues and
-        # ensure compatibility with downstream calculations
+        # If no losses but profits exist, use MAX_PROFIT_FACTOR; if both zero, use 0.0
         if gross_loss > 0:
             profit_factor = gross_profit / gross_loss
         elif gross_profit > 0:
-            profit_factor = 999.0
+            profit_factor = MAX_PROFIT_FACTOR
         else:
             profit_factor = 0.0
 

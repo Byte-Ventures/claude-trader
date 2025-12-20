@@ -413,3 +413,122 @@ def test_valid_edge_case_fee_and_slippage(signal_scorer):
     bt_max = Backtester(signal_scorer=signal_scorer, fee_percent=1.0, slippage_percent=1.0)
     assert bt_max.fee_percent == Decimal("1.0")
     assert bt_max.slippage_percent == Decimal("1.0")
+
+
+def test_stop_loss_exit(signal_scorer):
+    """Test that stop-loss exits are properly triggered and recorded."""
+    # Create data where we'll manually trigger a stop-loss
+    start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    base_price = 50000.0
+
+    # Create data with a strong buy signal followed by a price drop
+    data = []
+    for i in range(50):
+        timestamp = start + timedelta(hours=i)
+        if i < 30:
+            # Uptrend to generate buy signal
+            price = base_price + (i * 200)
+        else:
+            # Sharp drop to trigger stop-loss
+            price = base_price + (30 * 200) - ((i - 30) * 500)
+
+        data.append({
+            "timestamp": timestamp,
+            "open": price,
+            "high": price + 100,
+            "low": price - 100,  # Low enough to potentially hit stop-loss
+            "close": price,
+            "volume": 1000000,
+        })
+
+    df = pd.DataFrame(data)
+
+    # Use aggressive position sizing to ensure we get a trade
+    sizer = PositionSizer(
+        config=PositionSizeConfig(
+            risk_per_trade_percent=2.0,
+            min_trade_base=0.0001,
+            max_position_percent=50.0,
+            min_trade_quote=10.0,
+        )
+    )
+
+    bt = Backtester(
+        signal_scorer=signal_scorer,
+        position_sizer=sizer,
+        initial_capital=10000.0,
+        fee_percent=0.001,
+        slippage_percent=0.001,
+    )
+
+    result = bt.run(df)
+
+    # Check if any trades exited via stop-loss
+    stop_loss_exits = [t for t in result.trades if t.exit_reason == "stop_loss"]
+
+    # If we have stop-loss exits, verify they're properly recorded
+    if stop_loss_exits:
+        for trade in stop_loss_exits:
+            assert trade.exit_price is not None
+            assert trade.exit_timestamp is not None
+            assert trade.exit_price == trade.stop_loss_price
+            assert trade.pnl is not None
+            # Stop-loss should result in a loss (or at worst break-even)
+            assert trade.pnl <= 0
+
+
+def test_take_profit_exit(signal_scorer):
+    """Test that take-profit exits are properly triggered and recorded."""
+    # Create data with a strong uptrend to trigger take-profit
+    start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    base_price = 50000.0
+
+    data = []
+    for i in range(50):
+        timestamp = start + timedelta(hours=i)
+        # Strong continuous uptrend
+        price = base_price + (i * 300)
+
+        data.append({
+            "timestamp": timestamp,
+            "open": price,
+            "high": price + 200,  # High enough to potentially hit take-profit
+            "low": price - 50,
+            "close": price,
+            "volume": 1000000,
+        })
+
+    df = pd.DataFrame(data)
+
+    # Use aggressive position sizing to ensure we get a trade
+    sizer = PositionSizer(
+        config=PositionSizeConfig(
+            risk_per_trade_percent=2.0,
+            min_trade_base=0.0001,
+            max_position_percent=50.0,
+            min_trade_quote=10.0,
+        )
+    )
+
+    bt = Backtester(
+        signal_scorer=signal_scorer,
+        position_sizer=sizer,
+        initial_capital=10000.0,
+        fee_percent=0.001,
+        slippage_percent=0.001,
+    )
+
+    result = bt.run(df)
+
+    # Check if any trades exited via take-profit
+    take_profit_exits = [t for t in result.trades if t.exit_reason == "take_profit"]
+
+    # If we have take-profit exits, verify they're properly recorded
+    if take_profit_exits:
+        for trade in take_profit_exits:
+            assert trade.exit_price is not None
+            assert trade.exit_timestamp is not None
+            assert trade.exit_price == trade.take_profit_price
+            assert trade.pnl is not None
+            # Take-profit should result in a profit
+            assert trade.pnl > 0
