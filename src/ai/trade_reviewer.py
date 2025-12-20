@@ -1135,17 +1135,21 @@ Trading style: POSITION TRADING (long-term)
             whale_activity_line = f"\n⚠️ WHALE ACTIVITY ({whale_direction}): Volume {breakdown.get('_volume_ratio', 0)}x average"
 
         # HTF bias context - only show when MTF enabled and bias is meaningful
-        # Use explicit None checks for null safety (avoid masking empty strings).
+        # Use explicit None checks for null safety.
         # HTF values are expected to be: "bullish", "bearish", "neutral", or None.
         # Empty strings should NOT occur in production (would indicate a bug in get_trend()).
-        # None values indicate missing/unavailable data and are replaced with "unknown".
+        # None/empty values indicate missing/unavailable data and are normalized to "unknown".
         # Only show HTF line when trend is actionable (bullish/bearish), not neutral/unknown.
         htf_line = ""
         if self.mtf_enabled:
-            htf_trend = breakdown.get("_htf_trend") if breakdown.get("_htf_trend") is not None else "unknown"
-            if htf_trend and htf_trend not in ("neutral", "unknown"):
-                daily = breakdown.get("_htf_daily") if breakdown.get("_htf_daily") is not None else "unknown"
-                four_h = breakdown.get("_htf_4h") if breakdown.get("_htf_4h") is not None else "unknown"
+            # Normalize None and empty strings to "unknown" for explicit handling
+            htf_trend = breakdown.get("_htf_trend")
+            htf_trend = htf_trend if (htf_trend is not None and htf_trend != "") else "unknown"
+            if htf_trend not in ("neutral", "unknown"):
+                daily = breakdown.get("_htf_daily")
+                daily = daily if (daily is not None and daily != "") else "unknown"
+                four_h = breakdown.get("_htf_4h")
+                four_h = four_h if (four_h is not None and four_h != "") else "unknown"
                 htf_line = f"\n📊 HIGHER TIMEFRAME BIAS: {htf_trend.upper()} (Daily: {daily.upper()}, 4H: {four_h.upper()})"
 
         # Build portfolio section (hidden when balance info is None for Cramer Mode comparison)
