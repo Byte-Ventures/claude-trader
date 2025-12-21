@@ -229,7 +229,7 @@ async function loadWhaleMarkers(chartData) {
 
                 return {
                     time: candleTime,
-                    position: isBearish ? 'aboveBar' : 'belowBar',
+                    position: isBullish ? 'belowBar' : 'aboveBar',
                     color: isBullish ? '#10b981' : isBearish ? '#ef4444' : '#6b7280',
                     shape: 'circle',
                     text: '🐋',
