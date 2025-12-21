@@ -271,3 +271,37 @@ class TestWhaleEventsEndpoint:
         assert response.status_code == 200
         call_kwargs = mock_db.get_whale_events.call_args.kwargs
         assert call_kwargs.get("symbol") == "BTC-USD"
+
+    def test_whale_events_hours_minimum_bound(self, client, mock_db, mock_settings):
+        """Test that hours=0 returns 422 validation error (must be >= 1)."""
+        response = client.get("/api/whale-events?hours=0")
+
+        assert response.status_code == 422
+        # Verify database was not called due to validation failure
+        mock_db.get_whale_events.assert_not_called()
+
+    def test_whale_events_hours_maximum_bound(self, client, mock_db, mock_settings):
+        """Test that hours=169 returns 422 validation error (must be <= 168)."""
+        response = client.get("/api/whale-events?hours=169")
+
+        assert response.status_code == 422
+        # Verify database was not called due to validation failure
+        mock_db.get_whale_events.assert_not_called()
+
+    def test_whale_events_hours_at_bounds(self, client, mock_db, mock_settings):
+        """Test that hours=1 and hours=168 are valid (boundary values)."""
+        mock_db.get_whale_events.return_value = []
+
+        # Test minimum valid value
+        response = client.get("/api/whale-events?hours=1")
+        assert response.status_code == 200
+        call_kwargs = mock_db.get_whale_events.call_args.kwargs
+        assert call_kwargs.get("hours") == 1
+
+        mock_db.get_whale_events.reset_mock()
+
+        # Test maximum valid value
+        response = client.get("/api/whale-events?hours=168")
+        assert response.status_code == 200
+        call_kwargs = mock_db.get_whale_events.call_args.kwargs
+        assert call_kwargs.get("hours") == 168

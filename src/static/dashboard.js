@@ -202,7 +202,10 @@ async function loadWhaleMarkers(chartData) {
         const hours = Math.min(Math.max(hoursRange, 24), 168);  // Clamp to 24-168 hours
 
         const response = await fetch(`/api/whale-events?hours=${hours}`);
-        if (!response.ok) return;
+        if (!response.ok) {
+            console.error(`Failed to fetch whale events: ${response.status} ${response.statusText}`);
+            return;
+        }
 
         const whaleEvents = await response.json();
         if (!whaleEvents || whaleEvents.length === 0) {
@@ -218,14 +221,20 @@ async function loadWhaleMarkers(chartData) {
         const sortedEvents = [...whaleEvents].sort((a, b) => b.volume_ratio - a.volume_ratio);
         const markers = sortedEvents
             .map(event => {
-                // Parse timestamp and align to candle bucket
+                // Parse timestamp and align to candle bucket.
+                // NOTE: Backend returns timestamps via datetime.isoformat() without timezone suffix,
+                // so we append 'Z' to indicate UTC. This matches the pattern used for candle timestamps
+                // (line 330) and trade timestamps (line 724). If backend format changes to include
+                // timezone (e.g., +00:00), this code will need updating.
                 const eventTime = Math.floor(new Date(event.timestamp + 'Z').getTime() / 1000);
                 const candleTime = Math.floor(eventTime / candleIntervalSeconds) * candleIntervalSeconds;
 
                 // Only show markers for candles that exist in the chart
                 if (!candleTimeSet.has(candleTime)) return null;
 
-                // Determine marker position and color based on whale direction
+                // Determine marker position and color based on whale direction.
+                // Direction can be 'bullish', 'bearish', 'neutral', or 'unknown' (see WhaleEventRecord model).
+                // 'unknown' is treated the same as 'neutral': gray marker positioned above bar.
                 const isBullish = event.direction === 'bullish';
                 const isBearish = event.direction === 'bearish';
 
