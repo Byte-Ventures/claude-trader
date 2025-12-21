@@ -360,7 +360,19 @@ class OrderValidator:
         if self.exchange_client and hasattr(self.exchange_client, "get_trading_fee_rate"):
             try:
                 # Fetch one-way fee from exchange
-                one_way_fee = float(self.exchange_client.get_trading_fee_rate(self.product_id))
+                fee_decimal = self.exchange_client.get_trading_fee_rate(self.product_id)
+
+                # Validate Decimal before conversion
+                if fee_decimal is None or not isinstance(fee_decimal, (int, float, Decimal)):
+                    raise ValueError(f"Invalid fee rate type: {type(fee_decimal)}")
+
+                # Convert to float with sanity checks
+                one_way_fee = float(fee_decimal)
+
+                # Sanity check: prevent NaN, Infinity, or unreasonable values
+                if not (0.0 <= one_way_fee <= 0.1):  # 0% to 10% is reasonable range
+                    raise ValueError(f"Fee rate {one_way_fee} outside reasonable range (0.0-0.1)")
+
                 # Return round-trip fee (buy + sell)
                 return one_way_fee * 2.0
             except Exception as e:
