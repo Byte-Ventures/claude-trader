@@ -738,6 +738,12 @@ function updateConfig(config) {
     if (config.candle_interval) {
         candleIntervalSeconds = parseIntervalToSeconds(config.candle_interval);
     }
+    // Update axis labels with currency units from trading pair
+    if (config.trading_pair) {
+        const [base, quote] = config.trading_pair.split('-');
+        document.getElementById('volume-axis-label').textContent = `Vol (${base})`;
+        document.getElementById('price-axis-label').textContent = `Price (${quote})`;
+    }
 }
 
 // Update trades table
