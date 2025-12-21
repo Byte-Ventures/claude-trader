@@ -214,7 +214,9 @@ async function loadWhaleMarkers(chartData) {
         const candleTimeSet = new Set(chartData.map(c => c.time));
 
         // Convert whale events to chart markers
-        const markers = whaleEvents
+        // Sort by volume_ratio descending so most significant event per candle is kept
+        const sortedEvents = [...whaleEvents].sort((a, b) => b.volume_ratio - a.volume_ratio);
+        const markers = sortedEvents
             .map(event => {
                 // Parse timestamp and align to candle bucket
                 const eventTime = Math.floor(new Date(event.timestamp + 'Z').getTime() / 1000);
@@ -238,7 +240,7 @@ async function loadWhaleMarkers(chartData) {
             .filter(m => m !== null)
             // Sort by time (required by TradingView Lightweight Charts)
             .sort((a, b) => a.time - b.time)
-            // Remove duplicates (keep first marker per candle time)
+            // Remove duplicates (keep first marker per candle time - which is the most significant due to pre-sort)
             .filter((marker, index, self) =>
                 index === self.findIndex(m => m.time === marker.time)
             );

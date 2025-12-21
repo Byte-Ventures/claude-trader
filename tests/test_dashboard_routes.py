@@ -260,3 +260,14 @@ class TestWhaleEventsEndpoint:
         assert data[0]["direction"] == "bullish"
         assert data[1]["direction"] == "bearish"
         assert data[2]["direction"] == "neutral"
+
+    def test_whale_events_uses_trading_pair(self, client, mock_db, mock_settings):
+        """Test that whale events uses the trading_pair from settings."""
+        mock_settings.trading_pair = "BTC-USD"
+        mock_db.get_whale_events.return_value = []
+
+        response = client.get("/api/whale-events?hours=24")
+
+        assert response.status_code == 200
+        call_kwargs = mock_db.get_whale_events.call_args.kwargs
+        assert call_kwargs.get("symbol") == "BTC-USD"

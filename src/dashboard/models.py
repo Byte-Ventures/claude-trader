@@ -140,5 +140,5 @@ class WhaleEventRecord(BaseModel):
     """Whale event record for display."""
 
     timestamp: str
-    direction: str
+    direction: Literal["bullish", "bearish", "neutral", "unknown"]
     volume_ratio: float
