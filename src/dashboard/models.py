@@ -69,6 +69,7 @@ class DashboardState(BaseModel):
 
     timestamp: str
     price: str
+    volume: Optional[str] = None  # Current candle volume for real-time updates
     signal: SignalInfo
     indicators: IndicatorValues
     portfolio: PortfolioInfo
