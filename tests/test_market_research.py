@@ -28,17 +28,17 @@ SAMPLE_RSS_XML = """<?xml version="1.0" encoding="UTF-8"?>
     <item>
       <title>Bitcoin breaks $100K as institutional demand surges</title>
       <link>https://cointelegraph.com/news/bitcoin-100k</link>
-      <pubDate>Sat, 21 Dec 2024 08:00:00 +0000</pubDate>
+      <pubDate>Thu, 21 Dec 2023 08:00:00 +0000</pubDate>
     </item>
     <item>
       <title>Ethereum ETF sees record inflows</title>
       <link>https://cointelegraph.com/news/eth-etf</link>
-      <pubDate>Sat, 21 Dec 2024 07:00:00 +0000</pubDate>
+      <pubDate>Thu, 21 Dec 2023 07:00:00 +0000</pubDate>
     </item>
     <item>
       <title>Fed signals crypto-friendly policy shift</title>
       <link>https://cointelegraph.com/news/fed-crypto</link>
-      <pubDate>Sat, 21 Dec 2024 06:00:00 +0000</pubDate>
+      <pubDate>Thu, 21 Dec 2023 06:00:00 +0000</pubDate>
     </item>
   </channel>
 </rss>"""
@@ -174,7 +174,7 @@ class TestFetchCryptoNews:
             result = await fetch_crypto_news(limit=1)
 
         assert len(result) == 1
-        assert result[0].published_at.year == 2024
+        assert result[0].published_at.year == 2023
         assert result[0].published_at.month == 12
         assert result[0].published_at.day == 21
 
@@ -189,7 +189,7 @@ class TestFetchCryptoNews:
             <item>
               <title>&xxe;</title>
               <link>https://cointelegraph.com/news/test</link>
-              <pubDate>Sat, 21 Dec 2024 08:00:00 +0000</pubDate>
+              <pubDate>Thu, 21 Dec 2023 08:00:00 +0000</pubDate>
             </item>
           </channel>
         </rss>"""
@@ -213,12 +213,12 @@ class TestFetchCryptoNews:
             <item>
               <title></title>
               <link>https://cointelegraph.com/news/test1</link>
-              <pubDate>Sat, 21 Dec 2024 08:00:00 +0000</pubDate>
+              <pubDate>Thu, 21 Dec 2023 08:00:00 +0000</pubDate>
             </item>
             <item>
               <title>Valid Title</title>
               <link>https://cointelegraph.com/news/test2</link>
-              <pubDate>Sat, 21 Dec 2024 07:00:00 +0000</pubDate>
+              <pubDate>Thu, 21 Dec 2023 07:00:00 +0000</pubDate>
             </item>
           </channel>
         </rss>"""
@@ -242,12 +242,12 @@ class TestFetchCryptoNews:
             <item>
               <title>Malicious Link</title>
               <link>https://evil.com/phishing</link>
-              <pubDate>Sat, 21 Dec 2024 08:00:00 +0000</pubDate>
+              <pubDate>Thu, 21 Dec 2023 08:00:00 +0000</pubDate>
             </item>
             <item>
               <title>Valid Link</title>
               <link>https://cointelegraph.com/news/valid</link>
-              <pubDate>Sat, 21 Dec 2024 07:00:00 +0000</pubDate>
+              <pubDate>Thu, 21 Dec 2023 07:00:00 +0000</pubDate>
             </item>
           </channel>
         </rss>"""
@@ -272,12 +272,12 @@ class TestFetchCryptoNews:
             <item>
               <title>   </title>
               <link>https://cointelegraph.com/news/test1</link>
-              <pubDate>Sat, 21 Dec 2024 08:00:00 +0000</pubDate>
+              <pubDate>Thu, 21 Dec 2023 08:00:00 +0000</pubDate>
             </item>
             <item>
               <title>Valid Title</title>
               <link>https://cointelegraph.com/news/test2</link>
-              <pubDate>Sat, 21 Dec 2024 07:00:00 +0000</pubDate>
+              <pubDate>Thu, 21 Dec 2023 07:00:00 +0000</pubDate>
             </item>
           </channel>
         </rss>"""

@@ -94,7 +94,7 @@ async def _fetch_crypto_news_request() -> str:
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.get(
             COINTELEGRAPH_RSS_URL,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; CryptoBot/1.0)"},
+            headers={"User-Agent": "Mozilla/5.0 (compatible; claude-trader/1.0)"},
         )
         response.raise_for_status()
         return response.text
@@ -166,6 +166,8 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
                 continue  # Skip items with invalid URLs
 
             # Parse publication date (RFC 2822 format)
+            # Default to current time if parsing fails to ensure news items remain usable
+            # rather than being discarded entirely (timestamps used for display only)
             published_at = datetime.now(timezone.utc)
             if pub_date_el is not None and pub_date_el.text:
                 try:
