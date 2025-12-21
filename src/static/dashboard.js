@@ -664,6 +664,15 @@ function updateDashboard(state) {
                         if (priceLine) {
                             priceLine.update({ time: currentCandle.time, value: price });
                         }
+                        if (volumeSeries && volume !== null) {
+                            volumeSeries.update({
+                                time: currentCandle.time,
+                                value: volume,
+                                color: currentCandle.close >= currentCandle.open
+                                    ? 'rgba(16, 185, 129, 0.5)'
+                                    : 'rgba(239, 68, 68, 0.5)',
+                            });
+                        }
                     }
                 }, CANDLE_UPDATE_THROTTLE_MS);
                 return;
