@@ -780,6 +780,14 @@ class Settings(BaseSettings):
         description="Number of days to retain signal history records (older records are deleted during cleanup)"
     )
 
+    @field_validator("max_trade_quote", mode="before")
+    @classmethod
+    def validate_max_trade_quote_empty_string(cls, v: Optional[str]) -> Optional[float]:
+        """Convert empty string to None for optional max_trade_quote."""
+        if v == "" or v is None:
+            return None
+        return v
+
     @field_validator("ema_slow")
     @classmethod
     def validate_ema_slow(cls, v: int, info) -> int:

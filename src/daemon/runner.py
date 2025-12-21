@@ -2084,19 +2084,20 @@ class TradingDaemon:
                         )
                         should_review = False
 
-                # Veto cooldown: skip trade reviews if recently rejected for same direction
+                # Veto cooldown: skip trade entirely if recently rejected for same direction
+                # The AI already vetoed this signal - don't retry until next candle
                 if should_review and review_type == "trade":
                     skip_veto, veto_reason = self._should_skip_review_after_veto(
                         signal_result.action
                     )
                     if skip_veto:
                         logger.info(
-                            "ai_review_skipped_veto_cooldown",
+                            "trade_skipped_veto_cooldown",
                             action=signal_result.action,
                             score=signal_result.score,
                             reason=veto_reason,
                         )
-                        should_review = False
+                        return  # Skip trade entirely - AI already vetoed this signal
 
                 if should_review:
                     try:
