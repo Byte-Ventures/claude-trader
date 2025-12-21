@@ -21,6 +21,8 @@ def clear_cache():
 
 
 # Sample RSS XML for testing
+# Note: Using Dec 21, 2023 as test fixture date - sufficiently in the past to be
+# clearly historical test data, avoiding confusion with current dates
 SAMPLE_RSS_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
   <channel>

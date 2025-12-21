@@ -22,6 +22,7 @@ logger = structlog.get_logger(__name__)
 # RSS feed configuration
 COINTELEGRAPH_RSS_URL = "https://cointelegraph.com/rss"
 COINTELEGRAPH_SOURCE_NAME = "CoinTelegraph"
+MAX_TITLE_LENGTH = 100  # Prevent excessively long titles in AI prompts
 
 # Cache storage with automatic TTL expiration and bounded size
 # Default: 15 min TTL, max 100 entries to prevent memory leaks
@@ -107,6 +108,10 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
     Source: https://cointelegraph.com/rss
     Format: RSS 2.0 XML
     Rate limit: None (public RSS feed)
+
+    Note: This function expects RSS 2.0 format. If CoinTelegraph changes their
+    RSS format or URL, monitor logs for 'crypto_news_no_items' warnings which
+    could indicate a feed format change.
     """
     cached = _get_cached("crypto_news")
     if cached is not None:
@@ -181,7 +186,7 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
                     )
 
             news_items.append(NewsItem(
-                title=title_text[:100],
+                title=title_text[:MAX_TITLE_LENGTH],
                 source=COINTELEGRAPH_SOURCE_NAME,
                 url=url_text,
                 published_at=published_at,
