@@ -133,12 +133,13 @@ class TestFetchCryptoNews:
 
     @pytest.mark.asyncio
     async def test_missing_elements_handled_gracefully(self):
-        """Test items with missing elements are parsed with defaults."""
+        """Test items with missing date element are parsed with current time."""
         incomplete_rss = """<?xml version="1.0"?>
         <rss version="2.0">
           <channel>
             <item>
-              <title>News with no link or date</title>
+              <title>News with no date</title>
+              <link>https://cointelegraph.com/news/test</link>
             </item>
           </channel>
         </rss>"""
@@ -151,9 +152,11 @@ class TestFetchCryptoNews:
             result = await fetch_crypto_news(limit=5)
 
         assert len(result) == 1
-        assert result[0].title == "News with no link or date"
-        assert result[0].url == ""
+        assert result[0].title == "News with no date"
+        assert result[0].url == "https://cointelegraph.com/news/test"
         assert result[0].source == "CoinTelegraph"
+        # Should use current time as fallback
+        assert result[0].published_at is not None
 
     @pytest.mark.asyncio
     async def test_pubdate_parsing(self):
@@ -169,6 +172,120 @@ class TestFetchCryptoNews:
         assert result[0].published_at.year == 2025
         assert result[0].published_at.month == 12
         assert result[0].published_at.day == 21
+
+    @pytest.mark.asyncio
+    async def test_xxe_attack_prevented(self):
+        """Test XXE attack is prevented by defusedxml."""
+        # XXE payload attempting to read /etc/passwd
+        xxe_payload = """<?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
+        <rss version="2.0">
+          <channel>
+            <item>
+              <title>&xxe;</title>
+              <link>https://cointelegraph.com/news/test</link>
+              <pubDate>Sun, 21 Dec 2025 08:00:00 +0000</pubDate>
+            </item>
+          </channel>
+        </rss>"""
+
+        with patch(
+            "src.ai.market_research._fetch_crypto_news_request",
+            new_callable=AsyncMock,
+            return_value=xxe_payload,
+        ):
+            result = await fetch_crypto_news(limit=5)
+
+        # defusedxml should prevent parsing and return empty list
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_empty_title_skipped(self):
+        """Test items with empty titles are skipped."""
+        rss_with_empty_title = """<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0">
+          <channel>
+            <item>
+              <title></title>
+              <link>https://cointelegraph.com/news/test1</link>
+              <pubDate>Sun, 21 Dec 2025 08:00:00 +0000</pubDate>
+            </item>
+            <item>
+              <title>Valid Title</title>
+              <link>https://cointelegraph.com/news/test2</link>
+              <pubDate>Sun, 21 Dec 2025 07:00:00 +0000</pubDate>
+            </item>
+          </channel>
+        </rss>"""
+
+        with patch(
+            "src.ai.market_research._fetch_crypto_news_request",
+            new_callable=AsyncMock,
+            return_value=rss_with_empty_title,
+        ):
+            result = await fetch_crypto_news(limit=5)
+
+        assert len(result) == 1
+        assert result[0].title == "Valid Title"
+
+    @pytest.mark.asyncio
+    async def test_invalid_url_skipped(self):
+        """Test items with URLs not from cointelegraph.com are skipped."""
+        rss_with_invalid_url = """<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0">
+          <channel>
+            <item>
+              <title>Malicious Link</title>
+              <link>https://evil.com/phishing</link>
+              <pubDate>Sun, 21 Dec 2025 08:00:00 +0000</pubDate>
+            </item>
+            <item>
+              <title>Valid Link</title>
+              <link>https://cointelegraph.com/news/valid</link>
+              <pubDate>Sun, 21 Dec 2025 07:00:00 +0000</pubDate>
+            </item>
+          </channel>
+        </rss>"""
+
+        with patch(
+            "src.ai.market_research._fetch_crypto_news_request",
+            new_callable=AsyncMock,
+            return_value=rss_with_invalid_url,
+        ):
+            result = await fetch_crypto_news(limit=5)
+
+        assert len(result) == 1
+        assert result[0].title == "Valid Link"
+        assert result[0].url == "https://cointelegraph.com/news/valid"
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_title_skipped(self):
+        """Test items with whitespace-only titles are skipped."""
+        rss_with_whitespace_title = """<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0">
+          <channel>
+            <item>
+              <title>   </title>
+              <link>https://cointelegraph.com/news/test1</link>
+              <pubDate>Sun, 21 Dec 2025 08:00:00 +0000</pubDate>
+            </item>
+            <item>
+              <title>Valid Title</title>
+              <link>https://cointelegraph.com/news/test2</link>
+              <pubDate>Sun, 21 Dec 2025 07:00:00 +0000</pubDate>
+            </item>
+          </channel>
+        </rss>"""
+
+        with patch(
+            "src.ai.market_research._fetch_crypto_news_request",
+            new_callable=AsyncMock,
+            return_value=rss_with_whitespace_title,
+        ):
+            result = await fetch_crypto_news(limit=5)
+
+        assert len(result) == 1
+        assert result[0].title == "Valid Title"
 
 
 class TestCoinTelegraphRSSIntegration:

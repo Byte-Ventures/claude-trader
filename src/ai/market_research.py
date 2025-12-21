@@ -6,7 +6,6 @@ from free APIs with caching to avoid rate limits.
 """
 
 import asyncio
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -15,6 +14,7 @@ from typing import Any, Optional
 import httpx
 import structlog
 from cachetools import TTLCache
+from defusedxml.ElementTree import fromstring
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 logger = structlog.get_logger(__name__)
@@ -124,10 +124,11 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
 
         xml_content = await fetch_with_retry()
 
-        # Parse RSS XML
+        # Parse RSS XML using defusedxml to prevent XXE attacks
         try:
-            root = ET.fromstring(xml_content)
-        except ET.ParseError as e:
+            root = fromstring(xml_content)
+        except Exception as e:
+            # defusedxml raises various exceptions for malicious XML
             logger.warning("crypto_news_xml_parse_error", error=str(e))
             return []
 
@@ -148,6 +149,18 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
             link_el = item.find("link")
             pub_date_el = item.find("pubDate")
 
+            # Validate title content
+            title_text = (title_el.text or "").strip() if title_el is not None else ""
+            if not title_text:
+                logger.warning("crypto_news_empty_title", url=link_el.text if link_el is not None else "unknown")
+                continue  # Skip items with empty titles
+
+            # Validate URL
+            url_text = (link_el.text or "").strip() if link_el is not None else ""
+            if not url_text.startswith(("https://cointelegraph.com/", "http://cointelegraph.com/")):
+                logger.warning("crypto_news_invalid_url", url=url_text, title=title_text[:40])
+                continue  # Skip items with invalid URLs
+
             # Parse publication date (RFC 2822 format)
             published_at = datetime.now(timezone.utc)
             if pub_date_el is not None and pub_date_el.text:
@@ -158,13 +171,13 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
                     logger.warning(
                         "crypto_news_date_parse_failed",
                         raw_date=pub_date_el.text,
-                        title=title_el.text[:40] if title_el is not None and title_el.text else "unknown"
+                        title=title_text[:40]
                     )
 
             news_items.append(NewsItem(
-                title=(title_el.text or "")[:100] if title_el is not None else "",
+                title=title_text[:100],
                 source="CoinTelegraph",
-                url=link_el.text or "" if link_el is not None else "",
+                url=url_text,
                 published_at=published_at,
                 # sentiment defaults to "neutral" - AI analyzes actual sentiment
             ))
