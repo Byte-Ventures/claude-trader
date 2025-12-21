@@ -874,15 +874,19 @@ class KrakenClient:
                     product_id=product_id,
                     message="Using default taker fee rate (0.26%)",
                 )
-                return Decimal("0.0026")
+                default_rate = Decimal("0.0026")
+                # Cache fallback rate to avoid repeated API calls for same product
+                self._fee_rate_cache[product_id] = (default_rate, datetime.now(timezone.utc))
+                return default_rate
 
             except Exception as e:
-                # Clear cache for this product on error to avoid returning stale data
-                self._fee_rate_cache.pop(product_id, None)
                 logger.warning(
                     "get_trading_fee_rate_failed",
                     product_id=product_id,
                     error=str(e),
                     message="Using default taker fee rate (0.26%)",
                 )
-                return Decimal("0.0026")
+                # Cache the default rate even on error to avoid repeated failing API calls
+                default_rate = Decimal("0.0026")
+                self._fee_rate_cache[product_id] = (default_rate, datetime.now(timezone.utc))
+                return default_rate
