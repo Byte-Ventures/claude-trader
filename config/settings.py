@@ -5,7 +5,7 @@ All settings are loaded from environment variables.
 
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, Union
 
 import os
 import warnings
@@ -782,7 +782,7 @@ class Settings(BaseSettings):
 
     @field_validator("max_trade_quote", mode="before")
     @classmethod
-    def validate_max_trade_quote_empty_string(cls, v: Optional[str]) -> Optional[float]:
+    def validate_max_trade_quote_empty_string(cls, v: Union[str, float, None]) -> Optional[float]:
         """Convert empty string to None for optional max_trade_quote."""
         if v == "" or v is None:
             return None
