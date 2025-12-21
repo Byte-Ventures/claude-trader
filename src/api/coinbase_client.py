@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from threading import Lock
 from typing import Optional, Union
 
 import pandas as pd
@@ -48,6 +49,10 @@ class CoinbaseClient:
         requests.exceptions.RequestException,
     )
 
+    # Fee rate cache TTL in seconds (1 hour)
+    # Fee tiers are volume-based and change infrequently
+    FEE_CACHE_TTL = 3600
+
     def __init__(
         self,
         api_key: Optional[str] = None,
@@ -72,6 +77,11 @@ class CoinbaseClient:
         self.api_key = api_key
         self.api_secret = api_secret
         self.session = requests.Session()
+
+        # Fee rate caching per product_id (uses class constant FEE_CACHE_TTL)
+        # Cache maps product_id -> (fee_rate, cache_time)
+        self._fee_rate_cache: dict[str, tuple[Decimal, datetime]] = {}
+        self._fee_rate_cache_lock = Lock()  # Thread safety for cache operations
 
         logger.info("coinbase_client_initialized")
 
@@ -669,65 +679,85 @@ class CoinbaseClient:
         Since the bot primarily uses IOC limit orders (which typically execute as taker),
         we use the taker fee rate for conservative profit margin validation.
 
+        Fee rates are cached per product_id for FEE_CACHE_TTL seconds (1 hour) to
+        reduce API calls. The lock is held for the entire operation to prevent
+        thundering herd when cache expires - concurrent calls may briefly block.
+
         Args:
             product_id: Trading pair (e.g., BTC-USD)
 
         Returns:
             Current taker fee rate as decimal (e.g., Decimal("0.006") for 0.6%)
         """
-        try:
-            # Get transaction summary for fee tier information
-            response = self._request("GET", "/api/v3/brokerage/transaction_summary")
+        # Hold lock for entire operation to prevent concurrent API calls
+        # when cache expires (prevents thundering herd on rate-limited API)
+        with self._fee_rate_cache_lock:
+            # Check cache first (per product_id)
+            if product_id in self._fee_rate_cache:
+                cached_rate, cached_time = self._fee_rate_cache[product_id]
+                if (datetime.now(timezone.utc) - cached_time).total_seconds() < self.FEE_CACHE_TTL:
+                    return cached_rate
 
-            # Extract taker fee rate if available
-            # Fee rates are returned as strings like "0.006" (0.6%)
-            if "fee_tier" in response:
-                fee_tier = response["fee_tier"]
-                if not isinstance(fee_tier, dict):
-                    logger.warning(
-                        "fee_tier_invalid_type",
-                        product_id=product_id,
-                        fee_tier_type=type(fee_tier).__name__,
-                        message="fee_tier is not a dict, using default",
-                    )
-                elif "taker_fee_rate" in fee_tier:
-                    try:
-                        fee_rate = Decimal(fee_tier["taker_fee_rate"])
-                        # Sanity check: fee should be between 0.001% and 5%
-                        if Decimal("0.00001") <= fee_rate <= Decimal("0.05"):
-                            return fee_rate
-                        else:
-                            logger.warning(
-                                "fee_rate_out_of_range",
-                                product_id=product_id,
-                                fee_rate=str(fee_rate),
-                                message="Fee rate outside reasonable range, using default",
-                            )
-                    except (ValueError, TypeError, ArithmeticError) as e:
+            try:
+                # Get transaction summary for fee tier information
+                response = self._request("GET", "/api/v3/brokerage/transaction_summary")
+
+                # Extract taker fee rate if available
+                # IMPORTANT: Coinbase returns fees as DECIMAL (0.006 = 0.6%)
+                # This is different from Kraken which returns as PERCENTAGE (0.26 = 0.26%)
+                # Do not change this conversion logic without updating tests
+                if "fee_tier" in response:
+                    fee_tier = response["fee_tier"]
+                    if not isinstance(fee_tier, dict):
                         logger.warning(
-                            "fee_rate_conversion_failed",
+                            "fee_tier_invalid_type",
                             product_id=product_id,
-                            taker_fee_rate=fee_tier.get("taker_fee_rate"),
-                            error=str(e),
-                            message="Failed to convert fee rate to Decimal, using default",
+                            fee_tier_type=type(fee_tier).__name__,
+                            message="fee_tier is not a dict, using default",
                         )
+                    elif "taker_fee_rate" in fee_tier:
+                        try:
+                            # Parse fee rate - already in decimal format from Coinbase API
+                            fee_rate = Decimal(fee_tier["taker_fee_rate"])
+                            # Sanity check: fee_rate is decimal (0.00001 = 0.001%, 0.05 = 5%)
+                            if Decimal("0.00001") <= fee_rate <= Decimal("0.05"):
+                                # Cache successful result per product_id
+                                self._fee_rate_cache[product_id] = (fee_rate, datetime.now(timezone.utc))
+                                return fee_rate
+                            else:
+                                logger.warning(
+                                    "fee_rate_out_of_range",
+                                    product_id=product_id,
+                                    fee_rate=str(fee_rate),
+                                    message="Fee rate outside reasonable range, using default",
+                                )
+                        except (ValueError, TypeError, ArithmeticError) as e:
+                            logger.warning(
+                                "fee_rate_conversion_failed",
+                                product_id=product_id,
+                                taker_fee_rate=fee_tier.get("taker_fee_rate"),
+                                error=str(e),
+                                message="Failed to convert fee rate to Decimal, using default",
+                            )
 
-            # Fallback to default Coinbase Advanced taker fee
-            logger.warning(
-                "fee_tier_not_found",
-                product_id=product_id,
-                message="Using default taker fee rate (0.6%)",
-            )
-            return Decimal("0.006")
+                # Fallback to default Coinbase Advanced taker fee
+                logger.warning(
+                    "fee_tier_not_found",
+                    product_id=product_id,
+                    message="Using default taker fee rate (0.6%)",
+                )
+                return Decimal("0.006")
 
-        except Exception as e:
-            logger.warning(
-                "get_trading_fee_rate_failed",
-                product_id=product_id,
-                error=str(e),
-                message="Using default taker fee rate (0.6%)",
-            )
-            return Decimal("0.006")
+            except Exception as e:
+                # Clear cache for this product on error to avoid returning stale data
+                self._fee_rate_cache.pop(product_id, None)
+                logger.warning(
+                    "get_trading_fee_rate_failed",
+                    product_id=product_id,
+                    error=str(e),
+                    message="Using default taker fee rate (0.6%)",
+                )
+                return Decimal("0.006")
 
     @retry(
         stop=stop_after_attempt(3),

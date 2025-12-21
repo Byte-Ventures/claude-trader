@@ -447,11 +447,13 @@ class Database:
         try:
             db_path.relative_to(allowed_root)
         except ValueError:
-            # Allow /tmp ONLY in test environments (pytest execution)
+            # Allow /tmp ONLY in test environments (pytest execution + .db extension)
             # This prevents production data loss from /tmp cleanup on system reboot
+            # Require BOTH environment variable AND .db extension for safety
             is_test_env = os.environ.get("PYTEST_CURRENT_TEST") is not None
+            is_db_file = db_path.suffix == ".db"
 
-            if is_test_env:
+            if is_test_env and is_db_file:
                 tmp_root = Path("/tmp").resolve()
                 try:
                     db_path.relative_to(tmp_root)
