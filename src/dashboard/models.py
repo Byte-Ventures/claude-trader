@@ -134,3 +134,11 @@ class NotificationRecord(BaseModel):
     title: str
     message: str
     created_at: str
+
+
+class WhaleEventRecord(BaseModel):
+    """Whale event record for display."""
+
+    timestamp: str
+    direction: str
+    volume_ratio: float
