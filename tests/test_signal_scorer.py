@@ -270,6 +270,20 @@ def test_breakdown_contains_all_components(scorer, sample_df):
     assert "trend_filter" in result.breakdown
 
 
+def test_components_has_all_seven_keys(scorer, sample_df):
+    """Test components dict always has exactly 7 expected keys with integer values."""
+    result = scorer.calculate_score(sample_df)
+
+    # Verify exactly 7 components exist
+    expected_keys = {"rsi", "macd", "bollinger", "ema", "volume", "trend_filter", "htf_bias"}
+    assert set(result.components.keys()) == expected_keys, \
+        f"Expected {expected_keys}, got {set(result.components.keys())}"
+
+    # Verify all values are integers
+    for key, value in result.components.items():
+        assert isinstance(value, int), f"Component '{key}' has non-integer value: {value} (type: {type(value)})"
+
+
 def test_confidence_zero_on_hold(scorer, sample_df):
     """Test confidence is 0.0 when action is hold."""
     scorer.threshold = 95  # Force hold
@@ -436,7 +450,7 @@ def test_whale_activity_detection():
     result = scorer.calculate_score(df)
 
     # Should have whale activity flag
-    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_activity") == 1
     assert result.breakdown.get("_volume_ratio") >= 3.0
     # Volume boost should be present (30% of signal for whale vs 20% for normal high)
     if result.score != 0:
@@ -492,7 +506,7 @@ def test_whale_direction_bullish():
 
     result = scorer.calculate_score(df)
 
-    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_activity") == 1
     assert result.breakdown.get("_whale_direction") == "bullish"
 
 
@@ -512,7 +526,7 @@ def test_whale_direction_bearish():
 
     result = scorer.calculate_score(df)
 
-    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_activity") == 1
     assert result.breakdown.get("_whale_direction") == "bearish"
 
 
@@ -536,9 +550,9 @@ def test_configurable_whale_threshold():
     result_high = scorer_high.calculate_score(df)
 
     # Low threshold (2.0x) should detect 3x as whale
-    assert result_low.breakdown.get("_whale_activity") is True
+    assert result_low.breakdown.get("_whale_activity") == 1
     # High threshold (5.0x) should NOT detect 3x as whale
-    assert result_high.breakdown.get("_whale_activity") is False
+    assert result_high.breakdown.get("_whale_activity") == 0
 
 
 def test_high_volume_not_whale():
@@ -557,7 +571,7 @@ def test_high_volume_not_whale():
     result = scorer.calculate_score(df)
 
     # Should NOT have whale activity flag
-    assert result.breakdown.get("_whale_activity") is False
+    assert result.breakdown.get("_whale_activity") == 0
     # But should have volume ratio recorded
     assert result.breakdown.get("_volume_ratio") is not None
     assert result.breakdown.get("_volume_ratio") < 3.0
@@ -579,7 +593,7 @@ def test_whale_metadata_on_zero_volume():
     result = scorer.calculate_score(df)
 
     # Should have whale metadata set to defaults (SMA is 0)
-    assert result.breakdown.get("_whale_activity") is False
+    assert result.breakdown.get("_whale_activity") == 0
     assert result.breakdown.get("_volume_ratio") is None
     assert result.breakdown.get("volume") == 0
 
@@ -603,7 +617,7 @@ def test_whale_metadata_on_nan_volume():
     result = scorer.calculate_score(df)
 
     # Should handle NaN gracefully without crashing
-    assert result.breakdown.get("_whale_activity") is False
+    assert result.breakdown.get("_whale_activity") == 0
     assert result.breakdown.get("_volume_ratio") is None
     assert result.breakdown.get("volume") == 0
 
@@ -626,7 +640,7 @@ def test_whale_price_change_pct_stored():
     result = scorer.calculate_score(df)
 
     # Should have whale activity with price_change_pct stored
-    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_activity") == 1
     assert result.breakdown.get("_price_change_pct") is not None
     # Price change should be ~1% (0.01)
     pct = result.breakdown.get("_price_change_pct")
@@ -656,7 +670,7 @@ def test_whale_activity_on_neutral_signal():
     result = scorer.calculate_score(df)
 
     # Whale activity should be detected regardless of signal strength
-    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_activity") == 1
     assert result.breakdown.get("_volume_ratio") >= 3.0
     assert result.breakdown.get("_whale_direction") in ("bullish", "bearish", "neutral")
     # Volume boost should be proportional to score (30% of score)
@@ -697,7 +711,7 @@ def test_whale_candle_structure_bullish_confirmation():
 
     result = scorer.calculate_score(df)
 
-    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_activity") == 1
     assert result.breakdown.get("_whale_direction") == "bullish"
     assert result.breakdown.get("_candle_close_position") is not None
     assert result.breakdown.get("_candle_close_position") > 0.7
@@ -721,7 +735,7 @@ def test_whale_candle_structure_bullish_rejection():
 
     result = scorer.calculate_score(df)
 
-    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_activity") == 1
     # Should be neutral due to rejection pattern
     assert result.breakdown.get("_whale_direction") == "neutral"
     assert result.breakdown.get("_candle_close_position") is not None
@@ -745,7 +759,7 @@ def test_whale_candle_structure_bearish_confirmation():
 
     result = scorer.calculate_score(df)
 
-    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_activity") == 1
     assert result.breakdown.get("_whale_direction") == "bearish"
     assert result.breakdown.get("_candle_close_position") is not None
     assert result.breakdown.get("_candle_close_position") < 0.3
@@ -769,7 +783,7 @@ def test_whale_candle_structure_bearish_support():
 
     result = scorer.calculate_score(df)
 
-    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_activity") == 1
     # Should be neutral due to support pattern
     assert result.breakdown.get("_whale_direction") == "neutral"
     assert result.breakdown.get("_candle_close_position") is not None
@@ -793,7 +807,7 @@ def test_whale_candle_structure_ambiguous_range():
 
     result = scorer.calculate_score(df)
 
-    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_activity") == 1
     # Should be neutral due to ambiguous close position (0.5-0.7 range)
     assert result.breakdown.get("_whale_direction") == "neutral"
     assert result.breakdown.get("_candle_close_position") is not None
@@ -818,7 +832,7 @@ def test_whale_candle_structure_zero_range():
 
     result = scorer.calculate_score(df)
 
-    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_activity") == 1
     # Should be neutral due to missing close_position (zero range candle)
     assert result.breakdown.get("_whale_direction") == "neutral"
     assert result.breakdown.get("_candle_close_position") is None
@@ -840,7 +854,7 @@ def test_whale_candle_structure_missing_data():
 
     result = scorer.calculate_score(df)
 
-    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_activity") == 1
     # Should be neutral due to missing candle data
     assert result.breakdown.get("_whale_direction") == "neutral"
     assert result.breakdown.get("_candle_close_position") is None
@@ -863,7 +877,7 @@ def test_whale_candle_structure_edge_case_exactly_0_7():
 
     result = scorer.calculate_score(df)
 
-    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_activity") == 1
     # At exactly 0.7, the condition is close_position > 0.7, so this should be neutral
     # (not greater than, so falls into ambiguous range)
     assert result.breakdown.get("_whale_direction") == "neutral"
@@ -887,7 +901,7 @@ def test_whale_candle_structure_edge_case_exactly_0_3():
 
     result = scorer.calculate_score(df)
 
-    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_activity") == 1
     # At exactly 0.3, the condition is close_position < 0.3, so this should be neutral
     # (not less than, so falls into ambiguous range)
     assert result.breakdown.get("_whale_direction") == "neutral"
@@ -913,13 +927,13 @@ def test_whale_volume_boundary_behavior():
     })
 
     result = scorer.calculate_score(df)
-    assert result.breakdown.get("_whale_activity") is False or result.breakdown.get("_whale_activity") is None
+    assert result.breakdown.get("_whale_activity") == 0 or result.breakdown.get("_whale_activity") is None
 
     # Now spike the volume high enough to exceed 3.0 threshold
     # Using 5x ensures we're well above, accounting for rolling SMA including the spike
     df['volume'].iloc[-1] = base_volume * 5
     result2 = scorer.calculate_score(df)
-    assert result2.breakdown.get("_whale_activity") is True
+    assert result2.breakdown.get("_whale_activity") == 1
     assert result2.breakdown.get("_volume_ratio") > 3.0
 
 
@@ -940,7 +954,7 @@ def test_whale_candle_structure_price_outside_range():
     result = scorer.calculate_score(df)
 
     # Should detect whale activity (volume spike)
-    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_activity") == 1
 
     # But candle close position should be None due to data inconsistency
     assert result.breakdown.get("_candle_close_position") is None
@@ -969,7 +983,7 @@ def test_whale_candle_structure_price_below_low():
     result = scorer.calculate_score(df)
 
     # Should detect whale activity (volume spike)
-    assert result.breakdown.get("_whale_activity") is True
+    assert result.breakdown.get("_whale_activity") == 1
 
     # But candle close position should be None due to data inconsistency
     assert result.breakdown.get("_candle_close_position") is None
