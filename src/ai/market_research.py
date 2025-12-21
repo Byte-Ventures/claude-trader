@@ -140,6 +140,8 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
         except Exception as e:
             # defusedxml raises various exceptions for malicious XML
             logger.warning("crypto_news_xml_parse_error", error=str(e))
+            # Cache empty result to prevent retry storms during outages
+            _set_cached("crypto_news", [])
             return []
 
         # Find all <item> elements in RSS feed
@@ -170,7 +172,8 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
             url_text = (link_el.text or "").strip() if link_el is not None else ""
             try:
                 parsed = urlparse(url_text)
-                if parsed.netloc != "cointelegraph.com":
+                # Verify HTTPS scheme and cointelegraph.com domain
+                if parsed.scheme != "https" or parsed.netloc != "cointelegraph.com":
                     logger.warning("crypto_news_invalid_url", url=url_text, title=title_text[:40])
                     continue  # Skip items with invalid URLs
             except ValueError:
@@ -210,16 +213,25 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
 
     except httpx.TimeoutException:
         logger.warning("crypto_news_timeout", attempts=3, timeout_sec=15)
+        # Cache empty result to prevent retry storms during outages
+        # Uses same TTL as successful results (15 min default)
+        _set_cached("crypto_news", [])
         return []
     except httpx.HTTPStatusError as e:
         logger.warning("crypto_news_http_error", status=e.response.status_code, url=str(e.request.url))
+        # Cache empty result to prevent retry storms during outages
+        _set_cached("crypto_news", [])
         return []
     except httpx.HTTPError as e:
         logger.warning("crypto_news_network_error", error=str(e))
+        # Cache empty result to prevent retry storms during outages
+        _set_cached("crypto_news", [])
         return []
     except Exception as e:
         # Unexpected errors (XML parsing bugs, programming errors, etc.)
         logger.error("crypto_news_unexpected_error", error=str(e), type=type(e).__name__)
+        # Cache empty result to prevent retry storms during outages
+        _set_cached("crypto_news", [])
         return []
 
 

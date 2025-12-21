@@ -322,6 +322,37 @@ class TestFetchCryptoNews:
         assert len(result[0].title) == MAX_TITLE_LENGTH
         assert result[0].title == "A" * MAX_TITLE_LENGTH
 
+    @pytest.mark.asyncio
+    async def test_http_url_rejected(self):
+        """Test items with HTTP URLs (not HTTPS) are rejected."""
+        rss_with_http_url = """<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0">
+          <channel>
+            <item>
+              <title>HTTP Link (Insecure)</title>
+              <link>http://cointelegraph.com/news/insecure</link>
+              <pubDate>Thu, 21 Dec 2023 08:00:00 +0000</pubDate>
+            </item>
+            <item>
+              <title>HTTPS Link (Secure)</title>
+              <link>https://cointelegraph.com/news/secure</link>
+              <pubDate>Thu, 21 Dec 2023 07:00:00 +0000</pubDate>
+            </item>
+          </channel>
+        </rss>"""
+
+        with patch(
+            "src.ai.market_research._fetch_crypto_news_request",
+            new_callable=AsyncMock,
+            return_value=rss_with_http_url,
+        ):
+            result = await fetch_crypto_news(limit=5)
+
+        # Only HTTPS link should be included
+        assert len(result) == 1
+        assert result[0].title == "HTTPS Link (Secure)"
+        assert result[0].url == "https://cointelegraph.com/news/secure"
+
 
 class TestCoinTelegraphRSSIntegration:
     """Live RSS feed integration tests (skipped in CI)."""
