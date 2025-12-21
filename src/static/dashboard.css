@@ -125,7 +125,7 @@ main {
     position: absolute;
     top: 8px;
     font-size: 0.75rem;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     z-index: 10;
     pointer-events: none;
 }

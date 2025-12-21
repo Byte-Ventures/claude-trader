@@ -165,6 +165,8 @@ function initChart() {
     });
 
     // Add volume histogram series (renders at bottom with left axis)
+    // Note: Volume shows historical data only - WebSocket state doesn't include volume,
+    // so real-time candle updates won't reflect volume changes until next page load.
     volumeSeries = chart.addHistogramSeries({
         color: '#6b7280',
         priceFormat: { type: 'volume' },
