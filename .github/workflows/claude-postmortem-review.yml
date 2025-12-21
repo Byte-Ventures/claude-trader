@@ -85,7 +85,8 @@ jobs:
 
             Output ONLY the JSON, no other text.
           claude_args: >-
-            --max-turns 10
+            --model claude-opus-4-5-20251101
+            --max-turns 50
             --allowed-tools "Read,Glob,Grep"
 
       - name: Parse analysis result
