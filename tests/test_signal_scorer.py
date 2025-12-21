@@ -2814,7 +2814,8 @@ class TestConfigValidation:
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            settings = Settings()
+            # Disable .env file to test migration in isolation
+            settings = Settings(_env_file=None)
 
             # Check migration occurred
             assert settings.mtf_daily_candle_limit == 60

@@ -1941,9 +1941,14 @@ class TradingDaemon:
 
         # Persist state for dashboard
         ind = signal_result.indicators
+        # Get current candle volume for real-time dashboard updates
+        current_volume = None
+        if not candles.empty and "volume" in candles.columns:
+            current_volume = str(candles["volume"].iloc[-1])
         dashboard_state = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "price": str(current_price),
+            "volume": current_volume,
             "signal": {
                 "score": signal_result.score,
                 "action": effective_action,

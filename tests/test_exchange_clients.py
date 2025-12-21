@@ -1189,8 +1189,11 @@ def test_kraken_fee_rate_cache_miss_after_ttl():
         assert mock_request.call_count == 2  # Additional API call made
 
 
-def test_kraken_fee_rate_cache_not_used_on_error():
-    """Test Kraken fee rate cache not populated on API error."""
+def test_kraken_fee_rate_cache_populated_on_error():
+    """Test Kraken fee rate cache IS populated on API error with default rate.
+
+    Caching the default rate on error avoids hammering a failing API repeatedly.
+    """
     valid_secret = "dGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXQ="
     with patch.object(KrakenClient, "_private_request") as mock_request:
         mock_request.side_effect = Exception("API error")
@@ -1201,8 +1204,10 @@ def test_kraken_fee_rate_cache_not_used_on_error():
         fee_rate = client.get_trading_fee_rate("BTC-USD")
         assert fee_rate == Decimal("0.0026")
 
-        # Cache should not be populated for this product
-        assert "BTC-USD" not in client._fee_rate_cache
+        # Cache should be populated with default rate to avoid repeated failing API calls
+        assert "BTC-USD" in client._fee_rate_cache
+        cached_rate, _ = client._fee_rate_cache["BTC-USD"]
+        assert cached_rate == Decimal("0.0026")
 
 
 # ============================================================================

@@ -165,8 +165,6 @@ function initChart() {
     });
 
     // Add volume histogram series (renders at bottom with left axis)
-    // Note: Volume shows historical data only - WebSocket state doesn't include volume,
-    // so real-time candle updates won't reflect volume changes until next page load.
     volumeSeries = chart.addHistogramSeries({
         color: '#6b7280',
         priceFormat: { type: 'volume' },
@@ -626,6 +624,8 @@ function updateDashboard(state) {
     // New candle periods always update immediately to ensure accurate open price.
     //
     // This matches exchange OHLC bucketing (Unix epoch aligned, 24/7 crypto markets).
+    const price = parseFloat(state.price);
+    const volume = state.volume ? parseFloat(state.volume) : null;
     if (isInitialized && state.timestamp && candleSeries && !isNaN(price) && price > 0) {
         // Don't add 'Z' - state timestamps already have timezone info (+00:00)
         const time = Math.floor(new Date(state.timestamp).getTime() / 1000);
@@ -663,6 +663,15 @@ function updateDashboard(state) {
                         candleSeries.update(currentCandle);
                         if (priceLine) {
                             priceLine.update({ time: currentCandle.time, value: price });
+                        }
+                        if (volumeSeries && volume !== null) {
+                            volumeSeries.update({
+                                time: currentCandle.time,
+                                value: volume,
+                                color: currentCandle.close >= currentCandle.open
+                                    ? 'rgba(16, 185, 129, 0.5)'
+                                    : 'rgba(239, 68, 68, 0.5)',
+                            });
                         }
                     }
                 }, CANDLE_UPDATE_THROTTLE_MS);
@@ -703,6 +712,17 @@ function updateDashboard(state) {
             // Update price line (only if we updated the candle)
             if (priceLine && currentCandle && candleTime >= currentCandle.time) {
                 priceLine.update({ time: currentCandle.time, value: price });
+            }
+
+            // Update volume histogram (if volume data available)
+            if (volumeSeries && currentCandle && volume !== null && candleTime >= currentCandle.time) {
+                volumeSeries.update({
+                    time: currentCandle.time,
+                    value: volume,
+                    color: currentCandle.close >= currentCandle.open
+                        ? 'rgba(16, 185, 129, 0.5)'
+                        : 'rgba(239, 68, 68, 0.5)',
+                });
             }
         }
     }
