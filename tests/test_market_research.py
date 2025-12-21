@@ -4,7 +4,12 @@ import pytest
 from unittest.mock import patch, AsyncMock
 from datetime import datetime, timezone
 
-from src.ai.market_research import fetch_crypto_news, NewsItem, _cache
+from src.ai.market_research import (
+    fetch_crypto_news,
+    NewsItem,
+    _cache,
+    COINTELEGRAPH_SOURCE_NAME,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -23,17 +28,17 @@ SAMPLE_RSS_XML = """<?xml version="1.0" encoding="UTF-8"?>
     <item>
       <title>Bitcoin breaks $100K as institutional demand surges</title>
       <link>https://cointelegraph.com/news/bitcoin-100k</link>
-      <pubDate>Sun, 21 Dec 2025 08:00:00 +0000</pubDate>
+      <pubDate>Sat, 21 Dec 2024 08:00:00 +0000</pubDate>
     </item>
     <item>
       <title>Ethereum ETF sees record inflows</title>
       <link>https://cointelegraph.com/news/eth-etf</link>
-      <pubDate>Sun, 21 Dec 2025 07:00:00 +0000</pubDate>
+      <pubDate>Sat, 21 Dec 2024 07:00:00 +0000</pubDate>
     </item>
     <item>
       <title>Fed signals crypto-friendly policy shift</title>
       <link>https://cointelegraph.com/news/fed-crypto</link>
-      <pubDate>Sun, 21 Dec 2025 06:00:00 +0000</pubDate>
+      <pubDate>Sat, 21 Dec 2024 06:00:00 +0000</pubDate>
     </item>
   </channel>
 </rss>"""
@@ -55,7 +60,7 @@ class TestFetchCryptoNews:
         assert len(result) == 3
         assert all(isinstance(item, NewsItem) for item in result)
         assert result[0].title == "Bitcoin breaks $100K as institutional demand surges"
-        assert result[0].source == "CoinTelegraph"
+        assert result[0].source == COINTELEGRAPH_SOURCE_NAME
         assert "cointelegraph.com" in result[0].url
 
     @pytest.mark.asyncio
@@ -154,7 +159,7 @@ class TestFetchCryptoNews:
         assert len(result) == 1
         assert result[0].title == "News with no date"
         assert result[0].url == "https://cointelegraph.com/news/test"
-        assert result[0].source == "CoinTelegraph"
+        assert result[0].source == COINTELEGRAPH_SOURCE_NAME
         # Should use current time as fallback
         assert result[0].published_at is not None
 
@@ -169,7 +174,7 @@ class TestFetchCryptoNews:
             result = await fetch_crypto_news(limit=1)
 
         assert len(result) == 1
-        assert result[0].published_at.year == 2025
+        assert result[0].published_at.year == 2024
         assert result[0].published_at.month == 12
         assert result[0].published_at.day == 21
 
@@ -184,7 +189,7 @@ class TestFetchCryptoNews:
             <item>
               <title>&xxe;</title>
               <link>https://cointelegraph.com/news/test</link>
-              <pubDate>Sun, 21 Dec 2025 08:00:00 +0000</pubDate>
+              <pubDate>Sat, 21 Dec 2024 08:00:00 +0000</pubDate>
             </item>
           </channel>
         </rss>"""
@@ -208,12 +213,12 @@ class TestFetchCryptoNews:
             <item>
               <title></title>
               <link>https://cointelegraph.com/news/test1</link>
-              <pubDate>Sun, 21 Dec 2025 08:00:00 +0000</pubDate>
+              <pubDate>Sat, 21 Dec 2024 08:00:00 +0000</pubDate>
             </item>
             <item>
               <title>Valid Title</title>
               <link>https://cointelegraph.com/news/test2</link>
-              <pubDate>Sun, 21 Dec 2025 07:00:00 +0000</pubDate>
+              <pubDate>Sat, 21 Dec 2024 07:00:00 +0000</pubDate>
             </item>
           </channel>
         </rss>"""
@@ -237,12 +242,12 @@ class TestFetchCryptoNews:
             <item>
               <title>Malicious Link</title>
               <link>https://evil.com/phishing</link>
-              <pubDate>Sun, 21 Dec 2025 08:00:00 +0000</pubDate>
+              <pubDate>Sat, 21 Dec 2024 08:00:00 +0000</pubDate>
             </item>
             <item>
               <title>Valid Link</title>
               <link>https://cointelegraph.com/news/valid</link>
-              <pubDate>Sun, 21 Dec 2025 07:00:00 +0000</pubDate>
+              <pubDate>Sat, 21 Dec 2024 07:00:00 +0000</pubDate>
             </item>
           </channel>
         </rss>"""
@@ -267,12 +272,12 @@ class TestFetchCryptoNews:
             <item>
               <title>   </title>
               <link>https://cointelegraph.com/news/test1</link>
-              <pubDate>Sun, 21 Dec 2025 08:00:00 +0000</pubDate>
+              <pubDate>Sat, 21 Dec 2024 08:00:00 +0000</pubDate>
             </item>
             <item>
               <title>Valid Title</title>
               <link>https://cointelegraph.com/news/test2</link>
-              <pubDate>Sun, 21 Dec 2025 07:00:00 +0000</pubDate>
+              <pubDate>Sat, 21 Dec 2024 07:00:00 +0000</pubDate>
             </item>
           </channel>
         </rss>"""

@@ -19,6 +19,10 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 
 logger = structlog.get_logger(__name__)
 
+# RSS feed configuration
+COINTELEGRAPH_RSS_URL = "https://cointelegraph.com/rss"
+COINTELEGRAPH_SOURCE_NAME = "CoinTelegraph"
+
 # Cache storage with automatic TTL expiration and bounded size
 # Default: 15 min TTL, max 100 entries to prevent memory leaks
 _cache: TTLCache = TTLCache(maxsize=100, ttl=900)
@@ -89,7 +93,7 @@ async def _fetch_crypto_news_request() -> str:
     """
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.get(
-            "https://cointelegraph.com/rss",
+            COINTELEGRAPH_RSS_URL,
             headers={"User-Agent": "Mozilla/5.0 (compatible; CryptoBot/1.0)"},
         )
         response.raise_for_status()
@@ -110,7 +114,7 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
         return cached
 
     try:
-        logger.info("fetching_crypto_news", url="cointelegraph.com/rss")
+        logger.info("fetching_crypto_news", url=COINTELEGRAPH_RSS_URL)
 
         # Retry with exponential backoff: 1s, 2s, 4s
         @retry(
@@ -176,7 +180,7 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
 
             news_items.append(NewsItem(
                 title=title_text[:100],
-                source="CoinTelegraph",
+                source=COINTELEGRAPH_SOURCE_NAME,
                 url=url_text,
                 published_at=published_at,
                 # sentiment defaults to "neutral" - AI analyzes actual sentiment
