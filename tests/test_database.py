@@ -24,6 +24,7 @@ from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 import pandas as pd
+import os
 
 from src.state.database import (
     Database,
@@ -46,20 +47,16 @@ from src.state.database import (
 @pytest.fixture
 def db_path(tmp_path):
     """Create a valid database path within the temp directory."""
-    # Mock Path.cwd to make the tmp_path appear as project root
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
-
-    with patch("pathlib.Path.cwd", return_value=tmp_path):
-        yield data_dir / "test_trader.db"
+    # Use /tmp directly for test databases
+    test_db_path = tmp_path / "test_trader.db"
+    yield test_db_path
 
 
 @pytest.fixture
 def db(db_path):
     """Initialize a fresh database instance for each test."""
-    with patch("pathlib.Path.cwd", return_value=db_path.parent.parent):
-        db_instance = Database(db_path)
-        yield db_instance
+    db_instance = Database(db_path)
+    yield db_instance
 
 
 # ============================================================================
@@ -1555,21 +1552,36 @@ def test_session_rollback_on_exception(db):
 # ============================================================================
 
 def test_database_path_validation():
-    """Test database path must be within allowed directory."""
-    with patch("pathlib.Path.cwd", return_value=Path("/tmp/project")):
-        # Try to create database outside allowed directory
+    """Test database path must be within allowed directory or /tmp."""
+    with patch("pathlib.Path.cwd", return_value=Path("/home/project")):
+        # Try to create database outside allowed directories (/tmp and data/)
         with pytest.raises(ValueError, match="must be within"):
             Database(Path("/etc/passwd"))
 
 
+def test_database_rejects_tmp_in_production():
+    """Verify /tmp is rejected when not in test mode."""
+    with patch.dict(os.environ, {}, clear=True):  # Clear PYTEST_CURRENT_TEST
+        with patch("pathlib.Path.cwd", return_value=Path("/home/project")):
+            with pytest.raises(ValueError, match="must be within"):
+                Database(Path("/tmp/should_fail.db"))
+
+
+def test_database_allows_tmp_in_test_mode(tmp_path):
+    """Verify /tmp paths are allowed during pytest execution."""
+    # This test runs with PYTEST_CURRENT_TEST set automatically
+    db_path = tmp_path / "test.db"
+    db = Database(db_path)  # Should not raise
+    assert db.db_path == db_path.resolve()
+
+
 def test_database_creates_parent_directory(tmp_path):
     """Test database creates parent directory if it doesn't exist."""
-    with patch("pathlib.Path.cwd", return_value=tmp_path):
-        nested_path = tmp_path / "data" / "nested" / "deep" / "test.db"
+    nested_path = tmp_path / "nested" / "deep" / "test.db"
 
-        db_instance = Database(nested_path)
+    db_instance = Database(nested_path)
 
-        assert nested_path.parent.exists()
+    assert nested_path.parent.exists()
 
 
 # ============================================================================
