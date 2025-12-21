@@ -10,7 +10,7 @@ Tests cover:
 
 import pytest
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import Mock, MagicMock, patch
 import pandas as pd
 
@@ -1048,3 +1048,154 @@ def test_paper_client_get_trading_fee_rate_fallback():
 
     # Should fall back to TAKER_FEE constant (0.6%)
     assert fee_rate == Decimal("0.006")
+
+
+# ============================================================================
+# Fee Rate Caching Tests
+# ============================================================================
+
+
+def test_coinbase_fee_rate_cache_hit():
+    """Test Coinbase fee rate cache returns cached value within TTL."""
+    with patch.object(CoinbaseClient, "_request") as mock_request:
+        mock_request.return_value = {
+            "fee_tier": {
+                "taker_fee_rate": "0.006"
+            }
+        }
+
+        client = CoinbaseClient(api_key="test", api_secret="test")
+
+        # First call - should hit API
+        fee_rate_1 = client.get_trading_fee_rate("BTC-USD")
+        assert fee_rate_1 == Decimal("0.006")
+        assert mock_request.call_count == 1
+
+        # Second call - should use cache
+        fee_rate_2 = client.get_trading_fee_rate("BTC-USD")
+        assert fee_rate_2 == Decimal("0.006")
+        assert mock_request.call_count == 1  # No additional API call
+
+        # Verify cache is populated
+        assert client._fee_rate_cache == Decimal("0.006")
+        assert client._fee_rate_cache_time is not None
+
+
+def test_coinbase_fee_rate_cache_miss_after_ttl():
+    """Test Coinbase fee rate cache expires after TTL."""
+    from unittest.mock import MagicMock
+    from datetime import timedelta
+
+    with patch.object(CoinbaseClient, "_request") as mock_request:
+        mock_request.return_value = {
+            "fee_tier": {
+                "taker_fee_rate": "0.006"
+            }
+        }
+
+        client = CoinbaseClient(api_key="test", api_secret="test")
+
+        # First call - should hit API
+        fee_rate_1 = client.get_trading_fee_rate("BTC-USD")
+        assert fee_rate_1 == Decimal("0.006")
+        assert mock_request.call_count == 1
+
+        # Manually expire the cache by setting time in the past
+        client._fee_rate_cache_time = datetime.now(timezone.utc) - timedelta(seconds=3601)
+
+        # Second call - should hit API again (cache expired)
+        fee_rate_2 = client.get_trading_fee_rate("BTC-USD")
+        assert fee_rate_2 == Decimal("0.006")
+        assert mock_request.call_count == 2  # Additional API call made
+
+
+def test_coinbase_fee_rate_cache_not_used_on_error():
+    """Test Coinbase fee rate cache not populated on API error."""
+    with patch.object(CoinbaseClient, "_request") as mock_request:
+        mock_request.side_effect = Exception("API error")
+
+        client = CoinbaseClient(api_key="test", api_secret="test")
+
+        # Call should fall back to default
+        fee_rate = client.get_trading_fee_rate("BTC-USD")
+        assert fee_rate == Decimal("0.006")
+
+        # Cache should not be populated
+        assert client._fee_rate_cache is None
+        assert client._fee_rate_cache_time is None
+
+
+def test_kraken_fee_rate_cache_hit():
+    """Test Kraken fee rate cache returns cached value within TTL."""
+    valid_secret = "dGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXQ="
+    with patch.object(KrakenClient, "_private_request") as mock_request:
+        mock_request.return_value = {
+            "fees": {
+                "XBT/USD": {
+                    "fee": 0.26  # 0.26%
+                }
+            }
+        }
+
+        client = KrakenClient(api_key="test_key", api_secret=valid_secret)
+
+        # First call - should hit API
+        fee_rate_1 = client.get_trading_fee_rate("BTC-USD")
+        assert fee_rate_1 == Decimal("0.0026")
+        assert mock_request.call_count == 1
+
+        # Second call - should use cache
+        fee_rate_2 = client.get_trading_fee_rate("BTC-USD")
+        assert fee_rate_2 == Decimal("0.0026")
+        assert mock_request.call_count == 1  # No additional API call
+
+        # Verify cache is populated
+        assert client._fee_rate_cache == Decimal("0.0026")
+        assert client._fee_rate_cache_time is not None
+
+
+def test_kraken_fee_rate_cache_miss_after_ttl():
+    """Test Kraken fee rate cache expires after TTL."""
+    from datetime import timedelta
+
+    valid_secret = "dGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXQ="
+    with patch.object(KrakenClient, "_private_request") as mock_request:
+        mock_request.return_value = {
+            "fees": {
+                "XBT/USD": {
+                    "fee": 0.26
+                }
+            }
+        }
+
+        client = KrakenClient(api_key="test_key", api_secret=valid_secret)
+
+        # First call - should hit API
+        fee_rate_1 = client.get_trading_fee_rate("BTC-USD")
+        assert fee_rate_1 == Decimal("0.0026")
+        assert mock_request.call_count == 1
+
+        # Manually expire the cache by setting time in the past
+        client._fee_rate_cache_time = datetime.now(timezone.utc) - timedelta(seconds=3601)
+
+        # Second call - should hit API again (cache expired)
+        fee_rate_2 = client.get_trading_fee_rate("BTC-USD")
+        assert fee_rate_2 == Decimal("0.0026")
+        assert mock_request.call_count == 2  # Additional API call made
+
+
+def test_kraken_fee_rate_cache_not_used_on_error():
+    """Test Kraken fee rate cache not populated on API error."""
+    valid_secret = "dGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXQ="
+    with patch.object(KrakenClient, "_private_request") as mock_request:
+        mock_request.side_effect = Exception("API error")
+
+        client = KrakenClient(api_key="test_key", api_secret=valid_secret)
+
+        # Call should fall back to default
+        fee_rate = client.get_trading_fee_rate("BTC-USD")
+        assert fee_rate == Decimal("0.0026")
+
+        # Cache should not be populated
+        assert client._fee_rate_cache is None
+        assert client._fee_rate_cache_time is None

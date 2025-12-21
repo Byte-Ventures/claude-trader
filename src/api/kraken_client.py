@@ -109,6 +109,11 @@ class KrakenClient:
         self._last_counter_update = time.time()
         self._rate_limit_backoff_until = 0.0
 
+        # Fee rate caching (1 hour TTL)
+        self._fee_rate_cache: Optional[Decimal] = None
+        self._fee_rate_cache_time: Optional[datetime] = None
+        self._fee_rate_cache_ttl: int = 3600  # 1 hour in seconds
+
         logger.info("kraken_client_initialized")
 
     def _update_counter(self) -> None:
@@ -782,12 +787,20 @@ class KrakenClient:
         Since the bot primarily uses IOC limit orders (which typically execute as taker),
         we use the taker fee rate for conservative profit margin validation.
 
+        Fee rates are cached for 1 hour to reduce API calls.
+
         Args:
             product_id: Trading pair in normalized format (e.g., BTC-USD)
 
         Returns:
             Current taker fee rate as decimal (e.g., Decimal("0.0026") for 0.26%)
         """
+        # Check cache first
+        if (self._fee_rate_cache is not None
+            and self._fee_rate_cache_time is not None
+            and (datetime.now(timezone.utc) - self._fee_rate_cache_time).total_seconds() < self._fee_rate_cache_ttl):
+            return self._fee_rate_cache
+
         try:
             # Convert to Kraken pair format (e.g., BTC-USD -> XBTUSD)
             kraken_pair = to_exchange_symbol(product_id, Exchange.KRAKEN)
@@ -822,6 +835,9 @@ class KrakenClient:
                             # Sanity check: fee percentage should be between 0.001 and 5.0
                             if Decimal("0.001") <= fee_percent <= Decimal("5.0"):
                                 fee_rate = fee_percent / Decimal("100")
+                                # Cache successful result
+                                self._fee_rate_cache = fee_rate
+                                self._fee_rate_cache_time = datetime.now(timezone.utc)
                                 return fee_rate
                             else:
                                 logger.warning(

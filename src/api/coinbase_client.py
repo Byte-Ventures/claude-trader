@@ -73,6 +73,11 @@ class CoinbaseClient:
         self.api_secret = api_secret
         self.session = requests.Session()
 
+        # Fee rate caching (1 hour TTL)
+        self._fee_rate_cache: Optional[Decimal] = None
+        self._fee_rate_cache_time: Optional[datetime] = None
+        self._fee_rate_cache_ttl: int = 3600  # 1 hour in seconds
+
         logger.info("coinbase_client_initialized")
 
     def _request(
@@ -669,12 +674,20 @@ class CoinbaseClient:
         Since the bot primarily uses IOC limit orders (which typically execute as taker),
         we use the taker fee rate for conservative profit margin validation.
 
+        Fee rates are cached for 1 hour to reduce API calls.
+
         Args:
             product_id: Trading pair (e.g., BTC-USD)
 
         Returns:
             Current taker fee rate as decimal (e.g., Decimal("0.006") for 0.6%)
         """
+        # Check cache first
+        if (self._fee_rate_cache is not None
+            and self._fee_rate_cache_time is not None
+            and (datetime.now(timezone.utc) - self._fee_rate_cache_time).total_seconds() < self._fee_rate_cache_ttl):
+            return self._fee_rate_cache
+
         try:
             # Get transaction summary for fee tier information
             response = self._request("GET", "/api/v3/brokerage/transaction_summary")
@@ -695,6 +708,9 @@ class CoinbaseClient:
                         fee_rate = Decimal(fee_tier["taker_fee_rate"])
                         # Sanity check: fee should be between 0.001% and 5%
                         if Decimal("0.00001") <= fee_rate <= Decimal("0.05"):
+                            # Cache successful result
+                            self._fee_rate_cache = fee_rate
+                            self._fee_rate_cache_time = datetime.now(timezone.utc)
                             return fee_rate
                         else:
                             logger.warning(
