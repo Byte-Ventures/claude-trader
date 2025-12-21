@@ -4025,6 +4025,25 @@ class TestVetoCooldown:
         assert should_skip is False
         assert reason is None
 
+    def test_veto_timestamp_uses_candle_not_wall_clock(self, daemon_with_cooldown):
+        """Verify veto uses candle market time, not datetime.now()."""
+        import pandas as pd
+        from datetime import datetime, timezone
+
+        daemon = daemon_with_cooldown
+
+        # Candle time in the past (market time)
+        candle_time = datetime(2024, 1, 15, 14, 0, 0, tzinfo=timezone.utc)
+        candles = pd.DataFrame({
+            "timestamp": [candle_time],
+            "close": [50000.0]
+        })
+
+        daemon._record_veto_timestamp(candles)
+
+        # Should match candle time, not current wall-clock time
+        assert daemon._last_veto_timestamp == candle_time
+
 
 # ============================================================================
 # Sentiment Fetch Failure Tracking Tests
