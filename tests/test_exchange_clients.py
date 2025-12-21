@@ -8,6 +8,7 @@ Tests cover:
 - Exchange protocol compliance
 """
 
+import os
 import pytest
 from decimal import Decimal
 from datetime import datetime, timezone
@@ -1199,3 +1200,156 @@ def test_kraken_fee_rate_cache_not_used_on_error():
         # Cache should not be populated
         assert client._fee_rate_cache is None
         assert client._fee_rate_cache_time is None
+
+
+# ============================================================================
+# Fee Rate Cache Thread Safety Tests
+# ============================================================================
+
+def test_coinbase_fee_rate_cache_thread_safety():
+    """Test that concurrent calls result in only one API call (no thundering herd)."""
+    import threading
+
+    with patch.object(CoinbaseClient, "_request") as mock_request:
+        # Add small delay to simulate API latency
+        def slow_response(*args, **kwargs):
+            import time
+            time.sleep(0.05)  # 50ms delay
+            return {"fee_tier": {"taker_fee_rate": "0.006"}}
+
+        mock_request.side_effect = slow_response
+
+        client = CoinbaseClient(api_key="test_key", api_secret="test_secret")
+        results = []
+        errors = []
+
+        def fetch_fee():
+            try:
+                result = client.get_trading_fee_rate("BTC-USD")
+                results.append(result)
+            except Exception as e:
+                errors.append(e)
+
+        # Spawn 10 threads all calling get_trading_fee_rate simultaneously
+        threads = [threading.Thread(target=fetch_fee) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # All threads should succeed
+        assert len(errors) == 0, f"Unexpected errors: {errors}"
+        assert len(results) == 10
+
+        # All results should be the same
+        assert all(r == Decimal("0.006") for r in results)
+
+        # Critical: Only ONE API call should have been made
+        # (lock prevents thundering herd)
+        assert mock_request.call_count == 1, (
+            f"Expected 1 API call but got {mock_request.call_count}. "
+            "Race condition detected - multiple threads made concurrent API calls."
+        )
+
+
+def test_kraken_fee_rate_cache_thread_safety():
+    """Test that concurrent calls result in only one API call (no thundering herd)."""
+    import threading
+
+    valid_secret = "dGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXQ="
+
+    with patch.object(KrakenClient, "_private_request") as mock_request:
+        # Add small delay to simulate API latency
+        def slow_response(*args, **kwargs):
+            import time
+            time.sleep(0.05)  # 50ms delay
+            return {"fees": {"XBT/USD": {"fee": 0.26}}}
+
+        mock_request.side_effect = slow_response
+
+        client = KrakenClient(api_key="test_key", api_secret=valid_secret)
+        results = []
+        errors = []
+
+        def fetch_fee():
+            try:
+                result = client.get_trading_fee_rate("BTC-USD")
+                results.append(result)
+            except Exception as e:
+                errors.append(e)
+
+        # Spawn 10 threads all calling get_trading_fee_rate simultaneously
+        threads = [threading.Thread(target=fetch_fee) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # All threads should succeed
+        assert len(errors) == 0, f"Unexpected errors: {errors}"
+        assert len(results) == 10
+
+        # All results should be the same
+        assert all(r == Decimal("0.0026") for r in results)
+
+        # Critical: Only ONE API call should have been made
+        assert mock_request.call_count == 1, (
+            f"Expected 1 API call but got {mock_request.call_count}. "
+            "Race condition detected - multiple threads made concurrent API calls."
+        )
+
+
+# ============================================================================
+# Fee Rate Integration Tests (require API credentials)
+# ============================================================================
+
+@pytest.mark.skipif(
+    not os.environ.get("COINBASE_API_KEY") or not os.environ.get("COINBASE_API_SECRET"),
+    reason="Coinbase API credentials not configured"
+)
+def test_coinbase_fee_rate_live():
+    """Integration test: Fetch actual fee tier from Coinbase API."""
+    client = CoinbaseClient(
+        api_key=os.environ["COINBASE_API_KEY"],
+        api_secret=os.environ["COINBASE_API_SECRET"]
+    )
+
+    fee_rate = client.get_trading_fee_rate("BTC-USD")
+
+    # Fee rate should be a valid Decimal in reasonable range
+    assert isinstance(fee_rate, Decimal)
+    assert Decimal("0.00001") <= fee_rate <= Decimal("0.05"), (
+        f"Fee rate {fee_rate} outside expected range (0.001% to 5%)"
+    )
+
+    # Verify caching works
+    assert client._fee_rate_cache == fee_rate
+    assert client._fee_rate_cache_time is not None
+
+    print(f"Coinbase fee rate: {fee_rate} ({float(fee_rate) * 100:.4f}%)")
+
+
+@pytest.mark.skipif(
+    not os.environ.get("KRAKEN_API_KEY") or not os.environ.get("KRAKEN_API_SECRET"),
+    reason="Kraken API credentials not configured"
+)
+def test_kraken_fee_rate_live():
+    """Integration test: Fetch actual fee tier from Kraken API."""
+    client = KrakenClient(
+        api_key=os.environ["KRAKEN_API_KEY"],
+        api_secret=os.environ["KRAKEN_API_SECRET"]
+    )
+
+    fee_rate = client.get_trading_fee_rate("BTC-USD")
+
+    # Fee rate should be a valid Decimal in reasonable range
+    assert isinstance(fee_rate, Decimal)
+    assert Decimal("0.00001") <= fee_rate <= Decimal("0.05"), (
+        f"Fee rate {fee_rate} outside expected range (0.001% to 5%)"
+    )
+
+    # Verify caching works
+    assert client._fee_rate_cache == fee_rate
+    assert client._fee_rate_cache_time is not None
+
+    print(f"Kraken fee rate: {fee_rate} ({float(fee_rate) * 100:.4f}%)")

@@ -797,89 +797,89 @@ class KrakenClient:
         Returns:
             Current taker fee rate as decimal (e.g., Decimal("0.0026") for 0.26%)
         """
-        # Check cache first (thread-safe)
+        # Hold lock for entire operation to prevent concurrent API calls
+        # when cache expires (prevents thundering herd on rate-limited API)
         with self._fee_rate_cache_lock:
+            # Check cache first
             if (self._fee_rate_cache is not None
                 and self._fee_rate_cache_time is not None
                 and (datetime.now(timezone.utc) - self._fee_rate_cache_time).total_seconds() < self._fee_rate_cache_ttl):
                 return self._fee_rate_cache
 
-        try:
-            # Convert to Kraken pair format (e.g., BTC-USD -> XBTUSD)
-            kraken_pair = to_exchange_symbol(product_id, Exchange.KRAKEN)
+            try:
+                # Convert to Kraken pair format (e.g., BTC-USD -> XBTUSD)
+                kraken_pair = to_exchange_symbol(product_id, Exchange.KRAKEN)
 
-            # Get trade volume to determine fee tier
-            response = self._private_request("TradeVolume", {"pair": kraken_pair})
+                # Get trade volume to determine fee tier
+                response = self._private_request("TradeVolume", {"pair": kraken_pair})
 
-            # Extract fee information from response
-            if "fees" in response:
-                if not isinstance(response["fees"], dict):
-                    logger.warning(
-                        "fees_invalid_type",
-                        product_id=product_id,
-                        fees_type=type(response["fees"]).__name__,
-                        message="fees is not a dict, using default",
-                    )
-                elif kraken_pair in response["fees"]:
-                    fee_info = response["fees"][kraken_pair]
-                    if not isinstance(fee_info, dict):
+                # Extract fee information from response
+                if "fees" in response:
+                    if not isinstance(response["fees"], dict):
                         logger.warning(
-                            "fee_info_invalid_type",
+                            "fees_invalid_type",
                             product_id=product_id,
-                            kraken_pair=kraken_pair,
-                            fee_info_type=type(fee_info).__name__,
-                            message="fee_info is not a dict, using default",
+                            fees_type=type(response["fees"]).__name__,
+                            message="fees is not a dict, using default",
                         )
-                    elif "fee" in fee_info:
-                        try:
-                            # IMPORTANT: Kraken returns fees as PERCENTAGE (0.26 = 0.26%)
-                            # This is different from Coinbase which returns as DECIMAL (0.006 = 0.6%)
-                            # We must convert percentage to decimal: 0.26% -> 0.0026
-                            # Do not change this conversion logic without updating tests
-                            fee_percent = Decimal(str(fee_info["fee"]))
-                            # Sanity check: fee_percent is percentage (0.001 = 0.001%, 5.0 = 5.0%)
-                            if Decimal("0.001") <= fee_percent <= Decimal("5.0"):
-                                fee_rate = fee_percent / Decimal("100")
-                                # Cache successful result (thread-safe)
-                                with self._fee_rate_cache_lock:
-                                    self._fee_rate_cache = fee_rate
-                                    self._fee_rate_cache_time = datetime.now(timezone.utc)
-                                return fee_rate
-                            else:
-                                logger.warning(
-                                    "fee_percent_out_of_range",
-                                    product_id=product_id,
-                                    kraken_pair=kraken_pair,
-                                    fee_percent=str(fee_percent),
-                                    message="Fee percentage outside reasonable range (0.001-5.0), using default",
-                                )
-                        except (ValueError, TypeError, ArithmeticError) as e:
+                    elif kraken_pair in response["fees"]:
+                        fee_info = response["fees"][kraken_pair]
+                        if not isinstance(fee_info, dict):
                             logger.warning(
-                                "fee_conversion_failed",
+                                "fee_info_invalid_type",
                                 product_id=product_id,
                                 kraken_pair=kraken_pair,
-                                fee_value=fee_info.get("fee"),
-                                error=str(e),
-                                message="Failed to convert fee to Decimal, using default",
+                                fee_info_type=type(fee_info).__name__,
+                                message="fee_info is not a dict, using default",
                             )
+                        elif "fee" in fee_info:
+                            try:
+                                # IMPORTANT: Kraken returns fees as PERCENTAGE (0.26 = 0.26%)
+                                # This is different from Coinbase which returns as DECIMAL (0.006 = 0.6%)
+                                # We must convert percentage to decimal: 0.26% -> 0.0026
+                                # Do not change this conversion logic without updating tests
+                                fee_percent = Decimal(str(fee_info["fee"]))
+                                # Sanity check: fee_percent is percentage (0.001 = 0.001%, 5.0 = 5.0%)
+                                if Decimal("0.001") <= fee_percent <= Decimal("5.0"):
+                                    fee_rate = fee_percent / Decimal("100")
+                                    # Cache successful result
+                                    self._fee_rate_cache = fee_rate
+                                    self._fee_rate_cache_time = datetime.now(timezone.utc)
+                                    return fee_rate
+                                else:
+                                    logger.warning(
+                                        "fee_percent_out_of_range",
+                                        product_id=product_id,
+                                        kraken_pair=kraken_pair,
+                                        fee_percent=str(fee_percent),
+                                        message="Fee percentage outside reasonable range (0.001-5.0), using default",
+                                    )
+                            except (ValueError, TypeError, ArithmeticError) as e:
+                                logger.warning(
+                                    "fee_conversion_failed",
+                                    product_id=product_id,
+                                    kraken_pair=kraken_pair,
+                                    fee_value=fee_info.get("fee"),
+                                    error=str(e),
+                                    message="Failed to convert fee to Decimal, using default",
+                                )
 
-            # Fallback to default Kraken taker fee
-            logger.warning(
-                "fee_tier_not_found",
-                product_id=product_id,
-                message="Using default taker fee rate (0.26%)",
-            )
-            return Decimal("0.0026")
+                # Fallback to default Kraken taker fee
+                logger.warning(
+                    "fee_tier_not_found",
+                    product_id=product_id,
+                    message="Using default taker fee rate (0.26%)",
+                )
+                return Decimal("0.0026")
 
-        except Exception as e:
-            # Clear cache on error to avoid returning stale data
-            with self._fee_rate_cache_lock:
+            except Exception as e:
+                # Clear cache on error to avoid returning stale data
                 self._fee_rate_cache = None
                 self._fee_rate_cache_time = None
-            logger.warning(
-                "get_trading_fee_rate_failed",
-                product_id=product_id,
-                error=str(e),
-                message="Using default taker fee rate (0.26%)",
-            )
-            return Decimal("0.0026")
+                logger.warning(
+                    "get_trading_fee_rate_failed",
+                    product_id=product_id,
+                    error=str(e),
+                    message="Using default taker fee rate (0.26%)",
+                )
+                return Decimal("0.0026")
