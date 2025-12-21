@@ -16,6 +16,8 @@ import pandas as pd
 
 from src.api.exchange_protocol import Balance, OrderResult, MarketData, ExchangeClient
 from src.api.paper_client import PaperTradingClient, PaperTrade
+from src.api.coinbase_client import CoinbaseClient
+from src.api.kraken_client import KrakenClient
 from src.api.symbol_mapper import (
     Exchange,
     normalize_symbol,
@@ -803,3 +805,246 @@ def test_paper_client_multiple_trades_statistics(mock_exchange_client):
     assert Decimal(stats["total_fees"]) > Decimal("0")
     # Volume should be sum of buys + sell (gross amounts)
     assert Decimal(stats["total_volume"]) > Decimal("2000")
+
+
+# ============================================================================
+# Fee Rate Tests (get_trading_fee_rate)
+# ============================================================================
+
+
+def test_coinbase_get_trading_fee_rate_success():
+    """Test successful fee fetching from Coinbase API."""
+    with patch.object(CoinbaseClient, "_request") as mock_request:
+        mock_request.return_value = {
+            "fee_tier": {
+                "taker_fee_rate": "0.006"
+            }
+        }
+
+        client = CoinbaseClient(api_key="test", api_secret="test")
+        fee_rate = client.get_trading_fee_rate("BTC-USD")
+
+        assert fee_rate == Decimal("0.006")
+        mock_request.assert_called_once_with("GET", "/api/v3/brokerage/transaction_summary")
+
+
+def test_coinbase_get_trading_fee_rate_fallback_missing_fee_tier():
+    """Test Coinbase fallback when fee_tier is missing."""
+    with patch.object(CoinbaseClient, "_request") as mock_request:
+        mock_request.return_value = {}
+
+        client = CoinbaseClient(api_key="test", api_secret="test")
+        fee_rate = client.get_trading_fee_rate("BTC-USD")
+
+        # Should fall back to default 0.6%
+        assert fee_rate == Decimal("0.006")
+
+
+def test_coinbase_get_trading_fee_rate_fallback_invalid_type():
+    """Test Coinbase fallback when fee_tier is not a dict."""
+    with patch.object(CoinbaseClient, "_request") as mock_request:
+        mock_request.return_value = {
+            "fee_tier": "invalid"
+        }
+
+        client = CoinbaseClient(api_key="test", api_secret="test")
+        fee_rate = client.get_trading_fee_rate("BTC-USD")
+
+        # Should fall back to default 0.6%
+        assert fee_rate == Decimal("0.006")
+
+
+def test_coinbase_get_trading_fee_rate_fallback_malformed_decimal():
+    """Test Coinbase fallback when taker_fee_rate cannot be converted to Decimal."""
+    with patch.object(CoinbaseClient, "_request") as mock_request:
+        mock_request.return_value = {
+            "fee_tier": {
+                "taker_fee_rate": "not_a_number"
+            }
+        }
+
+        client = CoinbaseClient(api_key="test", api_secret="test")
+        fee_rate = client.get_trading_fee_rate("BTC-USD")
+
+        # Should fall back to default 0.6%
+        assert fee_rate == Decimal("0.006")
+
+
+def test_coinbase_get_trading_fee_rate_fallback_out_of_range():
+    """Test Coinbase fallback when fee rate is outside reasonable range."""
+    with patch.object(CoinbaseClient, "_request") as mock_request:
+        # Test too high
+        mock_request.return_value = {
+            "fee_tier": {
+                "taker_fee_rate": "0.10"  # 10% - unreasonable
+            }
+        }
+
+        client = CoinbaseClient(api_key="test", api_secret="test")
+        fee_rate = client.get_trading_fee_rate("BTC-USD")
+
+        # Should fall back to default 0.6%
+        assert fee_rate == Decimal("0.006")
+
+
+def test_coinbase_get_trading_fee_rate_api_error():
+    """Test Coinbase fallback when API request fails."""
+    with patch.object(CoinbaseClient, "_request") as mock_request:
+        mock_request.side_effect = Exception("API error")
+
+        client = CoinbaseClient(api_key="test", api_secret="test")
+        fee_rate = client.get_trading_fee_rate("BTC-USD")
+
+        # Should fall back to default 0.6%
+        assert fee_rate == Decimal("0.006")
+
+
+def test_kraken_get_trading_fee_rate_success():
+    """Test successful fee fetching from Kraken API."""
+    # Use a valid base64 secret (64+ chars when decoded)
+    valid_secret = "dGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXQ="
+    with patch.object(KrakenClient, "_private_request") as mock_request:
+        mock_request.return_value = {
+            "fees": {
+                "XBT/USD": {
+                    "fee": 0.26  # 0.26%
+                }
+            }
+        }
+
+        client = KrakenClient(api_key="test_key", api_secret=valid_secret)
+        fee_rate = client.get_trading_fee_rate("BTC-USD")
+
+        # Should convert 0.26 -> 0.0026
+        assert fee_rate == Decimal("0.0026")
+
+
+def test_kraken_get_trading_fee_rate_fallback_missing_fees():
+    """Test Kraken fallback when fees is missing."""
+    valid_secret = "dGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXQ="
+    with patch.object(KrakenClient, "_private_request") as mock_request:
+        mock_request.return_value = {}
+
+        client = KrakenClient(api_key="test_key", api_secret=valid_secret)
+        fee_rate = client.get_trading_fee_rate("BTC-USD")
+
+        # Should fall back to default 0.26%
+        assert fee_rate == Decimal("0.0026")
+
+
+def test_kraken_get_trading_fee_rate_fallback_invalid_fees_type():
+    """Test Kraken fallback when fees is not a dict."""
+    valid_secret = "dGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXQ="
+    with patch.object(KrakenClient, "_private_request") as mock_request:
+        mock_request.return_value = {
+            "fees": "invalid"
+        }
+
+        client = KrakenClient(api_key="test_key", api_secret=valid_secret)
+        fee_rate = client.get_trading_fee_rate("BTC-USD")
+
+        # Should fall back to default 0.26%
+        assert fee_rate == Decimal("0.0026")
+
+
+def test_kraken_get_trading_fee_rate_fallback_invalid_fee_info_type():
+    """Test Kraken fallback when fee_info is not a dict."""
+    valid_secret = "dGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXQ="
+    with patch.object(KrakenClient, "_private_request") as mock_request:
+        mock_request.return_value = {
+            "fees": {
+                "XBT/USD": "invalid"
+            }
+        }
+
+        client = KrakenClient(api_key="test_key", api_secret=valid_secret)
+        fee_rate = client.get_trading_fee_rate("BTC-USD")
+
+        # Should fall back to default 0.26%
+        assert fee_rate == Decimal("0.0026")
+
+
+def test_kraken_get_trading_fee_rate_fallback_malformed_decimal():
+    """Test Kraken fallback when fee cannot be converted to Decimal."""
+    valid_secret = "dGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXQ="
+    with patch.object(KrakenClient, "_private_request") as mock_request:
+        mock_request.return_value = {
+            "fees": {
+                "XBT/USD": {
+                    "fee": "not_a_number"
+                }
+            }
+        }
+
+        client = KrakenClient(api_key="test_key", api_secret=valid_secret)
+        fee_rate = client.get_trading_fee_rate("BTC-USD")
+
+        # Should fall back to default 0.26%
+        assert fee_rate == Decimal("0.0026")
+
+
+def test_kraken_get_trading_fee_rate_fallback_out_of_range():
+    """Test Kraken fallback when fee percentage is outside reasonable range."""
+    valid_secret = "dGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXQ="
+    with patch.object(KrakenClient, "_private_request") as mock_request:
+        # Test too high
+        mock_request.return_value = {
+            "fees": {
+                "XBT/USD": {
+                    "fee": 10.0  # 10% - unreasonable
+                }
+            }
+        }
+
+        client = KrakenClient(api_key="test_key", api_secret=valid_secret)
+        fee_rate = client.get_trading_fee_rate("BTC-USD")
+
+        # Should fall back to default 0.26%
+        assert fee_rate == Decimal("0.0026")
+
+
+def test_kraken_get_trading_fee_rate_api_error():
+    """Test Kraken fallback when API request fails."""
+    valid_secret = "dGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXRfdGVzdF9zZWNyZXQ="
+    with patch.object(KrakenClient, "_private_request") as mock_request:
+        mock_request.side_effect = Exception("API error")
+
+        client = KrakenClient(api_key="test_key", api_secret=valid_secret)
+        fee_rate = client.get_trading_fee_rate("BTC-USD")
+
+        # Should fall back to default 0.26%
+        assert fee_rate == Decimal("0.0026")
+
+
+def test_paper_client_get_trading_fee_rate_delegates_to_real_client():
+    """Test PaperTradingClient delegates fee rate to real exchange client."""
+    mock_real_client = Mock(spec=ExchangeClient)
+    mock_real_client.get_trading_fee_rate.return_value = Decimal("0.004")
+    mock_real_client.get_current_price.return_value = Decimal("50000")
+
+    paper_client = PaperTradingClient(
+        real_client=mock_real_client,
+        initial_quote=10000.0
+    )
+
+    fee_rate = paper_client.get_trading_fee_rate("BTC-USD")
+
+    assert fee_rate == Decimal("0.004")
+    mock_real_client.get_trading_fee_rate.assert_called_once_with("BTC-USD")
+
+
+def test_paper_client_get_trading_fee_rate_fallback():
+    """Test PaperTradingClient falls back to TAKER_FEE when real client fails."""
+    mock_real_client = Mock(spec=ExchangeClient)
+    mock_real_client.get_trading_fee_rate.side_effect = Exception("API error")
+    mock_real_client.get_current_price.return_value = Decimal("50000")
+
+    paper_client = PaperTradingClient(
+        real_client=mock_real_client,
+        initial_quote=10000.0
+    )
+
+    fee_rate = paper_client.get_trading_fee_rate("BTC-USD")
+
+    # Should fall back to TAKER_FEE constant (0.6%)
+    assert fee_rate == Decimal("0.006")

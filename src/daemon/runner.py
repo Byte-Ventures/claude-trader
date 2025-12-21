@@ -403,6 +403,8 @@ class TradingDaemon:
             kill_switch=self.kill_switch,
             circuit_breaker=self.circuit_breaker,
             loss_limiter=self.loss_limiter,
+            exchange_client=self.client,
+            product_id=settings.trading_pair,
         )
 
         # Initialize trade cooldown (optional, prevents rapid consecutive trades)

@@ -79,6 +79,8 @@ class OrderValidator:
         kill_switch: Optional[KillSwitch] = None,
         circuit_breaker: Optional[CircuitBreaker] = None,
         loss_limiter: Optional[LossLimiter] = None,
+        exchange_client=None,  # Optional ExchangeClient for dynamic fee fetching
+        product_id: str = "BTC-USD",  # Trading pair for fee lookups
     ):
         """
         Initialize order validator.
@@ -88,6 +90,8 @@ class OrderValidator:
             kill_switch: Kill switch instance
             circuit_breaker: Circuit breaker instance
             loss_limiter: Loss limiter instance
+            exchange_client: Optional exchange client for dynamic fee fetching
+            product_id: Trading pair symbol (e.g., BTC-USD)
         """
         self.config = config or ValidatorConfig(
             estimated_fee_percent=0.006,  # Default: 0.6% per trade
@@ -96,6 +100,8 @@ class OrderValidator:
         self.kill_switch = kill_switch
         self.circuit_breaker = circuit_breaker
         self.loss_limiter = loss_limiter
+        self.exchange_client = exchange_client
+        self.product_id = product_id
 
         # Current state (updated externally)
         self._base_balance = Decimal("0")
@@ -344,6 +350,30 @@ class OrderValidator:
 
         return ValidationResult(valid=True)
 
+    def get_current_fee_percent(self) -> float:
+        """
+        Get current trading fee from exchange or fall back to static estimate.
+
+        Returns:
+            Current round-trip fee as decimal (e.g., 0.006 for 0.6%)
+        """
+        if self.exchange_client and hasattr(self.exchange_client, "get_trading_fee_rate"):
+            try:
+                # Fetch one-way fee from exchange
+                one_way_fee = float(self.exchange_client.get_trading_fee_rate(self.product_id))
+                # Return round-trip fee (buy + sell)
+                return one_way_fee * 2.0
+            except Exception as e:
+                logger.warning(
+                    "dynamic_fee_fetch_failed",
+                    product_id=self.product_id,
+                    error=str(e),
+                    message=f"Using static fee estimate ({self.config.estimated_fee_percent:.2%})",
+                )
+
+        # Fallback to static configuration
+        return self.config.estimated_fee_percent
+
     def _check_profit_margin(self, stop_distance_percent: float) -> ValidationResult:
         """
         Check if trade has positive expected value after fees.
@@ -370,8 +400,11 @@ class OrderValidator:
                 reason=f"Invalid stop distance: {stop_distance_percent}",
             )
 
+        # Get current fee (dynamic if available, otherwise static estimate)
+        current_fee = self.get_current_fee_percent()
+
         # Minimum required margin is profit_margin_multiplier x round-trip fees
-        min_margin = self.config.estimated_fee_percent * self.config.profit_margin_multiplier
+        min_margin = current_fee * self.config.profit_margin_multiplier
 
         if stop_distance_percent < min_margin:
             return ValidationResult(
@@ -383,7 +416,7 @@ class OrderValidator:
         warnings = []
         if stop_distance_percent < min_margin * 1.5:
             warnings.append(
-                f"Tight profit margin: {stop_distance_percent:.2%} stop vs {self.config.estimated_fee_percent:.2%} fees"
+                f"Tight profit margin: {stop_distance_percent:.2%} stop vs {current_fee:.2%} fees"
             )
 
         return ValidationResult(valid=True, warnings=warnings)
