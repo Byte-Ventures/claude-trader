@@ -1077,14 +1077,15 @@ def test_coinbase_fee_rate_cache_hit():
         assert fee_rate_2 == Decimal("0.006")
         assert mock_request.call_count == 1  # No additional API call
 
-        # Verify cache is populated
-        assert client._fee_rate_cache == Decimal("0.006")
-        assert client._fee_rate_cache_time is not None
+        # Verify cache is populated (dict keyed by product_id)
+        assert "BTC-USD" in client._fee_rate_cache
+        cached_rate, cached_time = client._fee_rate_cache["BTC-USD"]
+        assert cached_rate == Decimal("0.006")
+        assert cached_time is not None
 
 
 def test_coinbase_fee_rate_cache_miss_after_ttl():
     """Test Coinbase fee rate cache expires after TTL."""
-    from unittest.mock import MagicMock
     from datetime import timedelta
 
     with patch.object(CoinbaseClient, "_request") as mock_request:
@@ -1102,7 +1103,8 @@ def test_coinbase_fee_rate_cache_miss_after_ttl():
         assert mock_request.call_count == 1
 
         # Manually expire the cache by setting time in the past
-        client._fee_rate_cache_time = datetime.now(timezone.utc) - timedelta(seconds=3601)
+        expired_time = datetime.now(timezone.utc) - timedelta(seconds=3601)
+        client._fee_rate_cache["BTC-USD"] = (Decimal("0.006"), expired_time)
 
         # Second call - should hit API again (cache expired)
         fee_rate_2 = client.get_trading_fee_rate("BTC-USD")
@@ -1121,9 +1123,8 @@ def test_coinbase_fee_rate_cache_not_used_on_error():
         fee_rate = client.get_trading_fee_rate("BTC-USD")
         assert fee_rate == Decimal("0.006")
 
-        # Cache should not be populated
-        assert client._fee_rate_cache is None
-        assert client._fee_rate_cache_time is None
+        # Cache should not be populated for this product
+        assert "BTC-USD" not in client._fee_rate_cache
 
 
 def test_kraken_fee_rate_cache_hit():
@@ -1150,9 +1151,11 @@ def test_kraken_fee_rate_cache_hit():
         assert fee_rate_2 == Decimal("0.0026")
         assert mock_request.call_count == 1  # No additional API call
 
-        # Verify cache is populated
-        assert client._fee_rate_cache == Decimal("0.0026")
-        assert client._fee_rate_cache_time is not None
+        # Verify cache is populated (dict keyed by product_id)
+        assert "BTC-USD" in client._fee_rate_cache
+        cached_rate, cached_time = client._fee_rate_cache["BTC-USD"]
+        assert cached_rate == Decimal("0.0026")
+        assert cached_time is not None
 
 
 def test_kraken_fee_rate_cache_miss_after_ttl():
@@ -1177,7 +1180,8 @@ def test_kraken_fee_rate_cache_miss_after_ttl():
         assert mock_request.call_count == 1
 
         # Manually expire the cache by setting time in the past
-        client._fee_rate_cache_time = datetime.now(timezone.utc) - timedelta(seconds=3601)
+        expired_time = datetime.now(timezone.utc) - timedelta(seconds=3601)
+        client._fee_rate_cache["BTC-USD"] = (Decimal("0.0026"), expired_time)
 
         # Second call - should hit API again (cache expired)
         fee_rate_2 = client.get_trading_fee_rate("BTC-USD")
@@ -1197,9 +1201,8 @@ def test_kraken_fee_rate_cache_not_used_on_error():
         fee_rate = client.get_trading_fee_rate("BTC-USD")
         assert fee_rate == Decimal("0.0026")
 
-        # Cache should not be populated
-        assert client._fee_rate_cache is None
-        assert client._fee_rate_cache_time is None
+        # Cache should not be populated for this product
+        assert "BTC-USD" not in client._fee_rate_cache
 
 
 # ============================================================================
@@ -1322,9 +1325,11 @@ def test_coinbase_fee_rate_live():
         f"Fee rate {fee_rate} outside expected range (0.001% to 5%)"
     )
 
-    # Verify caching works
-    assert client._fee_rate_cache == fee_rate
-    assert client._fee_rate_cache_time is not None
+    # Verify caching works (dict keyed by product_id)
+    assert "BTC-USD" in client._fee_rate_cache
+    cached_rate, cached_time = client._fee_rate_cache["BTC-USD"]
+    assert cached_rate == fee_rate
+    assert cached_time is not None
 
     print(f"Coinbase fee rate: {fee_rate} ({float(fee_rate) * 100:.4f}%)")
 
@@ -1348,8 +1353,10 @@ def test_kraken_fee_rate_live():
         f"Fee rate {fee_rate} outside expected range (0.001% to 5%)"
     )
 
-    # Verify caching works
-    assert client._fee_rate_cache == fee_rate
-    assert client._fee_rate_cache_time is not None
+    # Verify caching works (dict keyed by product_id)
+    assert "BTC-USD" in client._fee_rate_cache
+    cached_rate, cached_time = client._fee_rate_cache["BTC-USD"]
+    assert cached_rate == fee_rate
+    assert cached_time is not None
 
     print(f"Kraken fee rate: {fee_rate} ({float(fee_rate) * 100:.4f}%)")

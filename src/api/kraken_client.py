@@ -83,6 +83,10 @@ class KrakenClient:
     COUNTER_DECAY_RATE = 0.33  # Points per second (1 every 3 seconds)
     PRIVATE_CALL_COST = 1  # Cost per private API call
 
+    # Fee rate cache TTL in seconds (1 hour)
+    # Fee tiers are volume-based and change infrequently
+    FEE_CACHE_TTL = 3600
+
     def __init__(
         self,
         api_key: str,
@@ -110,10 +114,9 @@ class KrakenClient:
         self._last_counter_update = time.time()
         self._rate_limit_backoff_until = 0.0
 
-        # Fee rate caching (1 hour TTL)
-        self._fee_rate_cache: Optional[Decimal] = None
-        self._fee_rate_cache_time: Optional[datetime] = None
-        self._fee_rate_cache_ttl: int = 3600  # 1 hour in seconds
+        # Fee rate caching per product_id (uses class constant FEE_CACHE_TTL)
+        # Cache maps product_id -> (fee_rate, cache_time)
+        self._fee_rate_cache: dict[str, tuple[Decimal, datetime]] = {}
         self._fee_rate_cache_lock = Lock()  # Thread safety for cache operations
 
         logger.info("kraken_client_initialized")
@@ -789,7 +792,9 @@ class KrakenClient:
         Since the bot primarily uses IOC limit orders (which typically execute as taker),
         we use the taker fee rate for conservative profit margin validation.
 
-        Fee rates are cached for 1 hour to reduce API calls.
+        Fee rates are cached per product_id for FEE_CACHE_TTL seconds (1 hour) to
+        reduce API calls. The lock is held for the entire operation to prevent
+        thundering herd when cache expires - concurrent calls may briefly block.
 
         Args:
             product_id: Trading pair in normalized format (e.g., BTC-USD)
@@ -800,11 +805,11 @@ class KrakenClient:
         # Hold lock for entire operation to prevent concurrent API calls
         # when cache expires (prevents thundering herd on rate-limited API)
         with self._fee_rate_cache_lock:
-            # Check cache first
-            if (self._fee_rate_cache is not None
-                and self._fee_rate_cache_time is not None
-                and (datetime.now(timezone.utc) - self._fee_rate_cache_time).total_seconds() < self._fee_rate_cache_ttl):
-                return self._fee_rate_cache
+            # Check cache first (per product_id)
+            if product_id in self._fee_rate_cache:
+                cached_rate, cached_time = self._fee_rate_cache[product_id]
+                if (datetime.now(timezone.utc) - cached_time).total_seconds() < self.FEE_CACHE_TTL:
+                    return cached_rate
 
             try:
                 # Convert to Kraken pair format (e.g., BTC-USD -> XBTUSD)
@@ -842,9 +847,8 @@ class KrakenClient:
                                 # Sanity check: fee_percent is percentage (0.001 = 0.001%, 5.0 = 5.0%)
                                 if Decimal("0.001") <= fee_percent <= Decimal("5.0"):
                                     fee_rate = fee_percent / Decimal("100")
-                                    # Cache successful result
-                                    self._fee_rate_cache = fee_rate
-                                    self._fee_rate_cache_time = datetime.now(timezone.utc)
+                                    # Cache successful result per product_id
+                                    self._fee_rate_cache[product_id] = (fee_rate, datetime.now(timezone.utc))
                                     return fee_rate
                                 else:
                                     logger.warning(
@@ -873,9 +877,8 @@ class KrakenClient:
                 return Decimal("0.0026")
 
             except Exception as e:
-                # Clear cache on error to avoid returning stale data
-                self._fee_rate_cache = None
-                self._fee_rate_cache_time = None
+                # Clear cache for this product on error to avoid returning stale data
+                self._fee_rate_cache.pop(product_id, None)
                 logger.warning(
                     "get_trading_fee_rate_failed",
                     product_id=product_id,
