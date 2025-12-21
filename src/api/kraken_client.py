@@ -16,6 +16,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
+from threading import Lock
 from typing import Optional
 
 import pandas as pd
@@ -113,6 +114,7 @@ class KrakenClient:
         self._fee_rate_cache: Optional[Decimal] = None
         self._fee_rate_cache_time: Optional[datetime] = None
         self._fee_rate_cache_ttl: int = 3600  # 1 hour in seconds
+        self._fee_rate_cache_lock = Lock()  # Thread safety for cache operations
 
         logger.info("kraken_client_initialized")
 
@@ -795,11 +797,12 @@ class KrakenClient:
         Returns:
             Current taker fee rate as decimal (e.g., Decimal("0.0026") for 0.26%)
         """
-        # Check cache first
-        if (self._fee_rate_cache is not None
-            and self._fee_rate_cache_time is not None
-            and (datetime.now(timezone.utc) - self._fee_rate_cache_time).total_seconds() < self._fee_rate_cache_ttl):
-            return self._fee_rate_cache
+        # Check cache first (thread-safe)
+        with self._fee_rate_cache_lock:
+            if (self._fee_rate_cache is not None
+                and self._fee_rate_cache_time is not None
+                and (datetime.now(timezone.utc) - self._fee_rate_cache_time).total_seconds() < self._fee_rate_cache_ttl):
+                return self._fee_rate_cache
 
         try:
             # Convert to Kraken pair format (e.g., BTC-USD -> XBTUSD)
@@ -829,15 +832,18 @@ class KrakenClient:
                         )
                     elif "fee" in fee_info:
                         try:
-                            # Kraken returns fee as percentage (e.g., 0.26 for 0.26%)
-                            # Convert to decimal (0.26 -> 0.0026)
+                            # IMPORTANT: Kraken returns fees as PERCENTAGE (0.26 = 0.26%)
+                            # This is different from Coinbase which returns as DECIMAL (0.006 = 0.6%)
+                            # We must convert percentage to decimal: 0.26% -> 0.0026
+                            # Do not change this conversion logic without updating tests
                             fee_percent = Decimal(str(fee_info["fee"]))
-                            # Sanity check: fee percentage should be between 0.001 and 5.0
+                            # Sanity check: fee_percent is percentage (0.001 = 0.001%, 5.0 = 5.0%)
                             if Decimal("0.001") <= fee_percent <= Decimal("5.0"):
                                 fee_rate = fee_percent / Decimal("100")
-                                # Cache successful result
-                                self._fee_rate_cache = fee_rate
-                                self._fee_rate_cache_time = datetime.now(timezone.utc)
+                                # Cache successful result (thread-safe)
+                                with self._fee_rate_cache_lock:
+                                    self._fee_rate_cache = fee_rate
+                                    self._fee_rate_cache_time = datetime.now(timezone.utc)
                                 return fee_rate
                             else:
                                 logger.warning(
@@ -866,6 +872,10 @@ class KrakenClient:
             return Decimal("0.0026")
 
         except Exception as e:
+            # Clear cache on error to avoid returning stale data
+            with self._fee_rate_cache_lock:
+                self._fee_rate_cache = None
+                self._fee_rate_cache_time = None
             logger.warning(
                 "get_trading_fee_rate_failed",
                 product_id=product_id,
