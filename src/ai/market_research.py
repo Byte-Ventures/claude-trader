@@ -137,6 +137,11 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
             logger.warning("crypto_news_no_items", message="RSS feed contained no items")
             return []
 
+        # Note: We intentionally extract only title, link, and pubDate from RSS items.
+        # The <description> field is not extracted because:
+        # 1. Keeps prompts concise (avoids overwhelming AI with long article summaries)
+        # 2. Titles alone provide sufficient signal for sentiment/trend analysis
+        # 3. AI can determine sentiment from headlines without full descriptions
         news_items = []
         for item in items[:limit]:
             title_el = item.find("title")
@@ -149,7 +154,12 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
                 try:
                     published_at = parsedate_to_datetime(pub_date_el.text)
                 except (ValueError, TypeError):
-                    pass  # Use default
+                    # Date parsing failed - use current time as fallback
+                    logger.warning(
+                        "crypto_news_date_parse_failed",
+                        raw_date=pub_date_el.text,
+                        title=title_el.text[:40] if title_el is not None and title_el.text else "unknown"
+                    )
 
             news_items.append(NewsItem(
                 title=(title_el.text or "")[:100] if title_el is not None else "",
@@ -170,8 +180,15 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
     except httpx.TimeoutException:
         logger.warning("crypto_news_timeout", attempts=3, timeout_sec=15)
         return []
+    except httpx.HTTPStatusError as e:
+        logger.warning("crypto_news_http_error", status=e.response.status_code, url=str(e.request.url))
+        return []
+    except httpx.HTTPError as e:
+        logger.warning("crypto_news_network_error", error=str(e))
+        return []
     except Exception as e:
-        logger.error("crypto_news_fetch_failed", error=str(e) or type(e).__name__)
+        # Unexpected errors (XML parsing bugs, programming errors, etc.)
+        logger.error("crypto_news_unexpected_error", error=str(e), type=type(e).__name__)
         return []
 
 
