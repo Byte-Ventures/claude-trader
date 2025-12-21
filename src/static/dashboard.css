@@ -118,6 +118,24 @@ main {
     height: 50vh;
     min-height: 300px;
     max-height: 500px;
+    position: relative;
+}
+
+.axis-label {
+    position: absolute;
+    top: 8px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    z-index: 10;
+    pointer-events: none;
+}
+
+.axis-label-left {
+    left: 8px;
+}
+
+.axis-label-right {
+    right: 8px;
 }
 
 .metrics-section {
