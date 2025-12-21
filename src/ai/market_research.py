@@ -8,14 +8,22 @@ from free APIs with caching to avoid rate limits.
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 import structlog
 from cachetools import TTLCache
+from defusedxml.ElementTree import fromstring
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 logger = structlog.get_logger(__name__)
+
+# RSS feed configuration
+COINTELEGRAPH_RSS_URL = "https://cointelegraph.com/rss"
+COINTELEGRAPH_SOURCE_NAME = "CoinTelegraph"
+MAX_TITLE_LENGTH = 100  # Prevent excessively long titles in AI prompts
 
 # Cache storage with automatic TTL expiration and bounded size
 # Default: 15 min TTL, max 100 entries to prevent memory leaks
@@ -79,23 +87,32 @@ class MarketResearch:
     errors: list[str] = field(default_factory=list)
 
 
-async def _fetch_crypto_news_request() -> dict:
-    """Execute the actual HTTP request to CryptoCompare with retry logic."""
+async def _fetch_crypto_news_request() -> str:
+    """Execute the actual HTTP request to CoinTelegraph RSS feed.
+
+    CoinTelegraph provides quality crypto news via RSS feed.
+    Returns raw XML string for parsing.
+    """
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.get(
-            "https://min-api.cryptocompare.com/data/v2/news/",
-            params={"categories": "BTC", "excludeCategories": "Sponsored"},
+            COINTELEGRAPH_RSS_URL,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; claude-trader/1.0)"},
         )
         response.raise_for_status()
-        return response.json()
+        return response.text
 
 
 async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
     """
-    Fetch latest Bitcoin news from CryptoCompare.
+    Fetch latest crypto news from CoinTelegraph RSS feed.
 
-    API: https://min-api.cryptocompare.com/data/v2/news/?categories=BTC
-    Rate limit: 100k calls/month (free tier)
+    Source: https://cointelegraph.com/rss
+    Format: RSS 2.0 XML
+    Rate limit: None (public RSS feed)
+
+    Note: This function expects RSS 2.0 format. If CoinTelegraph changes their
+    RSS format or URL, monitor logs for 'crypto_news_no_items' warnings which
+    could indicate a feed format change.
     """
     cached = _get_cached("crypto_news")
     if cached is not None:
@@ -103,7 +120,7 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
         return cached
 
     try:
-        logger.info("fetching_crypto_news", url="min-api.cryptocompare.com/data/v2/news/")
+        logger.info("fetching_crypto_news", url=COINTELEGRAPH_RSS_URL)
 
         # Retry with exponential backoff: 1s, 2s, 4s
         @retry(
@@ -115,15 +132,74 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
         async def fetch_with_retry():
             return await _fetch_crypto_news_request()
 
-        data = await fetch_with_retry()
+        xml_content = await fetch_with_retry()
 
+        # Parse RSS XML using defusedxml to prevent XXE attacks
+        try:
+            root = fromstring(xml_content)
+        except Exception as e:
+            # defusedxml raises various exceptions for malicious XML
+            logger.warning("crypto_news_xml_parse_error", error=str(e))
+            # Cache empty result to prevent retry storms during outages
+            _set_cached("crypto_news", [])
+            return []
+
+        # Find all <item> elements in RSS feed
+        items = root.findall(".//item")
+        if not items:
+            logger.warning("crypto_news_no_items", message="RSS feed contained no items")
+            return []
+
+        # Note: We intentionally extract only title, link, and pubDate from RSS items.
+        # The <description> field is not extracted because:
+        # 1. Keeps prompts concise (avoids overwhelming AI with long article summaries)
+        # 2. Titles alone provide sufficient signal for sentiment/trend analysis
+        # 3. AI can determine sentiment from headlines without full descriptions
         news_items = []
-        for item in data.get("Data", [])[:limit]:
+        for item in items[:limit]:
+            title_el = item.find("title")
+            link_el = item.find("link")
+            pub_date_el = item.find("pubDate")
+
+            # Validate title content
+            title_text = (title_el.text or "").strip() if title_el is not None else ""
+            if not title_text:
+                logger.warning("crypto_news_empty_title", url=link_el.text if link_el is not None else "unknown")
+                continue  # Skip items with empty titles
+
+            # Validate URL - use urlparse for robust domain validation
+            # This prevents edge cases like "https://cointelegraph.com.evil.com/"
+            url_text = (link_el.text or "").strip() if link_el is not None else ""
+            try:
+                parsed = urlparse(url_text)
+                # Verify HTTPS scheme and cointelegraph.com domain
+                if parsed.scheme != "https" or parsed.netloc != "cointelegraph.com":
+                    logger.warning("crypto_news_invalid_url", url=url_text, title=title_text[:40])
+                    continue  # Skip items with invalid URLs
+            except ValueError:
+                logger.warning("crypto_news_malformed_url", url=url_text, title=title_text[:40])
+                continue
+
+            # Parse publication date (RFC 2822 format)
+            # Default to current time if parsing fails to ensure news items remain usable
+            # rather than being discarded entirely (timestamps used for display only)
+            published_at = datetime.now(timezone.utc)
+            if pub_date_el is not None and pub_date_el.text:
+                try:
+                    published_at = parsedate_to_datetime(pub_date_el.text)
+                except (ValueError, TypeError):
+                    # Date parsing failed - use current time as fallback
+                    logger.warning(
+                        "crypto_news_date_parse_failed",
+                        raw_date=pub_date_el.text,
+                        title=title_text[:40]
+                    )
+
             news_items.append(NewsItem(
-                title=item.get("title", "")[:100],
-                source=item.get("source", "Unknown"),
-                url=item.get("url", ""),
-                published_at=datetime.fromtimestamp(item.get("published_on", 0), tz=timezone.utc),
+                title=title_text[:MAX_TITLE_LENGTH],
+                source=COINTELEGRAPH_SOURCE_NAME,
+                url=url_text,
+                published_at=published_at,
                 # sentiment defaults to "neutral" - AI analyzes actual sentiment
             ))
 
@@ -137,9 +213,25 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
 
     except httpx.TimeoutException:
         logger.warning("crypto_news_timeout", attempts=3, timeout_sec=15)
+        # Cache empty result to prevent retry storms during outages
+        # Uses same TTL as successful results (15 min default)
+        _set_cached("crypto_news", [])
+        return []
+    except httpx.HTTPStatusError as e:
+        logger.warning("crypto_news_http_error", status=e.response.status_code, url=str(e.request.url))
+        # Cache empty result to prevent retry storms during outages
+        _set_cached("crypto_news", [])
+        return []
+    except httpx.HTTPError as e:
+        logger.warning("crypto_news_network_error", error=str(e))
+        # Cache empty result to prevent retry storms during outages
+        _set_cached("crypto_news", [])
         return []
     except Exception as e:
-        logger.error("crypto_news_fetch_failed", error=str(e) or type(e).__name__)
+        # Unexpected errors (XML parsing bugs, programming errors, etc.)
+        logger.error("crypto_news_unexpected_error", error=str(e), type=type(e).__name__)
+        # Cache empty result to prevent retry storms during outages
+        _set_cached("crypto_news", [])
         return []
 
 
