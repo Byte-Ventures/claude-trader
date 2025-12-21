@@ -221,6 +221,9 @@ async function loadWhaleMarkers(chartData) {
         const sortedEvents = [...whaleEvents].sort((a, b) => b.volume_ratio - a.volume_ratio);
         const markers = sortedEvents
             .map(event => {
+                // Skip events with missing timestamp (backend returns empty string for null timestamps)
+                if (!event.timestamp) return null;
+
                 // Parse timestamp and align to candle bucket.
                 // NOTE: Backend returns timestamps via datetime.isoformat() without timezone suffix,
                 // so we append 'Z' to indicate UTC. This matches the pattern used for candle timestamps

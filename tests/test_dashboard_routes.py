@@ -305,3 +305,18 @@ class TestWhaleEventsEndpoint:
         assert response.status_code == 200
         call_kwargs = mock_db.get_whale_events.call_args.kwargs
         assert call_kwargs.get("hours") == 168
+
+    def test_whale_events_uses_live_mode(self, client, mock_db, mock_settings):
+        """Test that whale events respects is_paper_trading=False (live mode).
+
+        This verifies paper/live data separation per CLAUDE.md requirements.
+        """
+        mock_settings.is_paper_trading = False
+        mock_db.get_whale_events.return_value = []
+
+        response = client.get("/api/whale-events?hours=24")
+
+        assert response.status_code == 200
+        mock_db.get_whale_events.assert_called_once()
+        call_kwargs = mock_db.get_whale_events.call_args.kwargs
+        assert call_kwargs.get("is_paper") is False

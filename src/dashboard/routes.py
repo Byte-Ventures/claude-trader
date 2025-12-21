@@ -291,6 +291,9 @@ async def get_whale_events(
 
     Returns whale events (volume spikes > 3x SMA) for the past N hours.
     Used to display whale emoji markers on candles in the dashboard chart.
+
+    Each event includes a direction field with values: 'bullish', 'bearish',
+    'neutral', or 'unknown'. The frontend treats 'unknown' the same as 'neutral'.
     """
     settings = get_settings()
     db = get_db()
