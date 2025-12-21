@@ -153,6 +153,7 @@ class TradingDaemon:
         self._last_daily_report: Optional[date] = None
         self._last_weekly_report: Optional[date] = None
         self._last_monthly_report: Optional[date] = None
+        self._last_cleanup_date: Optional[date] = None
         # For adaptive interval and emergency stop creation. Default "normal" is intentionally
         # conservative - if bot restarts during extreme volatility before first iteration,
         # emergency stops use tighter (1.5x ATR) rather than wider (2.0x) multiplier.
@@ -1313,6 +1314,9 @@ class TradingDaemon:
                 self._check_daily_report()
                 self._check_weekly_report()
                 self._check_monthly_report()
+
+                # Check for signal history cleanup
+                self._check_signal_history_cleanup()
 
                 # Check for hourly market analysis
                 self._check_hourly_analysis()
@@ -3634,6 +3638,25 @@ class TradingDaemon:
 
         self._generate_period_report("Monthly", first_day_prev_month, last_day_prev_month)
         self._last_monthly_report = today
+
+    def _check_signal_history_cleanup(self) -> None:
+        """Check if we should clean up old signal history records (once per day, UTC)."""
+        today = datetime.now(timezone.utc).date()
+
+        # Only clean up once per day
+        if self._last_cleanup_date == today:
+            return
+
+        try:
+            deleted = self.db.cleanup_signal_history(
+                retention_days=self.settings.signal_history_retention_days,
+                is_paper=self.settings.is_paper_trading
+            )
+            if deleted > 0:
+                logger.info("signal_history_cleanup", deleted_count=deleted)
+            self._last_cleanup_date = today
+        except Exception as e:
+            logger.error("signal_history_cleanup_failed", error=str(e))
 
     def _generate_period_report(self, period: str, start_date: date, end_date: date) -> None:
         """Generate and send a performance report for a date range."""
