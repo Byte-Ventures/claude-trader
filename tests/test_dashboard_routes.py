@@ -173,3 +173,150 @@ class TestPerformanceEndpoint:
             assert isinstance(entry["starting_balance"], str)
             assert isinstance(entry["ending_balance"], str)
             assert isinstance(entry["realized_pnl"], str)
+
+
+class TestWhaleEventsEndpoint:
+    """Tests for /api/whale-events endpoint."""
+
+    def test_whale_events_returns_events(self, client, mock_db, mock_settings):
+        """Test /api/whale-events returns whale events."""
+        from datetime import datetime
+
+        mock_event = MagicMock()
+        mock_event.timestamp = datetime(2024, 1, 1, 12, 0, 0)
+        mock_event.direction = "bullish"
+        mock_event.volume_ratio = 3.5
+        mock_db.get_whale_events.return_value = [mock_event]
+
+        response = client.get("/api/whale-events?hours=24")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["direction"] == "bullish"
+        assert data[0]["volume_ratio"] == 3.5
+
+    def test_whale_events_empty(self, client, mock_db, mock_settings):
+        """Test /api/whale-events with no events."""
+        mock_db.get_whale_events.return_value = []
+
+        response = client.get("/api/whale-events?hours=24")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data == []
+
+    def test_whale_events_uses_paper_mode(self, client, mock_db, mock_settings):
+        """Test that whale events respects is_paper_trading setting."""
+        mock_settings.is_paper_trading = True
+        mock_db.get_whale_events.return_value = []
+
+        response = client.get("/api/whale-events?hours=24")
+
+        assert response.status_code == 200
+        mock_db.get_whale_events.assert_called_once()
+        call_kwargs = mock_db.get_whale_events.call_args.kwargs
+        assert call_kwargs.get("is_paper") is True
+
+    def test_whale_events_hours_parameter(self, client, mock_db, mock_settings):
+        """Test that hours parameter is passed correctly."""
+        mock_db.get_whale_events.return_value = []
+
+        response = client.get("/api/whale-events?hours=48")
+
+        assert response.status_code == 200
+        mock_db.get_whale_events.assert_called_once()
+        call_kwargs = mock_db.get_whale_events.call_args.kwargs
+        assert call_kwargs.get("hours") == 48
+
+    def test_whale_events_multiple_directions(self, client, mock_db, mock_settings):
+        """Test /api/whale-events with multiple directions."""
+        from datetime import datetime
+
+        mock_events = [
+            MagicMock(
+                timestamp=datetime(2024, 1, 1, 12, 0, 0),
+                direction="bullish",
+                volume_ratio=3.5,
+            ),
+            MagicMock(
+                timestamp=datetime(2024, 1, 1, 13, 0, 0),
+                direction="bearish",
+                volume_ratio=4.2,
+            ),
+            MagicMock(
+                timestamp=datetime(2024, 1, 1, 14, 0, 0),
+                direction="neutral",
+                volume_ratio=3.1,
+            ),
+        ]
+        mock_db.get_whale_events.return_value = mock_events
+
+        response = client.get("/api/whale-events?hours=24")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 3
+        assert data[0]["direction"] == "bullish"
+        assert data[1]["direction"] == "bearish"
+        assert data[2]["direction"] == "neutral"
+
+    def test_whale_events_uses_trading_pair(self, client, mock_db, mock_settings):
+        """Test that whale events uses the trading_pair from settings."""
+        mock_settings.trading_pair = "BTC-USD"
+        mock_db.get_whale_events.return_value = []
+
+        response = client.get("/api/whale-events?hours=24")
+
+        assert response.status_code == 200
+        call_kwargs = mock_db.get_whale_events.call_args.kwargs
+        assert call_kwargs.get("symbol") == "BTC-USD"
+
+    def test_whale_events_hours_minimum_bound(self, client, mock_db, mock_settings):
+        """Test that hours=0 returns 422 validation error (must be >= 1)."""
+        response = client.get("/api/whale-events?hours=0")
+
+        assert response.status_code == 422
+        # Verify database was not called due to validation failure
+        mock_db.get_whale_events.assert_not_called()
+
+    def test_whale_events_hours_maximum_bound(self, client, mock_db, mock_settings):
+        """Test that hours=169 returns 422 validation error (must be <= 168)."""
+        response = client.get("/api/whale-events?hours=169")
+
+        assert response.status_code == 422
+        # Verify database was not called due to validation failure
+        mock_db.get_whale_events.assert_not_called()
+
+    def test_whale_events_hours_at_bounds(self, client, mock_db, mock_settings):
+        """Test that hours=1 and hours=168 are valid (boundary values)."""
+        mock_db.get_whale_events.return_value = []
+
+        # Test minimum valid value
+        response = client.get("/api/whale-events?hours=1")
+        assert response.status_code == 200
+        call_kwargs = mock_db.get_whale_events.call_args.kwargs
+        assert call_kwargs.get("hours") == 1
+
+        mock_db.get_whale_events.reset_mock()
+
+        # Test maximum valid value
+        response = client.get("/api/whale-events?hours=168")
+        assert response.status_code == 200
+        call_kwargs = mock_db.get_whale_events.call_args.kwargs
+        assert call_kwargs.get("hours") == 168
+
+    def test_whale_events_uses_live_mode(self, client, mock_db, mock_settings):
+        """Test that whale events respects is_paper_trading=False (live mode).
+
+        This verifies paper/live data separation per CLAUDE.md requirements.
+        """
+        mock_settings.is_paper_trading = False
+        mock_db.get_whale_events.return_value = []
+
+        response = client.get("/api/whale-events?hours=24")
+
+        assert response.status_code == 200
+        mock_db.get_whale_events.assert_called_once()
+        call_kwargs = mock_db.get_whale_events.call_args.kwargs
+        assert call_kwargs.get("is_paper") is False

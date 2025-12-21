@@ -181,6 +181,88 @@ function getPriceLineColor(data) {
         : 'rgba(239, 68, 68, 0.6)';   // Red (down)
 }
 
+/**
+ * Load whale events and add markers to the candlestick chart.
+ *
+ * Whale events are volume spikes > 3x the 20-candle SMA. Markers are:
+ * - Positioned above candle for bearish whales (selling pressure)
+ * - Positioned below candle for bullish whales (buying pressure)
+ * - Neutral whales shown above with gray color
+ *
+ * @param {Array} chartData - Array of candle objects with time property
+ */
+async function loadWhaleMarkers(chartData) {
+    if (!candleSeries || !chartData || chartData.length === 0) return;
+
+    try {
+        // Calculate hours to fetch based on candle data time range
+        const oldestTime = chartData[0].time;
+        const newestTime = chartData[chartData.length - 1].time;
+        const hoursRange = Math.ceil((newestTime - oldestTime) / 3600) + 1;
+        const hours = Math.min(Math.max(hoursRange, 24), 168);  // Clamp to 24-168 hours
+
+        const response = await fetch(`/api/whale-events?hours=${hours}`);
+        if (!response.ok) {
+            console.error(`Failed to fetch whale events: ${response.status} ${response.statusText}`);
+            return;
+        }
+
+        const whaleEvents = await response.json();
+        if (!whaleEvents || whaleEvents.length === 0) {
+            candleSeries.setMarkers([]);
+            return;
+        }
+
+        // Create a map of candle times for quick lookup
+        const candleTimeSet = new Set(chartData.map(c => c.time));
+
+        // Convert whale events to chart markers
+        // Sort by volume_ratio descending so most significant event per candle is kept
+        const sortedEvents = [...whaleEvents].sort((a, b) => b.volume_ratio - a.volume_ratio);
+        const markers = sortedEvents
+            .map(event => {
+                // Skip events with missing timestamp (backend returns empty string for null timestamps)
+                if (!event.timestamp) return null;
+
+                // Parse timestamp and align to candle bucket.
+                // NOTE: Backend returns timestamps via datetime.isoformat() without timezone suffix,
+                // so we append 'Z' to indicate UTC. This matches the pattern used for candle timestamps
+                // (line 330) and trade timestamps (line 724). If backend format changes to include
+                // timezone (e.g., +00:00), this code will need updating.
+                const eventTime = Math.floor(new Date(event.timestamp + 'Z').getTime() / 1000);
+                const candleTime = Math.floor(eventTime / candleIntervalSeconds) * candleIntervalSeconds;
+
+                // Only show markers for candles that exist in the chart
+                if (!candleTimeSet.has(candleTime)) return null;
+
+                // Determine marker position and color based on whale direction.
+                // Direction can be 'bullish', 'bearish', 'neutral', or 'unknown' (see WhaleEventRecord model).
+                // 'unknown' is treated the same as 'neutral': gray marker positioned above bar.
+                const isBullish = event.direction === 'bullish';
+                const isBearish = event.direction === 'bearish';
+
+                return {
+                    time: candleTime,
+                    position: isBullish ? 'belowBar' : 'aboveBar',
+                    color: isBullish ? '#10b981' : isBearish ? '#ef4444' : '#6b7280',
+                    shape: 'circle',
+                    text: '🐋',
+                };
+            })
+            .filter(m => m !== null)
+            // Sort by time (required by TradingView Lightweight Charts)
+            .sort((a, b) => a.time - b.time)
+            // Remove duplicates (keep first marker per candle time - which is the most significant due to pre-sort)
+            .filter((marker, index, self) =>
+                index === self.findIndex(m => m.time === marker.time)
+            );
+
+        candleSeries.setMarkers(markers);
+    } catch (error) {
+        console.error('Failed to load whale markers:', error);
+    }
+}
+
 // Initialize Performance Chart
 function initPerformanceChart() {
     const container = document.getElementById('performance-chart');
@@ -284,6 +366,9 @@ async function loadInitialData() {
                 const lineData = chartData.map(c => ({ time: c.time, value: c.close }));
                 priceLine.setData(lineData);
                 priceLine.applyOptions({ color: getPriceLineColor(chartData) });
+
+                // Load whale events and add markers to candles
+                await loadWhaleMarkers(chartData);
             }
         }
 
