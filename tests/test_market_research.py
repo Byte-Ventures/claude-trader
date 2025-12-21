@@ -294,6 +294,34 @@ class TestFetchCryptoNews:
         assert len(result) == 1
         assert result[0].title == "Valid Title"
 
+    @pytest.mark.asyncio
+    async def test_long_title_truncated(self):
+        """Test titles longer than MAX_TITLE_LENGTH are truncated."""
+        from src.ai.market_research import MAX_TITLE_LENGTH
+
+        long_title = "A" * 150  # Title longer than MAX_TITLE_LENGTH (100)
+        rss_with_long_title = f"""<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0">
+          <channel>
+            <item>
+              <title>{long_title}</title>
+              <link>https://cointelegraph.com/news/test</link>
+              <pubDate>Thu, 21 Dec 2023 08:00:00 +0000</pubDate>
+            </item>
+          </channel>
+        </rss>"""
+
+        with patch(
+            "src.ai.market_research._fetch_crypto_news_request",
+            new_callable=AsyncMock,
+            return_value=rss_with_long_title,
+        ):
+            result = await fetch_crypto_news(limit=1)
+
+        assert len(result) == 1
+        assert len(result[0].title) == MAX_TITLE_LENGTH
+        assert result[0].title == "A" * MAX_TITLE_LENGTH
+
 
 class TestCoinTelegraphRSSIntegration:
     """Live RSS feed integration tests (skipped in CI)."""

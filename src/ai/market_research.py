@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 import structlog
@@ -164,11 +165,17 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
                 logger.warning("crypto_news_empty_title", url=link_el.text if link_el is not None else "unknown")
                 continue  # Skip items with empty titles
 
-            # Validate URL
+            # Validate URL - use urlparse for robust domain validation
+            # This prevents edge cases like "https://cointelegraph.com.evil.com/"
             url_text = (link_el.text or "").strip() if link_el is not None else ""
-            if not url_text.startswith(("https://cointelegraph.com/", "http://cointelegraph.com/")):
-                logger.warning("crypto_news_invalid_url", url=url_text, title=title_text[:40])
-                continue  # Skip items with invalid URLs
+            try:
+                parsed = urlparse(url_text)
+                if parsed.netloc != "cointelegraph.com":
+                    logger.warning("crypto_news_invalid_url", url=url_text, title=title_text[:40])
+                    continue  # Skip items with invalid URLs
+            except ValueError:
+                logger.warning("crypto_news_malformed_url", url=url_text, title=title_text[:40])
+                continue
 
             # Parse publication date (RFC 2822 format)
             # Default to current time if parsing fails to ensure news items remain usable
