@@ -901,7 +901,8 @@ def test_ai_failure_mode_open_does_not_skip_trade(mock_settings, mock_exchange_c
             atr=500.0,
             volatility="normal"
         ),
-        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+        components={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+        metadata={},
         confidence=0.8
     )
 
@@ -986,7 +987,8 @@ def test_ai_failure_mode_safe_skips_trade(mock_settings, mock_exchange_client, m
             atr=500.0,
             volatility="normal"
         ),
-        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+        components={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+        metadata={},
         confidence=0.8
     )
 
@@ -1098,7 +1100,8 @@ def test_ai_failure_mode_sell_proceeds_on_failure(mock_settings, mock_exchange_c
             atr=500.0,
             volatility="normal"
         ),
-        breakdown={"rsi": -20, "macd": -20, "bollinger": -15, "ema": -10, "volume": -5},
+        components={"rsi": -20, "macd": -20, "bollinger": -15, "ema": -10, "volume": -5},
+        metadata={},
         confidence=0.8
     )
 
@@ -1183,7 +1186,8 @@ def test_ai_failure_mode_sell_safe_skips_trade(mock_settings, mock_exchange_clie
             atr=500.0,
             volatility="normal"
         ),
-        breakdown={"rsi": -20, "macd": -20, "bollinger": -15, "ema": -10, "volume": -5},
+        components={"rsi": -20, "macd": -20, "bollinger": -15, "ema": -10, "volume": -5},
+        metadata={},
         confidence=0.8
     )
 
@@ -1270,7 +1274,8 @@ def test_ai_failure_notification_cooldown(mock_settings, mock_exchange_client, m
             atr=500.0,
             volatility="normal"
         ),
-        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+        components={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+        metadata={},
         confidence=0.8
     )
 
@@ -2147,7 +2152,8 @@ def test_store_signal_history_returns_id(htf_mock_settings, mock_exchange_client
                             bb_lower=49000.0, ema_fast=50100.0, ema_slow=50000.0,
                             volatility="normal"
                         ),
-                        breakdown={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                        components={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                        metadata={},
                         confidence=0.8,
                     )
 
@@ -2188,7 +2194,8 @@ def test_store_signal_history_handles_db_error(htf_mock_settings, mock_exchange_
                         bb_lower=49000.0, ema_fast=50100.0, ema_slow=50000.0,
                         volatility="normal"
                     ),
-                    breakdown={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                    components={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                    metadata={},
                     confidence=0.8,
                 )
 
@@ -2233,7 +2240,8 @@ def test_store_signal_history_alerts_after_repeated_failures(htf_mock_settings, 
                         bb_lower=49000.0, ema_fast=50100.0, ema_slow=50000.0,
                         volatility="normal"
                     ),
-                    breakdown={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                    components={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                    metadata={},
                     confidence=0.8,
                 )
 
@@ -2299,7 +2307,8 @@ def test_store_signal_history_truncates_long_errors(htf_mock_settings, mock_exch
                         bb_lower=49000.0, ema_fast=50100.0, ema_slow=50000.0,
                         volatility="normal"
                     ),
-                    breakdown={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                    components={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                    metadata={},
                     confidence=0.8,
                 )
 
@@ -2358,7 +2367,8 @@ def test_store_signal_history_short_errors_not_truncated(htf_mock_settings, mock
                         bb_lower=49000.0, ema_fast=50100.0, ema_slow=50000.0,
                         volatility="normal"
                     ),
-                    breakdown={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                    components={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                    metadata={},
                     confidence=0.8,
                 )
 
@@ -2416,7 +2426,8 @@ def test_store_signal_history_alerts_every_50_after_initial(htf_mock_settings, m
                         bb_lower=49000.0, ema_fast=50100.0, ema_slow=50000.0,
                         volatility="normal"
                     ),
-                    breakdown={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                    components={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                    metadata={},
                     confidence=0.8,
                 )
 
@@ -2473,7 +2484,8 @@ def test_store_signal_history_resets_failure_counter_on_success(htf_mock_setting
                             bb_lower=49000.0, ema_fast=50100.0, ema_slow=50000.0,
                             volatility="normal"
                         ),
-                        breakdown={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                        components={"rsi": 15, "macd": 20, "bollinger": 15, "ema": 10, "volume": 5},
+                        metadata={},
                         confidence=0.8,
                     )
 
@@ -2992,7 +3004,8 @@ class TestDualExtremeBlocking:
                             atr=1000.0,
                             volatility="extreme"
                         ),
-                        breakdown={"rsi": 20, "macd": 15, "bollinger": 10, "ema": 15, "volume": 15},
+                        components={"rsi": 20, "macd": 15, "bollinger": 10, "ema": 15, "volume": 15},
+                        metadata={},
                         confidence=0.8
                     ))
 
@@ -3070,7 +3083,8 @@ class TestDualExtremeBlocking:
                             atr=1000.0,
                             volatility="normal"
                         ),
-                        breakdown={"rsi": 20, "macd": 15, "bollinger": 10, "ema": 15, "volume": 15},
+                        components={"rsi": 20, "macd": 15, "bollinger": 10, "ema": 15, "volume": 15},
+                        metadata={},
                         confidence=0.8
                     ))
 
@@ -3140,7 +3154,8 @@ class TestDualExtremeBlocking:
                             atr=1000.0,
                             volatility="extreme"
                         ),
-                        breakdown={"rsi": 20, "macd": 15, "bollinger": 10, "ema": 15, "volume": 15},
+                        components={"rsi": 20, "macd": 15, "bollinger": 10, "ema": 15, "volume": 15},
+                        metadata={},
                         confidence=0.8
                     ))
 
@@ -3232,7 +3247,8 @@ class TestDualExtremeBlocking:
                             atr=1000.0,
                             volatility="extreme"
                         ),
-                        breakdown={"rsi": -20, "macd": -15, "bollinger": -10, "ema": -15, "volume": -15},
+                        components={"rsi": -20, "macd": -15, "bollinger": -10, "ema": -15, "volume": -15},
+                        metadata={},
                         confidence=0.8
                     ))
 
@@ -3302,7 +3318,8 @@ class TestDualExtremeBlocking:
                             atr=1000.0,
                             volatility="extreme"
                         ),
-                        breakdown={"rsi": 20, "macd": 15, "bollinger": 10, "ema": 15, "volume": 15},
+                        components={"rsi": 20, "macd": 15, "bollinger": 10, "ema": 15, "volume": 15},
+                        metadata={},
                         confidence=0.8
                     ))
 
@@ -4025,6 +4042,25 @@ class TestVetoCooldown:
         assert should_skip is False
         assert reason is None
 
+    def test_veto_timestamp_uses_candle_not_wall_clock(self, daemon_with_cooldown):
+        """Verify veto uses candle market time, not datetime.now()."""
+        import pandas as pd
+        from datetime import datetime, timezone
+
+        daemon = daemon_with_cooldown
+
+        # Candle time in the past (market time)
+        candle_time = datetime(2024, 1, 15, 14, 0, 0, tzinfo=timezone.utc)
+        candles = pd.DataFrame({
+            "timestamp": [candle_time],
+            "close": [50000.0]
+        })
+
+        daemon._record_veto_timestamp(candles)
+
+        # Should match candle time, not current wall-clock time
+        assert daemon._last_veto_timestamp == candle_time
+
 
 # ============================================================================
 # Sentiment Fetch Failure Tracking Tests
@@ -4300,7 +4336,8 @@ class TestPositionRoomCheck:
                             bb_upper=51000.0, bb_middle=50000.0, bb_lower=49000.0,
                             ema_fast=50100.0, ema_slow=50000.0, atr=500.0, volatility="normal"
                         ),
-                        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        components={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        metadata={},
                         confidence=0.8
                     )
 
@@ -4371,7 +4408,8 @@ class TestPositionRoomCheck:
                             bb_upper=51000.0, bb_middle=50000.0, bb_lower=49000.0,
                             ema_fast=50100.0, ema_slow=50000.0, atr=500.0, volatility="normal"
                         ),
-                        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        components={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        metadata={},
                         confidence=0.8
                     )
 
@@ -4437,7 +4475,8 @@ class TestPositionRoomCheck:
                             bb_upper=51000.0, bb_middle=50000.0, bb_lower=49000.0,
                             ema_fast=50100.0, ema_slow=50000.0, atr=500.0, volatility="normal"
                         ),
-                        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        components={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        metadata={},
                         confidence=0.8
                     )
 
@@ -4506,7 +4545,8 @@ class TestPositionRoomCheck:
                             bb_upper=51000.0, bb_middle=50000.0, bb_lower=49000.0,
                             ema_fast=50100.0, ema_slow=50000.0, atr=500.0, volatility="normal"
                         ),
-                        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        components={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        metadata={},
                         confidence=0.8
                     )
 
@@ -4578,7 +4618,8 @@ class TestPositionRoomCheck:
                             bb_upper=51000.0, bb_middle=50000.0, bb_lower=49000.0,
                             ema_fast=50100.0, ema_slow=50000.0, atr=500.0, volatility="normal"
                         ),
-                        breakdown={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        components={"rsi": 20, "macd": 20, "bollinger": 15, "ema": 10, "volume": 10},
+                        metadata={},
                         confidence=0.8
                     )
 
@@ -4647,7 +4688,8 @@ class TestPositionRoomCheck:
                             bb_upper=51000.0, bb_middle=50000.0, bb_lower=49000.0,
                             ema_fast=49900.0, ema_slow=50000.0, atr=500.0, volatility="normal"
                         ),
-                        breakdown={"rsi": -20, "macd": -20, "bollinger": -15, "ema": -10, "volume": -10},
+                        components={"rsi": -20, "macd": -20, "bollinger": -15, "ema": -10, "volume": -10},
+                        metadata={},
                         confidence=0.8
                     )
 

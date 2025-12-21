@@ -211,3 +211,15 @@ class ExchangeClient(Protocol):
             True if cancelled successfully
         """
         ...
+
+    def get_trading_fee_rate(self, product_id: str) -> Decimal:
+        """
+        Get current trading fee rate for a product.
+
+        Args:
+            product_id: Trading pair (e.g., BTC-USD)
+
+        Returns:
+            Current trading fee rate as decimal (e.g., Decimal("0.006") for 0.6%)
+        """
+        ...

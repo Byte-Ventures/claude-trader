@@ -24,6 +24,10 @@ from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 import pandas as pd
+import os
+import threading
+import random
+import time
 
 from src.state.database import (
     Database,
@@ -46,20 +50,16 @@ from src.state.database import (
 @pytest.fixture
 def db_path(tmp_path):
     """Create a valid database path within the temp directory."""
-    # Mock Path.cwd to make the tmp_path appear as project root
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
-
-    with patch("pathlib.Path.cwd", return_value=tmp_path):
-        yield data_dir / "test_trader.db"
+    # Use /tmp directly for test databases
+    test_db_path = tmp_path / "test_trader.db"
+    yield test_db_path
 
 
 @pytest.fixture
 def db(db_path):
     """Initialize a fresh database instance for each test."""
-    with patch("pathlib.Path.cwd", return_value=db_path.parent.parent):
-        db_instance = Database(db_path)
-        yield db_instance
+    db_instance = Database(db_path)
+    yield db_instance
 
 
 # ============================================================================
@@ -1555,21 +1555,36 @@ def test_session_rollback_on_exception(db):
 # ============================================================================
 
 def test_database_path_validation():
-    """Test database path must be within allowed directory."""
-    with patch("pathlib.Path.cwd", return_value=Path("/tmp/project")):
-        # Try to create database outside allowed directory
+    """Test database path must be within allowed directory or /tmp."""
+    with patch("pathlib.Path.cwd", return_value=Path("/home/project")):
+        # Try to create database outside allowed directories (/tmp and data/)
         with pytest.raises(ValueError, match="must be within"):
             Database(Path("/etc/passwd"))
 
 
+def test_database_rejects_tmp_in_production():
+    """Verify /tmp is rejected when not in test mode."""
+    with patch.dict(os.environ, {}, clear=True):  # Clear PYTEST_CURRENT_TEST
+        with patch("pathlib.Path.cwd", return_value=Path("/home/project")):
+            with pytest.raises(ValueError, match="must be within"):
+                Database(Path("/tmp/should_fail.db"))
+
+
+def test_database_allows_tmp_in_test_mode(tmp_path):
+    """Verify /tmp paths are allowed during pytest execution."""
+    # This test runs with PYTEST_CURRENT_TEST set automatically
+    db_path = tmp_path / "test.db"
+    db = Database(db_path)  # Should not raise
+    assert db.db_path == db_path.resolve()
+
+
 def test_database_creates_parent_directory(tmp_path):
     """Test database creates parent directory if it doesn't exist."""
-    with patch("pathlib.Path.cwd", return_value=tmp_path):
-        nested_path = tmp_path / "data" / "nested" / "deep" / "test.db"
+    nested_path = tmp_path / "nested" / "deep" / "test.db"
 
-        db_instance = Database(nested_path)
+    db_instance = Database(nested_path)
 
-        assert nested_path.parent.exists()
+    assert nested_path.parent.exists()
 
 
 # ============================================================================
@@ -2480,3 +2495,153 @@ def test_cleanup_signal_history_uses_config_default(db):
     # Call without retention_days parameter - should use config default
     deleted = db.cleanup_signal_history()
     assert deleted == 1
+
+
+# ============================================================================
+# Rate History Concurrency Tests
+# ============================================================================
+
+def test_rate_history_concurrent_updates(db):
+    """
+    Test concurrent updates to the same candle remain atomic and correct.
+
+    Per issue #193: The current implementation uses sqlite_insert().on_conflict_do_update()
+    which is atomic at the SQL level. This test verifies that concurrent updates to the
+    same candle timestamp correctly compute max(high) and min(low) without data corruption.
+
+    This test simulates multiple threads updating the same candle with different OHLCV data
+    and verifies:
+    1. Final high price is the maximum across all updates
+    2. Final low price is the minimum across all updates
+    3. No data corruption occurs
+    4. Open price is preserved (immutable)
+
+    Note: SQLite serializes writes at the database level, so true concurrent execution may
+    not occur. This test validates logical correctness of the UPSERT logic under the
+    assumption of concurrent updates.
+    """
+    timestamp = datetime(2024, 1, 1, 12, 0, 0)
+
+    # Define different update scenarios that will execute concurrently
+    # Each thread will try to update the same candle with different high/low values
+    update_scenarios = [
+        {
+            "thread_id": 1,
+            "open": Decimal("50000"),
+            "high": Decimal("51000"),  # Highest high
+            "low": Decimal("49500"),
+            "close": Decimal("50800"),
+            "volume": Decimal("100"),
+        },
+        {
+            "thread_id": 2,
+            "open": Decimal("50100"),  # Different open (should be ignored)
+            "high": Decimal("50800"),
+            "low": Decimal("49000"),  # Lowest low
+            "close": Decimal("50600"),
+            "volume": Decimal("120"),
+        },
+        {
+            "thread_id": 3,
+            "open": Decimal("50200"),  # Different open (should be ignored)
+            "high": Decimal("50700"),
+            "low": Decimal("49200"),
+            "close": Decimal("50500"),
+            "volume": Decimal("110"),
+        },
+        {
+            "thread_id": 4,
+            "open": Decimal("49900"),  # Different open (should be ignored)
+            "high": Decimal("50900"),
+            "low": Decimal("49100"),
+            "close": Decimal("50700"),
+            "volume": Decimal("130"),
+        },
+    ]
+
+    # Expected final values after all concurrent updates
+    # - Open: First thread's open (whichever wins the race to insert)
+    # - High: max(51000, 50800, 50700, 50900) = 51000
+    # - Low: min(49500, 49000, 49200, 49100) = 49000
+    # - Close: Last update's close (non-deterministic in concurrent scenario)
+    expected_high = Decimal("51000")
+    expected_low = Decimal("49000")
+
+    # Thread worker function
+    def update_candle(scenario):
+        """Worker function to update the candle with scenario data."""
+        # Small random delay (0-10ms) to increase likelihood of concurrent execution.
+        # Note: SQLite's locking model may still serialize these writes.
+        time.sleep(random.uniform(0, 0.01))
+
+        candles = [{
+            "timestamp": timestamp,
+            "open": scenario["open"],
+            "high": scenario["high"],
+            "low": scenario["low"],
+            "close": scenario["close"],
+            "volume": scenario["volume"],
+        }]
+
+        # No try/except - the database UPSERT should handle concurrency gracefully.
+        # If exceptions occur, they indicate a real bug that must be fixed.
+        db.record_rates_bulk(
+            candles,
+            symbol="BTC-USD",
+            exchange="kraken",
+            interval="1m",
+            is_paper=False
+        )
+
+    # Create and start threads
+    threads = []
+    for scenario in update_scenarios:
+        thread = threading.Thread(target=update_candle, args=(scenario,))
+        threads.append(thread)
+
+    # Start all threads simultaneously
+    for thread in threads:
+        thread.start()
+
+    # Wait for all threads to complete
+    for thread in threads:
+        thread.join()
+
+    # Verify final state
+    rates = db.get_rates(is_paper=False)
+    assert len(rates) == 1, "Should have exactly one candle after concurrent updates"
+
+    final_candle = rates[0]
+
+    # Verify high/low are correct (max/min across all updates)
+    assert final_candle.get_high() == expected_high, (
+        f"Expected high={expected_high}, got {final_candle.get_high()}. "
+        f"Concurrent updates failed to compute max(high) correctly."
+    )
+    assert final_candle.get_low() == expected_low, (
+        f"Expected low={expected_low}, got {final_candle.get_low()}. "
+        f"Concurrent updates failed to compute min(low) correctly."
+    )
+
+    # Verify open is one of the scenario values (first insert wins)
+    possible_opens = {scenario["open"] for scenario in update_scenarios}
+    assert final_candle.get_open() in possible_opens, (
+        f"Open price {final_candle.get_open()} not in expected set {possible_opens}"
+    )
+
+    # Verify close is one of the scenario values (last update wins)
+    possible_closes = {scenario["close"] for scenario in update_scenarios}
+    assert final_candle.get_close() in possible_closes, (
+        f"Close price {final_candle.get_close()} not in expected set {possible_closes}"
+    )
+
+    # Verify no data corruption (values are valid Decimals)
+    assert isinstance(final_candle.get_open(), Decimal)
+    assert isinstance(final_candle.get_high(), Decimal)
+    assert isinstance(final_candle.get_low(), Decimal)
+    assert isinstance(final_candle.get_close(), Decimal)
+    assert isinstance(final_candle.get_volume(), Decimal)
+
+    # Verify OHLC invariant: low <= open,close <= high
+    assert final_candle.get_low() <= final_candle.get_open() <= final_candle.get_high()
+    assert final_candle.get_low() <= final_candle.get_close() <= final_candle.get_high()

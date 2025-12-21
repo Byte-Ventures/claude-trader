@@ -658,6 +658,77 @@ class CoinbaseClient:
             logger.error("cancel_order_failed", error=str(e), order_id=order_id)
             return False
 
+    def get_trading_fee_rate(self, product_id: str) -> Decimal:
+        """
+        Get current trading fee rate for a product.
+
+        Coinbase Advanced Trade fees are volume-tiered:
+        - Taker: 0.6% (default), 0.4% (>$10K/30d), down to 0.05% (>$300M/30d)
+        - Maker: 0.4% (default), 0.25% (>$10K/30d), down to 0.0% (>$300M/30d)
+
+        Since the bot primarily uses IOC limit orders (which typically execute as taker),
+        we use the taker fee rate for conservative profit margin validation.
+
+        Args:
+            product_id: Trading pair (e.g., BTC-USD)
+
+        Returns:
+            Current taker fee rate as decimal (e.g., Decimal("0.006") for 0.6%)
+        """
+        try:
+            # Get transaction summary for fee tier information
+            response = self._request("GET", "/api/v3/brokerage/transaction_summary")
+
+            # Extract taker fee rate if available
+            # Fee rates are returned as strings like "0.006" (0.6%)
+            if "fee_tier" in response:
+                fee_tier = response["fee_tier"]
+                if not isinstance(fee_tier, dict):
+                    logger.warning(
+                        "fee_tier_invalid_type",
+                        product_id=product_id,
+                        fee_tier_type=type(fee_tier).__name__,
+                        message="fee_tier is not a dict, using default",
+                    )
+                elif "taker_fee_rate" in fee_tier:
+                    try:
+                        fee_rate = Decimal(fee_tier["taker_fee_rate"])
+                        # Sanity check: fee should be between 0.001% and 5%
+                        if Decimal("0.00001") <= fee_rate <= Decimal("0.05"):
+                            return fee_rate
+                        else:
+                            logger.warning(
+                                "fee_rate_out_of_range",
+                                product_id=product_id,
+                                fee_rate=str(fee_rate),
+                                message="Fee rate outside reasonable range, using default",
+                            )
+                    except (ValueError, TypeError, ArithmeticError) as e:
+                        logger.warning(
+                            "fee_rate_conversion_failed",
+                            product_id=product_id,
+                            taker_fee_rate=fee_tier.get("taker_fee_rate"),
+                            error=str(e),
+                            message="Failed to convert fee rate to Decimal, using default",
+                        )
+
+            # Fallback to default Coinbase Advanced taker fee
+            logger.warning(
+                "fee_tier_not_found",
+                product_id=product_id,
+                message="Using default taker fee rate (0.6%)",
+            )
+            return Decimal("0.006")
+
+        except Exception as e:
+            logger.warning(
+                "get_trading_fee_rate_failed",
+                product_id=product_id,
+                error=str(e),
+                message="Using default taker fee rate (0.6%)",
+            )
+            return Decimal("0.006")
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),

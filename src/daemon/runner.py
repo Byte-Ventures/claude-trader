@@ -78,6 +78,7 @@ from pathlib import Path
 from threading import Event, Lock
 from typing import Optional, Union
 
+import pandas as pd
 import structlog
 
 from config.settings import Settings, TradingMode, VetoAction, AIFailureMode, request_reload, reload_pending, reload_settings
@@ -153,6 +154,7 @@ class TradingDaemon:
         self._last_daily_report: Optional[date] = None
         self._last_weekly_report: Optional[date] = None
         self._last_monthly_report: Optional[date] = None
+        self._last_cleanup_date: Optional[date] = None
         # For adaptive interval and emergency stop creation. Default "normal" is intentionally
         # conservative - if bot restarts during extreme volatility before first iteration,
         # emergency stops use tighter (1.5x ATR) rather than wider (2.0x) multiplier.
@@ -402,6 +404,8 @@ class TradingDaemon:
             kill_switch=self.kill_switch,
             circuit_breaker=self.circuit_breaker,
             loss_limiter=self.loss_limiter,
+            exchange_client=self.client,
+            product_id=settings.trading_pair,
         )
 
         # Initialize trade cooldown (optional, prevents rapid consecutive trades)
@@ -928,6 +932,36 @@ class TradingDaemon:
         # Same candle, same direction - skip review
         return True, f"veto_cooldown (same candle, direction={signal_action})"
 
+    def _record_veto_timestamp(self, candles: pd.DataFrame) -> None:
+        """
+        Record veto timestamp using candle's market time instead of wall-clock time.
+
+        This avoids edge cases at candle boundaries where wall-clock time might
+        advance to the next candle while processing the current one.
+
+        Args:
+            candles: DataFrame containing candle data with timestamp column
+        """
+        # Use candle timestamp (market time) instead of wall-clock time
+        # to avoid edge cases at candle boundaries
+        if not candles.empty:
+            candle_timestamp = candles.iloc[-1]["timestamp"]
+            # Normalize pd.Timestamp to datetime for consistent handling
+            if isinstance(candle_timestamp, pd.Timestamp):
+                candle_timestamp = candle_timestamp.to_pydatetime()
+            elif not isinstance(candle_timestamp, datetime):
+                # Type safety check for financial system
+                logger.warning(
+                    "candle_timestamp_type_mismatch",
+                    type=type(candle_timestamp).__name__,
+                    message="Expected datetime, falling back to current time"
+                )
+                candle_timestamp = datetime.now(timezone.utc)
+        else:
+            candle_timestamp = datetime.now(timezone.utc)
+
+        self._last_veto_timestamp = candle_timestamp
+
     def _get_timeframe_trend(self, granularity: str, cache_minutes: int) -> str:
         """
         Get trend for a specific timeframe with caching.
@@ -1116,8 +1150,8 @@ class TradingDaemon:
                     ema_gap_percent=breakdown.get("_ema_gap_percent"),
                     volume_ratio=breakdown.get("_volume_ratio"),
                     trend_filter_adj=breakdown.get("trend_filter", 0),
-                    momentum_mode_adj=breakdown.get("momentum_mode", 0),
-                    whale_activity_adj=breakdown.get("whale_activity", 0),
+                    momentum_mode_adj=breakdown.get("_momentum_active", 0),
+                    whale_activity_adj=breakdown.get("_whale_activity", 0),
                     htf_bias_adj=breakdown.get("htf_bias", 0),
                     htf_bias=htf_bias,
                     htf_daily_trend=daily_trend,
@@ -1313,6 +1347,9 @@ class TradingDaemon:
                 self._check_daily_report()
                 self._check_weekly_report()
                 self._check_monthly_report()
+
+                # Check for signal history cleanup
+                self._check_signal_history_cleanup()
 
                 # Check for hourly market analysis
                 self._check_hourly_analysis()
@@ -2149,7 +2186,7 @@ class TradingDaemon:
                             if review.final_veto_action == VetoAction.SKIP.value:
                                 logger.info("trade_vetoed", reason=review.judge_reasoning)
                                 # Record veto for cooldown (skip reviews until next candle)
-                                self._last_veto_timestamp = datetime.now(timezone.utc)
+                                self._record_veto_timestamp(candles)
                                 self._last_veto_direction = signal_result.action
                                 return  # Skip this iteration
                             elif review.final_veto_action == VetoAction.REDUCE.value:
@@ -2159,7 +2196,7 @@ class TradingDaemon:
                                     multiplier=f"{claude_veto_multiplier:.2f}",
                                 )
                                 # Record veto for cooldown (skip reviews until next candle)
-                                self._last_veto_timestamp = datetime.now(timezone.utc)
+                                self._record_veto_timestamp(candles)
                                 self._last_veto_direction = signal_result.action
                             # Tiered system: skip or reduce only (no delay)
 
@@ -3634,6 +3671,25 @@ class TradingDaemon:
 
         self._generate_period_report("Monthly", first_day_prev_month, last_day_prev_month)
         self._last_monthly_report = today
+
+    def _check_signal_history_cleanup(self) -> None:
+        """Check if we should clean up old signal history records (once per day, UTC)."""
+        today = datetime.now(timezone.utc).date()
+
+        # Only clean up once per day
+        if self._last_cleanup_date == today:
+            return
+
+        try:
+            deleted = self.db.cleanup_signal_history(
+                retention_days=self.settings.signal_history_retention_days,
+                is_paper=self.settings.is_paper_trading
+            )
+            if deleted > 0:
+                logger.info("signal_history_cleanup", deleted_count=deleted)
+            self._last_cleanup_date = today
+        except Exception as e:
+            logger.error("signal_history_cleanup_failed", error=str(e))
 
     def _generate_period_report(self, period: str, start_date: date, end_date: date) -> None:
         """Generate and send a performance report for a date range."""
