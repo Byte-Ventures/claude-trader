@@ -27,6 +27,7 @@ from .models import (
     NotificationRecord,
     PositionInfo,
     TradeRecord,
+    WhaleEventRecord,
 )
 
 router = APIRouter()
@@ -277,6 +278,39 @@ async def get_notifications(
             created_at=n.created_at.isoformat() if n.created_at else "",
         )
         for n in notifications
+    ]
+
+
+@router.get("/api/whale-events")
+@limiter.limit("10/minute")
+async def get_whale_events(
+    request: Request,
+    hours: int = Query(default=24, ge=1, le=168),
+) -> list[WhaleEventRecord]:
+    """Get whale activity events for chart markers.
+
+    Returns whale events (volume spikes > 3x SMA) for the past N hours.
+    Used to display whale emoji markers on candles in the dashboard chart.
+
+    Each event includes a direction field with values: 'bullish', 'bearish',
+    'neutral', or 'unknown'. The frontend treats 'unknown' the same as 'neutral'.
+    """
+    settings = get_settings()
+    db = get_db()
+
+    events = db.get_whale_events(
+        hours=hours,
+        symbol=settings.trading_pair,
+        is_paper=settings.is_paper_trading,
+    )
+
+    return [
+        WhaleEventRecord(
+            timestamp=e.timestamp.isoformat() if e.timestamp else "",
+            direction=e.direction,
+            volume_ratio=e.volume_ratio,
+        )
+        for e in events
     ]
 
 
