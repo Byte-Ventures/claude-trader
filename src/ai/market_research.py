@@ -6,8 +6,10 @@ from free APIs with caching to avoid rate limits.
 """
 
 import asyncio
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Optional
 
 import httpx
@@ -79,23 +81,28 @@ class MarketResearch:
     errors: list[str] = field(default_factory=list)
 
 
-async def _fetch_crypto_news_request() -> dict:
-    """Execute the actual HTTP request to CryptoCompare with retry logic."""
+async def _fetch_crypto_news_request() -> str:
+    """Execute the actual HTTP request to CoinTelegraph RSS feed.
+
+    CoinTelegraph provides quality crypto news via RSS feed.
+    Returns raw XML string for parsing.
+    """
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.get(
-            "https://min-api.cryptocompare.com/data/v2/news/",
-            params={"categories": "BTC", "excludeCategories": "Sponsored"},
+            "https://cointelegraph.com/rss",
+            headers={"User-Agent": "Mozilla/5.0 (compatible; CryptoBot/1.0)"},
         )
         response.raise_for_status()
-        return response.json()
+        return response.text
 
 
 async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
     """
-    Fetch latest Bitcoin news from CryptoCompare.
+    Fetch latest crypto news from CoinTelegraph RSS feed.
 
-    API: https://min-api.cryptocompare.com/data/v2/news/?categories=BTC
-    Rate limit: 100k calls/month (free tier)
+    Source: https://cointelegraph.com/rss
+    Format: RSS 2.0 XML
+    Rate limit: None (public RSS feed)
     """
     cached = _get_cached("crypto_news")
     if cached is not None:
@@ -103,7 +110,7 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
         return cached
 
     try:
-        logger.info("fetching_crypto_news", url="min-api.cryptocompare.com/data/v2/news/")
+        logger.info("fetching_crypto_news", url="cointelegraph.com/rss")
 
         # Retry with exponential backoff: 1s, 2s, 4s
         @retry(
@@ -115,15 +122,40 @@ async def fetch_crypto_news(limit: int = 5) -> list[NewsItem]:
         async def fetch_with_retry():
             return await _fetch_crypto_news_request()
 
-        data = await fetch_with_retry()
+        xml_content = await fetch_with_retry()
+
+        # Parse RSS XML
+        try:
+            root = ET.fromstring(xml_content)
+        except ET.ParseError as e:
+            logger.warning("crypto_news_xml_parse_error", error=str(e))
+            return []
+
+        # Find all <item> elements in RSS feed
+        items = root.findall(".//item")
+        if not items:
+            logger.warning("crypto_news_no_items", message="RSS feed contained no items")
+            return []
 
         news_items = []
-        for item in data.get("Data", [])[:limit]:
+        for item in items[:limit]:
+            title_el = item.find("title")
+            link_el = item.find("link")
+            pub_date_el = item.find("pubDate")
+
+            # Parse publication date (RFC 2822 format)
+            published_at = datetime.now(timezone.utc)
+            if pub_date_el is not None and pub_date_el.text:
+                try:
+                    published_at = parsedate_to_datetime(pub_date_el.text)
+                except (ValueError, TypeError):
+                    pass  # Use default
+
             news_items.append(NewsItem(
-                title=item.get("title", "")[:100],
-                source=item.get("source", "Unknown"),
-                url=item.get("url", ""),
-                published_at=datetime.fromtimestamp(item.get("published_on", 0), tz=timezone.utc),
+                title=(title_el.text or "")[:100] if title_el is not None else "",
+                source="CoinTelegraph",
+                url=link_el.text or "" if link_el is not None else "",
+                published_at=published_at,
                 # sentiment defaults to "neutral" - AI analyzes actual sentiment
             ))
 
