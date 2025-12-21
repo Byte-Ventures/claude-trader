@@ -152,7 +152,7 @@ jobs:
             If any issues could not be fixed, add a PR comment listing them with brief explanations.
           claude_args: >-
             --model claude-opus-4-5-20251101
-            --max-turns 50
+            --max-turns 100
             --allowed-tools "Read,Write,Edit,Glob,Grep,Bash(git:*),Bash(python3:*),Bash(pytest:*),Bash(pip:*)"
 
       - name: Get after SHA
