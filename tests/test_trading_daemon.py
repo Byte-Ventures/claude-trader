@@ -80,6 +80,7 @@ def mock_settings():
     settings.openrouter_api_key = None
     settings.hourly_analysis_enabled = False
     settings.ai_recommendation_ttl_minutes = 20
+    settings.signal_history_retention_days = 90
     settings.veto_reduce_threshold = 0.65
     settings.veto_skip_threshold = 0.80
     settings.position_reduction = 0.5
