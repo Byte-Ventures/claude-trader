@@ -2,6 +2,7 @@
 
 let chart = null;
 let candleSeries = null;
+let volumeSeries = null;
 let priceLine = null;
 let performanceChart = null;
 let portfolioSeries = null;
@@ -115,7 +116,15 @@ function initChart() {
             borderColor: '#374151',
             scaleMargins: {
                 top: 0.05,
-                bottom: 0.05,
+                bottom: 0.25,  // Leave room for volume bars at bottom
+            },
+        },
+        leftPriceScale: {
+            visible: true,
+            borderColor: '#374151',
+            scaleMargins: {
+                top: 0.8,  // Volume takes bottom 20% of chart
+                bottom: 0,
             },
         },
         timeScale: {
@@ -153,6 +162,13 @@ function initChart() {
         borderUpColor: '#10b981',
         wickDownColor: '#ef4444',
         wickUpColor: '#10b981',
+    });
+
+    // Add volume histogram series (renders at bottom with left axis)
+    volumeSeries = chart.addHistogramSeries({
+        color: '#6b7280',
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'left',
     });
 
     // Handle window resize
@@ -345,7 +361,8 @@ async function loadInitialData() {
                     const high = parseFloat(c.high);
                     const low = parseFloat(c.low);
                     const close = parseFloat(c.close);
-                    return { time, open, high, low, close };
+                    const volume = parseFloat(c.volume) || 0;
+                    return { time, open, high, low, close, volume };
                 })
                 .filter(c => {
                     // Filter out invalid candles (NaN values crash the chart)
@@ -366,6 +383,14 @@ async function loadInitialData() {
                 const lineData = chartData.map(c => ({ time: c.time, value: c.close }));
                 priceLine.setData(lineData);
                 priceLine.applyOptions({ color: getPriceLineColor(chartData) });
+
+                // Set volume histogram data (green for up candles, red for down)
+                const volumeData = chartData.map(c => ({
+                    time: c.time,
+                    value: c.volume,
+                    color: c.close >= c.open ? 'rgba(16, 185, 129, 0.5)' : 'rgba(239, 68, 68, 0.5)',
+                }));
+                volumeSeries.setData(volumeData);
 
                 // Load whale events and add markers to candles
                 await loadWhaleMarkers(chartData);
@@ -712,6 +737,12 @@ function updateConfig(config) {
     document.getElementById('signal-threshold').textContent = `Threshold: |${config.signal_threshold}|`;
     if (config.candle_interval) {
         candleIntervalSeconds = parseIntervalToSeconds(config.candle_interval);
+    }
+    // Update axis labels with currency units from trading pair
+    if (config.trading_pair) {
+        const [base, quote] = config.trading_pair.split('-');
+        document.getElementById('volume-axis-label').textContent = `Vol (${base})`;
+        document.getElementById('price-axis-label').textContent = `Price (${quote})`;
     }
 }
 
