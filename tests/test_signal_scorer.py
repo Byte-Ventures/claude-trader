@@ -2839,6 +2839,36 @@ class TestConfigValidation:
         # New value should take precedence
         assert settings.mtf_daily_candle_limit == 70
 
+    def test_max_trade_quote_empty_string_converts_to_none(self, monkeypatch):
+        """Test that empty string for max_trade_quote is converted to None.
+
+        This allows users to remove the trade size cap by setting MAX_TRADE_QUOTE=
+        in their .env file.
+        """
+        monkeypatch.setenv("MAX_TRADE_QUOTE", "")
+
+        settings = Settings(_env_file=None)
+
+        assert settings.max_trade_quote is None
+
+    def test_max_trade_quote_none_is_valid(self):
+        """Test that None is a valid value for max_trade_quote (no limit)."""
+        settings = Settings(max_trade_quote=None)
+
+        assert settings.max_trade_quote is None
+
+    def test_max_trade_quote_numeric_value_accepted(self):
+        """Test that numeric values for max_trade_quote are accepted."""
+        settings = Settings(max_trade_quote=500.0)
+
+        assert settings.max_trade_quote == 500.0
+
+    def test_max_trade_quote_below_min_trade_quote_rejected(self):
+        """Test that max_trade_quote below min_trade_quote raises ValidationError."""
+        with pytest.raises(ValidationError) as exc_info:
+            Settings(min_trade_quote=100.0, max_trade_quote=50.0)
+        assert "max_trade_quote" in str(exc_info.value).lower()
+
 
 # ============================================================================
 # HTF Null Safety Tests

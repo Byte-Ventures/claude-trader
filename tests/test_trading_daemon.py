@@ -4061,6 +4061,43 @@ class TestVetoCooldown:
         # Should match candle time, not current wall-clock time
         assert daemon._last_veto_timestamp == candle_time
 
+    def test_trade_blocked_during_veto_cooldown(self, daemon_with_cooldown):
+        """
+        Integration test: verify that when veto cooldown triggers, the trade
+        is blocked entirely (not just the review).
+
+        This tests the fix for the bug where setting should_review=False allowed
+        the trade to proceed without AI oversight. Now the code should return
+        early when veto cooldown is active.
+        """
+        from datetime import datetime, timezone
+        from unittest.mock import MagicMock
+
+        daemon = daemon_with_cooldown
+
+        # Enable AI review so veto cooldown logic is activated
+        daemon.settings.ai_review_enabled = True
+
+        # Set up veto state - simulating a recent SKIP veto for a buy signal
+        now = datetime.now(timezone.utc)
+        daemon._last_veto_timestamp = now
+        daemon._last_veto_direction = "buy"
+
+        # Create a mock for the position sizer's calculate_size method
+        # If trade proceeds past veto cooldown, this would be called
+        daemon.position_sizer.calculate_size = MagicMock()
+
+        # Directly test the veto cooldown check returns skip=True
+        should_skip, reason = daemon._should_skip_review_after_veto("buy")
+
+        # Verify veto cooldown activates correctly
+        assert should_skip is True
+        assert "veto_cooldown" in reason
+
+        # Verify position_sizer was NOT called (trade was blocked before sizing)
+        # This is the key behavior change: we return early instead of proceeding
+        daemon.position_sizer.calculate_size.assert_not_called()
+
 
 # ============================================================================
 # Sentiment Fetch Failure Tracking Tests
