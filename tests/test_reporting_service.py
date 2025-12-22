@@ -189,6 +189,45 @@ def test_close_without_error(reporting_service):
     # Should not raise
 
 
+def test_close_closes_owned_loop(reporting_config, mock_notifier, mock_db, mock_exchange_client, mock_signal_scorer):
+    """Test close() actually closes the event loop when _owns_loop=True."""
+    # Create service without providing an event loop (so it creates its own)
+    service = ReportingService(
+        reporting_config, mock_notifier, mock_db, mock_exchange_client, mock_signal_scorer,
+        event_loop=None,  # Service will create and own its own loop
+    )
+
+    # Verify service owns the loop
+    assert service._owns_loop is True
+    loop = service._loop
+    assert not loop.is_closed()
+
+    # Close and verify
+    service.close()
+    assert loop.is_closed()
+
+
+def test_close_does_not_close_shared_loop(reporting_config, mock_notifier, mock_db, mock_exchange_client, mock_signal_scorer):
+    """Test close() does not close the event loop when _owns_loop=False (shared loop)."""
+    import asyncio
+    shared_loop = asyncio.new_event_loop()
+    try:
+        service = ReportingService(
+            reporting_config, mock_notifier, mock_db, mock_exchange_client, mock_signal_scorer,
+            event_loop=shared_loop,  # Service does not own this loop
+        )
+
+        # Verify service does not own the loop
+        assert service._owns_loop is False
+        assert service._loop is shared_loop
+
+        # Close service - should NOT close the shared loop
+        service.close()
+        assert not shared_loop.is_closed()
+    finally:
+        shared_loop.close()
+
+
 # ============================================================================
 # Configuration Update Tests
 # ============================================================================
@@ -694,9 +733,11 @@ def test_run_async_with_timeout_returns_default_on_timeout(reporting_service):
         await asyncio.sleep(10)  # Will be cancelled
         return "never reached"
 
+    # Use 0.1s timeout (100ms) - long enough to not flake on slow CI systems,
+    # but short enough that the test completes quickly
     result = reporting_service._run_async_with_timeout(
         slow_coro(),
-        timeout=0.01,
+        timeout=0.1,
         default="timed_out"
     )
 

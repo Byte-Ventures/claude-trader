@@ -470,9 +470,11 @@ def test_4h_candles_fetched_with_correct_params(market_service, mock_exchange_cl
     calls = mock_exchange_client.get_candles.call_args_list
     assert len(calls) == 2
 
-    # Second call should be 4H
+    # Second call should be 4H - check kwargs explicitly
     _, kwargs = calls[1]
-    assert kwargs.get("granularity") == "FOUR_HOUR" or calls[1][0][1] == "FOUR_HOUR"
+    assert kwargs.get("granularity") == "FOUR_HOUR", (
+        f"Expected 4H candles with granularity='FOUR_HOUR', got: {kwargs}"
+    )
 
 
 # ============================================================================
