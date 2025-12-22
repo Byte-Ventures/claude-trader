@@ -102,6 +102,8 @@ from src.strategy.weight_profile_selector import (
 from src.strategy.position_sizer import PositionSizer, PositionSizeConfig
 from src.strategy.regime import MarketRegime, RegimeConfig, RegimeAdjustments, get_cached_sentiment
 from src.indicators.ema import get_ema_trend_from_values
+from src.daemon.reporting_service import ReportingService, ReportingConfig
+from src.daemon.market_service import MarketService, MarketConfig
 
 logger = structlog.get_logger(__name__)
 
@@ -151,10 +153,8 @@ class TradingDaemon:
                 message="AI_FAILURE_MODE is deprecated. Use AI_FAILURE_MODE_BUY and AI_FAILURE_MODE_SELL instead. "
                         "New defaults: BUY=safe (skip on AI failure), SELL=open (proceed on AI failure)."
             )
-        self._last_daily_report: Optional[date] = None
-        self._last_weekly_report: Optional[date] = None
-        self._last_monthly_report: Optional[date] = None
-        self._last_cleanup_date: Optional[date] = None
+        # Note: Report state (_last_daily_report, _last_weekly_report, etc.)
+        # is now managed by ReportingService
         # For adaptive interval and emergency stop creation. Default "normal" is intentionally
         # conservative - if bot restarts during extreme volatility before first iteration,
         # emergency stops use tighter (1.5x ATR) rather than wider (2.0x) multiplier.
@@ -162,8 +162,8 @@ class TradingDaemon:
         self._last_volatility: str = "normal"
         self._last_regime: str = "neutral"  # For regime change notifications
         self._pending_regime: Optional[str] = None  # Flap protection: pending regime change
-        self._last_hourly_analysis: Optional[datetime] = None  # For hourly market analysis
-        self._pending_post_volatility_analysis: bool = False  # Trigger analysis when volatility calms
+        # Note: _last_hourly_analysis and _pending_post_volatility_analysis
+        # are now managed by ReportingService
         self._last_stop_check: Optional[datetime] = None  # For periodic stop protection checks
         self._last_ai_failure_notification: Optional[datetime] = None  # Cooldown for AI failure notifications
         self._last_interesting_hold_review: Optional[datetime] = None  # Cooldown for interesting_hold reviews
@@ -171,16 +171,7 @@ class TradingDaemon:
         self._last_veto_timestamp: Optional[datetime] = None  # Cooldown after AI veto rejection
         self._last_veto_direction: Optional[str] = None  # Signal direction at veto ("buy"/"sell")
 
-        # Multi-Timeframe state (for HTF bias caching)
-        self._daily_trend: str = "neutral"
-        self._daily_last_fetch: Optional[datetime] = None
-        self._4h_trend: str = "neutral"
-        self._4h_last_fetch: Optional[datetime] = None
-        # HTF cache performance metrics (accumulate over daemon lifetime)
-        # Note: Counters grow unbounded, but Python ints have arbitrary precision
-        # (no overflow). Safe for 24/7 operation.
-        self._htf_cache_hits: int = 0
-        self._htf_cache_misses: int = 0
+        # Note: Multi-Timeframe state (HTF bias caching) is now managed by MarketService
 
         # Signal history tracking for marking executed trades.
         # Thread-safety note: This is safe because TradingDaemon runs single-threaded.
@@ -358,12 +349,7 @@ class TradingDaemon:
         else:
             logger.info("ai_trade_reviewer_disabled")
 
-        # Hourly market analysis uses trade_reviewer (if AI review enabled)
-        self._hourly_analysis_enabled = settings.hourly_analysis_enabled and self.trade_reviewer is not None
-        if self._hourly_analysis_enabled:
-            logger.info("hourly_market_analysis_enabled", uses_trade_reviewer=True)
-        else:
-            logger.info("hourly_market_analysis_disabled")
+        # Note: Hourly analysis enabled/disabled is now managed by ReportingService
 
         # Initialize safety systems
         self.kill_switch = KillSwitch(
@@ -532,6 +518,57 @@ class TradingDaemon:
             )
         else:
             logger.info("ai_weight_profile_selector_disabled")
+
+        # Initialize market service (HTF trend caching)
+        market_config = MarketConfig(
+            trading_pair=settings.trading_pair,
+            mtf_enabled=settings.mtf_enabled,
+            mtf_4h_enabled=settings.mtf_4h_enabled,
+            mtf_daily_cache_minutes=settings.mtf_daily_cache_minutes,
+            mtf_4h_cache_minutes=settings.mtf_4h_cache_minutes,
+            mtf_daily_candle_limit=settings.mtf_daily_candle_limit,
+            mtf_4h_candle_limit=settings.mtf_4h_candle_limit,
+        )
+        self.market_service = MarketService(
+            config=market_config,
+            exchange_client=self.client,
+            signal_scorer=self.signal_scorer,
+        )
+        if settings.mtf_enabled:
+            logger.info(
+                "market_service_initialized",
+                mtf_enabled=True,
+                mtf_4h_enabled=settings.mtf_4h_enabled,
+            )
+        else:
+            logger.info("market_service_initialized", mtf_enabled=False)
+
+        # Initialize reporting service
+        hourly_analysis_enabled = settings.hourly_analysis_enabled and self.trade_reviewer is not None
+        reporting_config = ReportingConfig(
+            is_paper_trading=settings.is_paper_trading,
+            trading_pair=settings.trading_pair,
+            signal_history_retention_days=settings.signal_history_retention_days,
+            hourly_analysis_enabled=hourly_analysis_enabled,
+            candle_interval=settings.candle_interval,
+            candle_limit=settings.candle_limit,
+            regime_sentiment_enabled=settings.regime_sentiment_enabled,
+        )
+        self.reporting_service = ReportingService(
+            config=reporting_config,
+            notifier=self.notifier,
+            db=self.db,
+            exchange_client=self.client,
+            signal_scorer=self.signal_scorer,
+            trade_reviewer=self.trade_reviewer,
+            on_sentiment_success=self._record_sentiment_success,
+            on_sentiment_failure=self._record_sentiment_failure,
+            event_loop=self._loop,  # Share daemon's event loop
+        )
+        if hourly_analysis_enabled:
+            logger.info("hourly_market_analysis_enabled", uses_trade_reviewer=True)
+        else:
+            logger.info("hourly_market_analysis_disabled")
 
         # AI recommendation state (for threshold adjustments from interesting holds)
         self._ai_recommendation: Optional[str] = None  # "accumulate", "reduce", "wait"
@@ -835,7 +872,17 @@ class TradingDaemon:
                                            "mtf_daily_cache_minutes", "mtf_4h_cache_minutes",
                                            "ema_slow", "bollinger_period", "macd_slow"}
             if mtf_cache_affecting_settings & set(changes.keys()):
-                self._invalidate_htf_cache()
+                # Update market service config and invalidate cache
+                self.market_service.update_config(MarketConfig(
+                    trading_pair=self.settings.trading_pair,
+                    mtf_enabled=self.settings.mtf_enabled,
+                    mtf_4h_enabled=self.settings.mtf_4h_enabled,
+                    mtf_daily_cache_minutes=self.settings.mtf_daily_cache_minutes,
+                    mtf_4h_cache_minutes=self.settings.mtf_4h_cache_minutes,
+                    mtf_daily_candle_limit=self.settings.mtf_daily_candle_limit,
+                    mtf_4h_candle_limit=self.settings.mtf_4h_candle_limit,
+                ))
+                self.market_service.invalidate_cache()
 
             logger.info(
                 "config_reload_complete",
@@ -961,149 +1008,6 @@ class TradingDaemon:
             candle_timestamp = datetime.now(timezone.utc)
 
         self._last_veto_timestamp = candle_timestamp
-
-    def _get_timeframe_trend(self, granularity: str, cache_minutes: int) -> str:
-        """
-        Get trend for a specific timeframe with caching.
-
-        Args:
-            granularity: Candle granularity ("ONE_DAY" or "FOUR_HOUR")
-            cache_minutes: Cache TTL in minutes
-
-        Returns:
-            Trend direction: "bullish", "bearish", or "neutral"
-        """
-        # Select appropriate cache based on granularity
-        if granularity == "ONE_DAY":
-            last_fetch = self._daily_last_fetch
-            cached_trend = self._daily_trend
-        elif granularity == "FOUR_HOUR":
-            last_fetch = self._4h_last_fetch
-            cached_trend = self._4h_trend
-        else:
-            raise ValueError(f"Unsupported granularity for HTF: {granularity}")
-
-        now = datetime.now(timezone.utc)
-        if last_fetch and (now - last_fetch) < timedelta(minutes=cache_minutes):
-            self._htf_cache_hits += 1
-            return cached_trend
-
-        # Cache is stale or non-existent - count as cache miss
-        # We count the miss once here, regardless of fetch outcome
-        self._htf_cache_misses += 1
-
-        # Select appropriate candle limit based on timeframe
-        if granularity == "ONE_DAY":
-            candle_limit = self.settings.mtf_daily_candle_limit
-        else:  # FOUR_HOUR
-            candle_limit = self.settings.mtf_4h_candle_limit
-
-        try:
-            candles = self.client.get_candles(
-                self.settings.trading_pair,
-                granularity=granularity,
-                limit=candle_limit,
-            )
-
-            # Validate candles before processing - need enough data for trend calculation
-            min_required = max(
-                self.signal_scorer.ema_slow_period,
-                self.signal_scorer.bollinger_period,
-                self.signal_scorer.macd_slow,
-            )
-            if candles is None or candles.empty or len(candles) < min_required:
-                logger.warning(
-                    "htf_insufficient_data",
-                    timeframe=granularity,
-                    candle_count=len(candles) if candles is not None and not candles.empty else 0,
-                    required=min_required,
-                )
-                return cached_trend or "neutral"
-
-            trend = self.signal_scorer.get_trend(candles)
-
-            # Update cache
-            if granularity == "ONE_DAY":
-                self._daily_trend = trend
-                self._daily_last_fetch = now
-            elif granularity == "FOUR_HOUR":
-                self._4h_trend = trend
-                self._4h_last_fetch = now
-            else:
-                raise ValueError(f"Unsupported granularity for HTF: {granularity}")
-
-            logger.info(
-                "htf_trend_updated",
-                timeframe=granularity,
-                trend=trend,
-                cache_hits=self._htf_cache_hits,
-                cache_misses=self._htf_cache_misses,
-            )
-            return trend
-        except (ConnectionError, TimeoutError, OSError, ValueError, KeyError, NotImplementedError) as e:
-            # Expected failures: network issues, API errors, data parsing issues,
-            # or unsupported granularity (NotImplementedError).
-            # Cache miss was already counted above when we decided to fetch
-            # Fail-open: return cached trend or neutral, never block trading
-            logger.warning("htf_fetch_failed", timeframe=granularity, error=str(e), error_type=type(e).__name__)
-            return cached_trend or "neutral"
-        except Exception as e:
-            # Unexpected errors - log at error level but still fail-open
-            # Cache miss was already counted above when we decided to fetch
-            # Financial bot should never crash due to HTF analysis failure
-            logger.error("htf_fetch_unexpected_error", timeframe=granularity, error=str(e), error_type=type(e).__name__, traceback=traceback.format_exc())
-            return cached_trend or "neutral"
-
-    def _get_htf_bias(self) -> tuple[str, Optional[str], Optional[str]]:
-        """
-        Get combined HTF bias from daily + 4-hour trends.
-
-        Returns:
-            Tuple of (combined_bias, daily_trend, 4h_trend)
-            - Both bullish → "bullish"
-            - Both bearish → "bearish"
-            - Mixed/neutral → "neutral"
-            - daily_trend is None when mtf_enabled=False
-            - 4h_trend is None when mtf_4h_enabled=False
-        """
-        if not self.settings.mtf_enabled:
-            # When MTF is disabled, we don't fetch ANY HTF data, so both trends should be None
-            return "neutral", None, None
-
-        daily = self._get_timeframe_trend("ONE_DAY", self.settings.mtf_daily_cache_minutes)
-
-        # 4H is optional - when disabled, just use daily trend directly
-        if not self.settings.mtf_4h_enabled:
-            # Daily-only mode: simpler, fewer API calls
-            return daily, daily, None
-
-        # MTF uses FOUR_HOUR (not SIX_HOUR) because:
-        # - More frequent data points (6 candles/day vs 4 for 6H)
-        # - More responsive to intraday trend shifts while still filtering hourly noise
-        # - Provides good intermediate timeframe between daily and hourly trading
-        # Note: SIX_HOUR remains a valid granularity for other uses, just not for MTF
-        four_hour = self._get_timeframe_trend("FOUR_HOUR", self.settings.mtf_4h_cache_minutes)
-
-        # Combine: both must agree for strong bias
-        if daily == "bullish" and four_hour == "bullish":
-            combined = "bullish"
-        elif daily == "bearish" and four_hour == "bearish":
-            combined = "bearish"
-        else:
-            combined = "neutral"
-
-        return combined, daily, four_hour
-
-    def _invalidate_htf_cache(self) -> None:
-        """
-        Invalidate HTF trend cache when settings change.
-
-        Called when MTF-related settings are updated at runtime to ensure
-        the next iteration uses fresh data with the new parameters.
-        """
-        self._daily_last_fetch = None
-        self._4h_last_fetch = None
-        logger.info("htf_cache_invalidated")
 
     def _store_signal_history(
         self,
@@ -1344,15 +1248,18 @@ class TradingDaemon:
                     self._reload_config()
 
                 # Check for performance reports
-                self._check_daily_report()
-                self._check_weekly_report()
-                self._check_monthly_report()
+                self.reporting_service.check_daily_report()
+                self.reporting_service.check_weekly_report()
+                self.reporting_service.check_monthly_report()
 
                 # Check for signal history cleanup
-                self._check_signal_history_cleanup()
+                self.reporting_service.check_signal_history_cleanup()
 
                 # Check for hourly market analysis
-                self._check_hourly_analysis()
+                self.reporting_service.check_hourly_analysis(
+                    volatility=self._last_volatility,
+                    regime=self._last_regime,
+                )
 
                 # Periodic safety check: ensure positions have stop protection
                 # This catches edge cases like manual position opens or recovery failures
@@ -1590,7 +1497,7 @@ class TradingDaemon:
         # - MTF enabled, 4H disabled: returns (daily, daily, None)
         # - MTF fully enabled: returns (combined, daily, four_hour)
         # These variables are used in signal calculation AND dashboard state, ensuring consistency
-        htf_bias, daily_trend, four_hour_trend = self._get_htf_bias()
+        htf_bias, daily_trend, four_hour_trend = self.market_service.get_htf_bias()
 
         # Fetch sentiment before signal calculation to enable extreme fear override in MTF logic.
         # This must happen BEFORE calculate_score() because sentiment_category is used to
@@ -1673,7 +1580,7 @@ class TradingDaemon:
 
             # Detect transition from high/extreme to normal/low
             if old_volatility in ("high", "extreme") and ind.volatility in ("normal", "low"):
-                self._pending_post_volatility_analysis = True
+                self.reporting_service.set_pending_post_volatility_analysis(True)
                 logger.info(
                     "post_volatility_analysis_pending",
                     from_volatility=old_volatility,
@@ -3550,421 +3457,6 @@ class TradingDaemon:
                 "Sentiment API Recovery"
             )
 
-    def _check_daily_report(self) -> None:
-        """Check if we should generate daily performance report (UTC)."""
-        today = datetime.now(timezone.utc).date()
-
-        # Only report once per day
-        if self._last_daily_report == today:
-            return
-
-        # Get yesterday's stats (if exists)
-        from datetime import timedelta
-        yesterday = today - timedelta(days=1)
-        stats = self.db.get_daily_stats(yesterday, is_paper=self.settings.is_paper_trading)
-
-        if stats and stats.starting_balance and stats.ending_balance:
-            try:
-                starting_balance = Decimal(stats.starting_balance)
-                ending_balance = Decimal(stats.ending_balance)
-                starting_price = Decimal(stats.starting_price) if stats.starting_price else None
-                ending_price = Decimal(stats.ending_price) if stats.ending_price else None
-
-                # Calculate portfolio return
-                if starting_balance > 0:
-                    portfolio_return = float((ending_balance - starting_balance) / starting_balance * 100)
-                else:
-                    portfolio_return = 0.0
-
-                # Calculate BTC return (buy-and-hold benchmark)
-                btc_return = 0.0
-                if starting_price and ending_price and starting_price > 0:
-                    btc_return = float((ending_price - starting_price) / starting_price * 100)
-
-                # Calculate alpha (outperformance vs buy-and-hold)
-                alpha = portfolio_return - btc_return
-
-                logger.info(
-                    "daily_performance",
-                    date=str(yesterday),
-                    portfolio_return=f"{portfolio_return:+.2f}%",
-                    btc_return=f"{btc_return:+.2f}%",
-                    alpha=f"{alpha:+.2f}%",
-                    starting_balance=str(starting_balance),
-                    ending_balance=str(ending_balance),
-                    trades=stats.total_trades or 0,
-                )
-
-                # Send Telegram notification
-                self._send_daily_report(
-                    yesterday,
-                    portfolio_return,
-                    btc_return,
-                    alpha,
-                    starting_balance,
-                    ending_balance,
-                    stats.total_trades or 0,
-                )
-
-            except Exception as e:
-                logger.error("daily_report_failed", error=str(e))
-
-        self._last_daily_report = today
-
-    def _send_daily_report(
-        self,
-        report_date: date,
-        portfolio_return: float,
-        btc_return: float,
-        alpha: float,
-        starting_balance: Decimal,
-        ending_balance: Decimal,
-        trades: int,
-    ) -> None:
-        """Send daily performance report via unified notification method."""
-        pnl = ending_balance - starting_balance
-
-        self.notifier.notify_periodic_report(
-            period="Daily",
-            report_date=f"Date: {report_date}",
-            portfolio_return=portfolio_return,
-            btc_return=btc_return,
-            alpha=alpha,
-            pnl=pnl,
-            ending_balance=ending_balance,
-            trades=trades,
-            is_paper=self.settings.is_paper_trading,
-        )
-
-    def _check_weekly_report(self) -> None:
-        """Check if we should generate weekly performance report (on Mondays, UTC)."""
-        from datetime import timedelta
-
-        today = datetime.now(timezone.utc).date()
-
-        # Only on Mondays
-        if today.weekday() != 0:
-            return
-
-        # Only report once per week
-        if self._last_weekly_report and (today - self._last_weekly_report).days < 7:
-            return
-
-        # Get last week's date range (Monday to Sunday)
-        last_monday = today - timedelta(days=7)
-        last_sunday = today - timedelta(days=1)
-
-        self._generate_period_report("Weekly", last_monday, last_sunday)
-        self._last_weekly_report = today
-
-    def _check_monthly_report(self) -> None:
-        """Check if we should generate monthly performance report (on 1st of month, UTC)."""
-        from datetime import timedelta
-
-        today = datetime.now(timezone.utc).date()
-
-        # Only on 1st of month
-        if today.day != 1:
-            return
-
-        # Only report once per month
-        if self._last_monthly_report and self._last_monthly_report.month == today.month:
-            return
-
-        # Get last month's date range
-        last_day_prev_month = today - timedelta(days=1)
-        first_day_prev_month = last_day_prev_month.replace(day=1)
-
-        self._generate_period_report("Monthly", first_day_prev_month, last_day_prev_month)
-        self._last_monthly_report = today
-
-    def _check_signal_history_cleanup(self) -> None:
-        """Check if we should clean up old signal history records (once per day, UTC)."""
-        today = datetime.now(timezone.utc).date()
-
-        # Only clean up once per day
-        if self._last_cleanup_date == today:
-            return
-
-        try:
-            deleted = self.db.cleanup_signal_history(
-                retention_days=self.settings.signal_history_retention_days,
-                is_paper=self.settings.is_paper_trading
-            )
-            if deleted > 0:
-                logger.info("signal_history_cleanup", deleted_count=deleted)
-            self._last_cleanup_date = today
-        except Exception as e:
-            logger.error("signal_history_cleanup_failed", error=str(e))
-
-    def _generate_period_report(self, period: str, start_date: date, end_date: date) -> None:
-        """Generate and send a performance report for a date range."""
-        stats_list = self.db.get_daily_stats_range(
-            start_date, end_date, is_paper=self.settings.is_paper_trading
-        )
-
-        if not stats_list:
-            logger.debug(f"no_stats_for_{period.lower()}_report", start=str(start_date), end=str(end_date))
-            return
-
-        try:
-            # Get first and last stats with valid data
-            first_stats = None
-            last_stats = None
-            total_trades = 0
-
-            for s in stats_list:
-                if s.starting_balance and s.starting_price:
-                    if first_stats is None:
-                        first_stats = s
-                if s.ending_balance and s.ending_price:
-                    last_stats = s
-                total_trades += s.total_trades or 0
-
-            if not first_stats or not last_stats:
-                logger.debug(f"incomplete_stats_for_{period.lower()}_report")
-                return
-
-            starting_balance = Decimal(first_stats.starting_balance)
-            ending_balance = Decimal(last_stats.ending_balance)
-            starting_price = Decimal(first_stats.starting_price)
-            ending_price = Decimal(last_stats.ending_price)
-
-            # Calculate returns
-            portfolio_return = 0.0
-            if starting_balance > 0:
-                portfolio_return = float((ending_balance - starting_balance) / starting_balance * 100)
-
-            btc_return = 0.0
-            if starting_price > 0:
-                btc_return = float((ending_price - starting_price) / starting_price * 100)
-
-            alpha = portfolio_return - btc_return
-
-            logger.info(
-                f"{period.lower()}_performance",
-                period=f"{start_date} to {end_date}",
-                portfolio_return=f"{portfolio_return:+.2f}%",
-                btc_return=f"{btc_return:+.2f}%",
-                alpha=f"{alpha:+.2f}%",
-                trades=total_trades,
-            )
-
-            # Send Telegram notification
-            self._send_period_report(
-                period,
-                start_date,
-                end_date,
-                portfolio_return,
-                btc_return,
-                alpha,
-                starting_balance,
-                ending_balance,
-                total_trades,
-            )
-
-        except Exception as e:
-            logger.error(f"{period.lower()}_report_failed", error=str(e))
-
-    def _send_period_report(
-        self,
-        period: str,
-        start_date: date,
-        end_date: date,
-        portfolio_return: float,
-        btc_return: float,
-        alpha: float,
-        starting_balance: Decimal,
-        ending_balance: Decimal,
-        trades: int,
-    ) -> None:
-        """Send weekly/monthly performance report via unified notification method."""
-        pnl = ending_balance - starting_balance
-
-        self.notifier.notify_periodic_report(
-            period=period,
-            report_date=f"{start_date} → {end_date}",
-            portfolio_return=portfolio_return,
-            btc_return=btc_return,
-            alpha=alpha,
-            pnl=pnl,
-            ending_balance=ending_balance,
-            trades=trades,
-            is_paper=self.settings.is_paper_trading,
-        )
-
-    def _check_hourly_analysis(self) -> None:
-        """Run hourly market analysis during volatile conditions or post-volatility."""
-        # Skip if hourly analysis not enabled
-        if not self._hourly_analysis_enabled:
-            return
-
-        now = datetime.now(timezone.utc)
-        is_post_volatility = self._pending_post_volatility_analysis
-
-        # Check if we should run analysis
-        should_run = False
-        analysis_reason = ""
-
-        if is_post_volatility:
-            # Post-volatility analysis: run immediately (don't wait for hourly cooldown)
-            should_run = True
-            analysis_reason = "post_volatility"
-            self._pending_post_volatility_analysis = False
-        elif self._last_volatility in ("high", "extreme"):
-            # During high/extreme volatility: run once per hour
-            if self._last_hourly_analysis:
-                elapsed = (now - self._last_hourly_analysis).total_seconds()
-                if elapsed >= 3600:
-                    should_run = True
-                    analysis_reason = "hourly_volatile"
-            else:
-                should_run = True
-                analysis_reason = "hourly_volatile"
-
-        if not should_run:
-            return
-
-        # Run analysis
-        try:
-            # Get current market data for analysis
-            current_price = self.client.get_current_price(self.settings.trading_pair)
-            candles = self.client.get_candles(
-                self.settings.trading_pair,
-                granularity=self.settings.candle_interval,
-                limit=self.settings.candle_limit,
-            )
-
-            # Calculate indicators
-            signal_result = self.signal_scorer.calculate_score(candles, current_price)
-            indicators = signal_result.indicators
-
-            # Get sentiment
-            sentiment_value = None
-            sentiment_class = "Unknown"
-            if self.settings.regime_sentiment_enabled:
-                try:
-                    sentiment_result = self._run_async_with_timeout(get_cached_sentiment(), timeout=30)
-                    if sentiment_result and sentiment_result.value:
-                        sentiment_value = sentiment_result.value
-                        sentiment_class = sentiment_result.classification or "Unknown"
-                        # Record success and handle recovery notification
-                        self._record_sentiment_success()
-                    else:
-                        logger.warning(
-                            "sentiment_unavailable_for_dashboard",
-                            reason="fetch_returned_none",
-                            impact="extreme_fear_override_disabled",
-                        )
-                        # Record failure atomically (increments counter and checks threshold)
-                        self._record_sentiment_failure(context="dashboard")
-                except Exception as e:
-                    logger.warning(
-                        "sentiment_fetch_failed_during_dashboard",
-                        error=str(e),
-                        impact="extreme_fear_override_disabled",
-                    )
-                    # Record failure atomically (increments counter and checks threshold)
-                    self._record_sentiment_failure(context="dashboard")
-
-            # Calculate price changes from candles
-            price_change_1h = None
-            price_change_24h = None
-            if len(candles) >= 2:
-                prev_close = candles["close"].iloc[-2]
-                curr_close = candles["close"].iloc[-1]
-                if prev_close > 0:
-                    price_change_1h = ((curr_close - prev_close) / prev_close) * 100
-            if len(candles) >= 24:
-                prev_24h = candles["close"].iloc[-24]
-                curr_close = candles["close"].iloc[-1]
-                if prev_24h > 0:
-                    price_change_24h = ((curr_close - prev_24h) / prev_24h) * 100
-
-            # Build indicators dict for analyze_market
-            indicators_dict = {
-                "rsi": indicators.rsi,
-                "macd_histogram": indicators.macd_histogram,
-                "bb_percent_b": None,
-                "ema_gap": None,
-            }
-            # Calculate Bollinger %B
-            if indicators.bb_lower and indicators.bb_upper:
-                bb_range = indicators.bb_upper - indicators.bb_lower
-                if bb_range > 0:
-                    indicators_dict["bb_percent_b"] = round(
-                        (float(current_price) - indicators.bb_lower) / bb_range, 2
-                    )
-            # Calculate EMA gap
-            if indicators.ema_slow and indicators.ema_slow > 0:
-                indicators_dict["ema_gap"] = round(
-                    ((float(current_price) - indicators.ema_slow) / indicators.ema_slow) * 100, 2
-                )
-
-            # Run multi-agent market analysis with timeout protection
-            review = self._run_async_with_timeout(
-                self.trade_reviewer.analyze_market(
-                    indicators=indicators_dict,
-                    current_price=current_price,
-                    fear_greed=sentiment_value or 50,
-                    fear_greed_class=sentiment_class,
-                    regime=self._last_regime,
-                    volatility=self._last_volatility,
-                    price_change_1h=price_change_1h,
-                    price_change_24h=price_change_24h,
-                ),
-                timeout=ASYNC_TIMEOUT_SECONDS,
-            )
-            if review is None:
-                logger.warning("market_analysis_timeout")
-                return  # Skip this analysis cycle
-
-            # Log multi-agent analysis summary
-            agent_summary = [
-                {
-                    "model": r.model.split("/")[-1],
-                    "stance": r.stance,
-                    "outlook": r.sentiment,
-                    "confidence": f"{r.confidence:.2f}",
-                    "summary": getattr(r, 'summary', '')[:50],
-                }
-                for r in review.reviews
-            ]
-            logger.info(
-                "hourly_market_analysis",
-                reason=analysis_reason,
-                agents=agent_summary,
-                judge_confidence=f"{review.judge_confidence:.2f}",
-                judge_recommendation=review.judge_recommendation,
-                judge_reasoning=review.judge_reasoning,
-            )
-
-            # Log full reasoning for each agent at debug level
-            for r in review.reviews:
-                logger.debug(
-                    "market_analysis_agent_reasoning",
-                    model=r.model.split("/")[-1],
-                    stance=r.stance,
-                    reasoning=r.reasoning,
-                )
-
-            # Send Telegram notification
-            self.notifier.notify_market_analysis(
-                review=review,
-                indicators=indicators,
-                volatility=self._last_volatility,
-                fear_greed=sentiment_value or 50,
-                fear_greed_class=sentiment_class,
-                current_price=current_price,
-                analysis_reason=analysis_reason,
-            )
-
-        except Exception as e:
-            logger.error("hourly_analysis_failed", error=str(e))
-
-        # Update timestamp regardless of success/failure to prevent spam on errors
-        self._last_hourly_analysis = now
-
     def _create_trailing_stop(
         self,
         entry_price: Decimal,
@@ -4492,6 +3984,9 @@ class TradingDaemon:
                 logger.debug("postmortem_executor_shutdown")
             except Exception as e:
                 logger.debug("postmortem_executor_shutdown_failed", error=str(e))
+
+        # Close reporting service (will skip if sharing our event loop)
+        self.reporting_service.close()
 
         # Close the async event loop
         try:
