@@ -27,7 +27,7 @@ from src.state.database import BotMode, Position
 # ============================================================================
 
 @pytest.fixture
-def config():
+def config() -> PositionConfig:
     """Default position service configuration."""
     return PositionConfig(
         trading_pair="BTC-USD",
@@ -38,7 +38,7 @@ def config():
 
 
 @pytest.fixture
-def mock_db():
+def mock_db() -> MagicMock:
     """Mock database with configurable position returns."""
     db = MagicMock()
     db.get_current_position.return_value = None
@@ -47,7 +47,7 @@ def mock_db():
 
 
 @pytest.fixture
-def mock_exchange():
+def mock_exchange() -> MagicMock:
     """Mock exchange client with balance and price methods."""
     exchange = MagicMock()
 
@@ -72,7 +72,7 @@ def mock_exchange():
 
 
 @pytest.fixture
-def position_service(config, mock_db, mock_exchange):
+def position_service(config: PositionConfig, mock_db: MagicMock, mock_exchange: MagicMock) -> PositionService:
     """PositionService with mocked dependencies."""
     return PositionService(
         config=config,
