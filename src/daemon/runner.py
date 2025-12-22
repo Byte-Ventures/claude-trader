@@ -915,33 +915,6 @@ class TradingDaemon:
         }
         return interval_map.get(self._last_volatility, self.settings.check_interval_seconds)
 
-    def _get_candle_start(self, timestamp: datetime) -> datetime:
-        """
-        Get start of the candle period containing the given timestamp.
-
-        Args:
-            timestamp: Any datetime within a candle period
-
-        Returns:
-            datetime representing the start of that candle period
-        """
-        granularity_seconds = {
-            "ONE_MINUTE": 60,
-            "FIVE_MINUTE": 300,
-            "FIFTEEN_MINUTE": 900,
-            "THIRTY_MINUTE": 1800,
-            "ONE_HOUR": 3600,
-            "TWO_HOUR": 7200,
-            "SIX_HOUR": 21600,
-            "ONE_DAY": 86400,
-        }
-        seconds = granularity_seconds.get(self.settings.candle_interval, 3600)
-        ts = timestamp.timestamp()
-        candle_start_ts = (ts // seconds) * seconds
-        return datetime.fromtimestamp(candle_start_ts, tz=timezone.utc)
-
-    # Veto cooldown methods moved to AIService
-
     # Signal history storage and trade marking moved to SignalService
 
     def _run_postmortem_async(self, trade_id: Optional[int] = None) -> None:
