@@ -16,7 +16,7 @@ from typing import Optional
 import structlog
 
 from src.api.exchange_protocol import ExchangeClient
-from src.state.database import Database, BotMode
+from src.state.database import Database, BotMode, Position
 
 logger = structlog.get_logger(__name__)
 
@@ -66,7 +66,10 @@ class PositionService:
         """
         Update the position configuration.
 
-        Used for hot-reload of settings.
+        Note: This method exists for consistency with other services but is not
+        currently called during hot-reload because all PositionConfig fields
+        (trading_pair, is_paper_trading, base_currency, quote_currency) require
+        a daemon restart to take effect.
 
         Args:
             config: New position configuration
@@ -211,7 +214,7 @@ class PositionService:
 
     def get_current_position(
         self, is_paper: Optional[bool] = None, bot_mode: BotMode = BotMode.NORMAL
-    ):
+    ) -> Optional[Position]:
         """
         Get current position from database.
 
