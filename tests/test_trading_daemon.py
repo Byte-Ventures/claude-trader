@@ -87,6 +87,7 @@ def mock_settings():
     settings.ai_api_timeout = 120
     settings.postmortem_enabled = False
     settings.ai_review_rejection_cooldown = True
+    settings.sentiment_failure_alert_threshold = 5
 
     # Strategy config
     settings.signal_threshold = 50
@@ -713,11 +714,11 @@ def test_ai_threshold_adjustment_returns_zero_without_recommendation(mock_settin
                 daemon = TradingDaemon(mock_settings)
 
                 # No recommendation set
-                assert daemon._ai_recommendation is None
+                assert daemon.ai_service._ai_recommendation is None
 
                 # Should return 0 for both buy and sell
-                assert daemon._get_ai_threshold_adjustment("buy") == 0
-                assert daemon._get_ai_threshold_adjustment("sell") == 0
+                assert daemon.ai_service.get_threshold_adjustment("buy") == 0
+                assert daemon.ai_service.get_threshold_adjustment("sell") == 0
 
 
 def test_ai_threshold_adjustment_accumulate_lowers_buy_threshold(mock_settings, mock_exchange_client, mock_database):
@@ -728,12 +729,12 @@ def test_ai_threshold_adjustment_accumulate_lowers_buy_threshold(mock_settings, 
                 daemon = TradingDaemon(mock_settings)
 
                 # Set accumulate recommendation with high confidence
-                daemon._ai_recommendation = "accumulate"
-                daemon._ai_recommendation_confidence = 0.9
-                daemon._ai_recommendation_time = datetime.now(timezone.utc)
+                daemon.ai_service._ai_recommendation = "accumulate"
+                daemon.ai_service._ai_recommendation_confidence = 0.9
+                daemon.ai_service._ai_recommendation_time = datetime.now(timezone.utc)
 
-                buy_adj = daemon._get_ai_threshold_adjustment("buy")
-                sell_adj = daemon._get_ai_threshold_adjustment("sell")
+                buy_adj = daemon.ai_service.get_threshold_adjustment("buy")
+                sell_adj = daemon.ai_service.get_threshold_adjustment("sell")
 
                 # Buy threshold should be lowered (negative adjustment)
                 assert buy_adj < 0
@@ -752,12 +753,12 @@ def test_ai_threshold_adjustment_reduce_lowers_sell_threshold(mock_settings, moc
                 daemon = TradingDaemon(mock_settings)
 
                 # Set reduce recommendation with high confidence
-                daemon._ai_recommendation = "reduce"
-                daemon._ai_recommendation_confidence = 0.9
-                daemon._ai_recommendation_time = datetime.now(timezone.utc)
+                daemon.ai_service._ai_recommendation = "reduce"
+                daemon.ai_service._ai_recommendation_confidence = 0.9
+                daemon.ai_service._ai_recommendation_time = datetime.now(timezone.utc)
 
-                buy_adj = daemon._get_ai_threshold_adjustment("buy")
-                sell_adj = daemon._get_ai_threshold_adjustment("sell")
+                buy_adj = daemon.ai_service.get_threshold_adjustment("buy")
+                sell_adj = daemon.ai_service.get_threshold_adjustment("sell")
 
                 # Buy threshold should not be affected
                 assert buy_adj == 0
@@ -773,13 +774,13 @@ def test_ai_threshold_adjustment_wait_has_no_effect(mock_settings, mock_exchange
                 daemon = TradingDaemon(mock_settings)
 
                 # Set wait recommendation
-                daemon._ai_recommendation = "wait"
-                daemon._ai_recommendation_confidence = 0.9
-                daemon._ai_recommendation_time = datetime.now(timezone.utc)
+                daemon.ai_service._ai_recommendation = "wait"
+                daemon.ai_service._ai_recommendation_confidence = 0.9
+                daemon.ai_service._ai_recommendation_time = datetime.now(timezone.utc)
 
                 # Neither threshold should be affected
-                assert daemon._get_ai_threshold_adjustment("buy") == 0
-                assert daemon._get_ai_threshold_adjustment("sell") == 0
+                assert daemon.ai_service.get_threshold_adjustment("buy") == 0
+                assert daemon.ai_service.get_threshold_adjustment("sell") == 0
 
 
 def test_ai_threshold_adjustment_decays_over_time(mock_settings, mock_exchange_client, mock_database):
@@ -792,17 +793,17 @@ def test_ai_threshold_adjustment_decays_over_time(mock_settings, mock_exchange_c
                 daemon = TradingDaemon(mock_settings)
 
                 # Set accumulate recommendation with full confidence
-                daemon._ai_recommendation = "accumulate"
-                daemon._ai_recommendation_confidence = 1.0
-                daemon._ai_recommendation_ttl_minutes = 20
+                daemon.ai_service._ai_recommendation = "accumulate"
+                daemon.ai_service._ai_recommendation_confidence = 1.0
+                daemon.ai_service.config.ai_recommendation_ttl_minutes = 20
 
                 # Test at start (no decay)
-                daemon._ai_recommendation_time = datetime.now(timezone.utc)
-                adj_at_start = daemon._get_ai_threshold_adjustment("buy")
+                daemon.ai_service._ai_recommendation_time = datetime.now(timezone.utc)
+                adj_at_start = daemon.ai_service.get_threshold_adjustment("buy")
 
                 # Test at 50% through TTL (should be ~50% of original)
-                daemon._ai_recommendation_time = datetime.now(timezone.utc) - timedelta(minutes=10)
-                adj_at_half = daemon._get_ai_threshold_adjustment("buy")
+                daemon.ai_service._ai_recommendation_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+                adj_at_half = daemon.ai_service.get_threshold_adjustment("buy")
 
                 # Adjustment should decay (less negative over time)
                 assert adj_at_start < adj_at_half < 0  # Both negative, but half is closer to 0
@@ -818,17 +819,17 @@ def test_ai_threshold_adjustment_expires_after_ttl(mock_settings, mock_exchange_
                 daemon = TradingDaemon(mock_settings)
 
                 # Set recommendation with 20 minute TTL
-                daemon._ai_recommendation = "accumulate"
-                daemon._ai_recommendation_confidence = 1.0
-                daemon._ai_recommendation_ttl_minutes = 20
+                daemon.ai_service._ai_recommendation = "accumulate"
+                daemon.ai_service._ai_recommendation_confidence = 1.0
+                daemon.ai_service.config.ai_recommendation_ttl_minutes = 20
 
                 # Set time to beyond TTL
-                daemon._ai_recommendation_time = datetime.now(timezone.utc) - timedelta(minutes=25)
+                daemon.ai_service._ai_recommendation_time = datetime.now(timezone.utc) - timedelta(minutes=25)
 
                 # Should return 0 and clear the recommendation
-                assert daemon._get_ai_threshold_adjustment("buy") == 0
-                assert daemon._ai_recommendation is None
-                assert daemon._ai_recommendation_time is None
+                assert daemon.ai_service.get_threshold_adjustment("buy") == 0
+                assert daemon.ai_service._ai_recommendation is None
+                assert daemon.ai_service._ai_recommendation_time is None
 
 
 def test_ai_threshold_adjustment_scales_with_confidence(mock_settings, mock_exchange_client, mock_database):
@@ -838,16 +839,16 @@ def test_ai_threshold_adjustment_scales_with_confidence(mock_settings, mock_exch
             with patch('src.daemon.runner.TelegramNotifier'):
                 daemon = TradingDaemon(mock_settings)
 
-                daemon._ai_recommendation = "accumulate"
-                daemon._ai_recommendation_time = datetime.now(timezone.utc)
+                daemon.ai_service._ai_recommendation = "accumulate"
+                daemon.ai_service._ai_recommendation_time = datetime.now(timezone.utc)
 
                 # Test with high confidence
-                daemon._ai_recommendation_confidence = 1.0
-                high_conf_adj = daemon._get_ai_threshold_adjustment("buy")
+                daemon.ai_service._ai_recommendation_confidence = 1.0
+                high_conf_adj = daemon.ai_service.get_threshold_adjustment("buy")
 
                 # Test with low confidence
-                daemon._ai_recommendation_confidence = 0.5
-                low_conf_adj = daemon._get_ai_threshold_adjustment("buy")
+                daemon.ai_service._ai_recommendation_confidence = 0.5
+                low_conf_adj = daemon.ai_service.get_threshold_adjustment("buy")
 
                 # Higher confidence should give larger (more negative) adjustment
                 assert high_conf_adj < low_conf_adj < 0
@@ -3942,11 +3943,12 @@ class TestVetoCooldown:
         from datetime import datetime, timezone
 
         daemon = daemon_with_cooldown
-        daemon.settings.candle_interval = "ONE_HOUR"
+        # AI service uses the config, update it
+        daemon.ai_service.config.candle_interval = "ONE_HOUR"
 
         # 14:35:00 should map to 14:00:00 start
         timestamp = datetime(2025, 1, 15, 14, 35, 0, tzinfo=timezone.utc)
-        candle_start = daemon._get_candle_start(timestamp)
+        candle_start = daemon.ai_service._get_candle_start(timestamp)
 
         assert candle_start.hour == 14
         assert candle_start.minute == 0
@@ -3957,11 +3959,12 @@ class TestVetoCooldown:
         from datetime import datetime, timezone
 
         daemon = daemon_with_cooldown
-        daemon.settings.candle_interval = "FIFTEEN_MINUTE"
+        # AI service uses the config, update it
+        daemon.ai_service.config.candle_interval = "FIFTEEN_MINUTE"
 
         # 14:37:00 should map to 14:30:00 start
         timestamp = datetime(2025, 1, 15, 14, 37, 0, tzinfo=timezone.utc)
-        candle_start = daemon._get_candle_start(timestamp)
+        candle_start = daemon.ai_service._get_candle_start(timestamp)
 
         assert candle_start.hour == 14
         assert candle_start.minute == 30
@@ -3971,7 +3974,7 @@ class TestVetoCooldown:
         """Should not skip if no prior veto recorded."""
         daemon = daemon_with_cooldown
 
-        should_skip, reason = daemon._should_skip_review_after_veto("buy")
+        should_skip, reason = daemon.ai_service.should_skip_review_after_veto("buy")
 
         assert should_skip is False
         assert reason is None
@@ -3984,11 +3987,11 @@ class TestVetoCooldown:
         now = datetime.now(timezone.utc)
 
         # Record a veto
-        daemon._last_veto_timestamp = now
-        daemon._last_veto_direction = "buy"
+        daemon.ai_service._last_veto_timestamp = now
+        daemon.ai_service._last_veto_direction = "buy"
 
         # Same direction within same candle
-        should_skip, reason = daemon._should_skip_review_after_veto("buy")
+        should_skip, reason = daemon.ai_service.should_skip_review_after_veto("buy")
 
         assert should_skip is True
         assert "veto_cooldown" in reason
@@ -4001,11 +4004,11 @@ class TestVetoCooldown:
         now = datetime.now(timezone.utc)
 
         # Record a veto for buy
-        daemon._last_veto_timestamp = now
-        daemon._last_veto_direction = "buy"
+        daemon.ai_service._last_veto_timestamp = now
+        daemon.ai_service._last_veto_direction = "buy"
 
         # Different direction - should allow review
-        should_skip, reason = daemon._should_skip_review_after_veto("sell")
+        should_skip, reason = daemon.ai_service.should_skip_review_after_veto("sell")
 
         assert should_skip is False
         assert reason is None
@@ -4015,33 +4018,33 @@ class TestVetoCooldown:
         from datetime import datetime, timezone, timedelta
 
         daemon = daemon_with_cooldown
-        daemon.settings.candle_interval = "ONE_HOUR"
+        daemon.ai_service.config.candle_interval = "ONE_HOUR"
 
         # Veto was 2 hours ago (definitely different candle)
         old_time = datetime.now(timezone.utc) - timedelta(hours=2)
-        daemon._last_veto_timestamp = old_time
-        daemon._last_veto_direction = "buy"
+        daemon.ai_service._last_veto_timestamp = old_time
+        daemon.ai_service._last_veto_direction = "buy"
 
-        should_skip, reason = daemon._should_skip_review_after_veto("buy")
+        should_skip, reason = daemon.ai_service.should_skip_review_after_veto("buy")
 
         assert should_skip is False
         # Cooldown state should be reset
-        assert daemon._last_veto_timestamp is None
-        assert daemon._last_veto_direction is None
+        assert daemon.ai_service._last_veto_timestamp is None
+        assert daemon.ai_service._last_veto_direction is None
 
     def test_skip_review_disabled_by_config(self, daemon_with_cooldown):
         """Should NOT skip if cooldown is disabled in settings."""
         from datetime import datetime, timezone
 
         daemon = daemon_with_cooldown
-        daemon.settings.ai_review_rejection_cooldown = False
+        daemon.ai_service.config.ai_review_rejection_cooldown = False
 
         # Record a veto
-        daemon._last_veto_timestamp = datetime.now(timezone.utc)
-        daemon._last_veto_direction = "buy"
+        daemon.ai_service._last_veto_timestamp = datetime.now(timezone.utc)
+        daemon.ai_service._last_veto_direction = "buy"
 
         # With cooldown disabled, should not skip
-        should_skip, reason = daemon._should_skip_review_after_veto("buy")
+        should_skip, reason = daemon.ai_service.should_skip_review_after_veto("buy")
 
         assert should_skip is False
         assert reason is None
@@ -4060,10 +4063,10 @@ class TestVetoCooldown:
             "close": [50000.0]
         })
 
-        daemon._record_veto_timestamp(candles)
+        daemon.ai_service.record_veto(candles, "buy")
 
         # Should match candle time, not current wall-clock time
-        assert daemon._last_veto_timestamp == candle_time
+        assert daemon.ai_service._last_veto_timestamp == candle_time
 
     def test_trade_blocked_during_veto_cooldown(self, daemon_with_cooldown):
         """
@@ -4084,15 +4087,15 @@ class TestVetoCooldown:
 
         # Set up veto state - simulating a recent SKIP veto for a buy signal
         now = datetime.now(timezone.utc)
-        daemon._last_veto_timestamp = now
-        daemon._last_veto_direction = "buy"
+        daemon.ai_service._last_veto_timestamp = now
+        daemon.ai_service._last_veto_direction = "buy"
 
         # Create a mock for the position sizer's calculate_size method
         # If trade proceeds past veto cooldown, this would be called
         daemon.position_sizer.calculate_size = MagicMock()
 
         # Directly test the veto cooldown check returns skip=True
-        should_skip, reason = daemon._should_skip_review_after_veto("buy")
+        should_skip, reason = daemon.ai_service.should_skip_review_after_veto("buy")
 
         # Verify veto cooldown activates correctly
         assert should_skip is True
@@ -4131,13 +4134,13 @@ class TestSentimentFailureTracking:
     def test_counter_increments_on_exception(self, daemon_with_sentiment):
         """Test that failure counter increments when sentiment fetch raises exception."""
         # Verify initial state
-        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+        assert daemon_with_sentiment.ai_service._sentiment_fetch_failures == 0
 
         # Record a failure (increments counter)
-        daemon_with_sentiment._record_sentiment_failure()
+        daemon_with_sentiment.ai_service.record_sentiment_failure()
 
         # Counter should be at 1 (not at threshold yet)
-        assert daemon_with_sentiment._sentiment_fetch_failures == 1
+        assert daemon_with_sentiment.ai_service._sentiment_fetch_failures == 1
 
         # Verify no alert sent
         daemon_with_sentiment.notifier.notify_error.assert_not_called()
@@ -4145,11 +4148,11 @@ class TestSentimentFailureTracking:
     def test_counter_increments_on_none_return(self, daemon_with_sentiment):
         """Test that failure counter increments when sentiment fetch returns None."""
         # Record two failures
-        daemon_with_sentiment._record_sentiment_failure()
-        daemon_with_sentiment._record_sentiment_failure()
+        daemon_with_sentiment.ai_service.record_sentiment_failure()
+        daemon_with_sentiment.ai_service.record_sentiment_failure()
 
         # Counter should be at 2 (not at threshold yet)
-        assert daemon_with_sentiment._sentiment_fetch_failures == 2
+        assert daemon_with_sentiment.ai_service._sentiment_fetch_failures == 2
 
         # Verify no alert sent
         daemon_with_sentiment.notifier.notify_error.assert_not_called()
@@ -4157,14 +4160,14 @@ class TestSentimentFailureTracking:
     def test_counter_resets_on_success(self, daemon_with_sentiment):
         """Test that failure counter resets to 0 on successful fetch."""
         # Simulate previous failures
-        daemon_with_sentiment._sentiment_fetch_failures = 2
+        daemon_with_sentiment.ai_service._sentiment_fetch_failures = 2
 
         # Call the actual method to record success
-        daemon_with_sentiment._record_sentiment_success()
+        daemon_with_sentiment.ai_service.record_sentiment_success()
 
         # Verify counter reset and timestamp updated
-        assert daemon_with_sentiment._sentiment_fetch_failures == 0
-        assert daemon_with_sentiment._last_sentiment_fetch_success is not None
+        assert daemon_with_sentiment.ai_service._sentiment_fetch_failures == 0
+        assert daemon_with_sentiment.ai_service._last_sentiment_fetch_success is not None
 
     def test_alert_fires_once_at_threshold(self, daemon_with_sentiment):
         """Test that alert fires exactly once when threshold is reached."""
@@ -4172,7 +4175,7 @@ class TestSentimentFailureTracking:
 
         # Record failures up to threshold
         for _ in range(threshold):
-            daemon_with_sentiment._record_sentiment_failure()
+            daemon_with_sentiment.ai_service.record_sentiment_failure()
 
         # Alert should be sent once (when we hit the threshold)
         daemon_with_sentiment.notifier.notify_error.assert_called_once()
@@ -4189,7 +4192,7 @@ class TestSentimentFailureTracking:
 
         # Record failures past threshold
         for _ in range(threshold + 1):
-            daemon_with_sentiment._record_sentiment_failure()
+            daemon_with_sentiment.ai_service.record_sentiment_failure()
 
         # Alert should be called exactly once (at threshold), not again after
         assert daemon_with_sentiment.notifier.notify_error.call_count == 1
@@ -4199,11 +4202,11 @@ class TestSentimentFailureTracking:
         threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
 
         # Ensure no previous success
-        daemon_with_sentiment._last_sentiment_fetch_success = None
+        daemon_with_sentiment.ai_service._last_sentiment_fetch_success = None
 
         # Record failures up to threshold
         for _ in range(threshold):
-            daemon_with_sentiment._record_sentiment_failure()
+            daemon_with_sentiment.ai_service.record_sentiment_failure()
 
         # Verify alert message contains improved first-run message
         call_args = daemon_with_sentiment.notifier.notify_error.call_args
@@ -4215,11 +4218,11 @@ class TestSentimentFailureTracking:
         threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
 
         # Set previous success
-        daemon_with_sentiment._last_sentiment_fetch_success = datetime.now(timezone.utc)
+        daemon_with_sentiment.ai_service._last_sentiment_fetch_success = datetime.now(timezone.utc)
 
         # Record failures up to threshold
         for _ in range(threshold):
-            daemon_with_sentiment._record_sentiment_failure()
+            daemon_with_sentiment.ai_service.record_sentiment_failure()
 
         # Verify alert message contains time information
         call_args = daemon_with_sentiment.notifier.notify_error.call_args
@@ -4231,9 +4234,9 @@ class TestSentimentFailureTracking:
         threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
 
         # This should not raise an exception even if time calc fails
-        # The try-except in _record_sentiment_failure handles it
+        # The try-except in record_sentiment_failure handles it
         for _ in range(threshold):
-            daemon_with_sentiment._record_sentiment_failure()
+            daemon_with_sentiment.ai_service.record_sentiment_failure()
 
         # Alert should still be sent
         daemon_with_sentiment.notifier.notify_error.assert_called_once()
@@ -4243,10 +4246,10 @@ class TestSentimentFailureTracking:
         threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
 
         # Simulate alert state (at exactly threshold)
-        daemon_with_sentiment._sentiment_fetch_failures = threshold
+        daemon_with_sentiment.ai_service._sentiment_fetch_failures = threshold
 
         # Trigger recovery
-        daemon_with_sentiment._record_sentiment_success()
+        daemon_with_sentiment.ai_service.record_sentiment_success()
 
         # Verify recovery notification sent
         daemon_with_sentiment.notifier.notify_info.assert_called_once()
@@ -4255,17 +4258,17 @@ class TestSentimentFailureTracking:
         assert "Sentiment API Recovery" == call_args[0][1]
 
         # Verify counter was reset
-        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+        assert daemon_with_sentiment.ai_service._sentiment_fetch_failures == 0
 
     def test_recovery_notification_after_alert_plus_failures(self, daemon_with_sentiment):
         """Test recovery notification is sent when API recovers after threshold+N failures."""
         threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
 
         # Simulate alert state (threshold + 5 failures)
-        daemon_with_sentiment._sentiment_fetch_failures = threshold + 5
+        daemon_with_sentiment.ai_service._sentiment_fetch_failures = threshold + 5
 
         # Trigger recovery
-        daemon_with_sentiment._record_sentiment_success()
+        daemon_with_sentiment.ai_service.record_sentiment_success()
 
         # Verify recovery notification sent even with extra failures
         daemon_with_sentiment.notifier.notify_info.assert_called_once()
@@ -4273,37 +4276,37 @@ class TestSentimentFailureTracking:
         assert "recovered" in call_args[0][0].lower()
 
         # Verify counter was reset
-        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+        assert daemon_with_sentiment.ai_service._sentiment_fetch_failures == 0
 
     def test_no_recovery_notification_when_not_in_alert(self, daemon_with_sentiment):
         """Test recovery notification is NOT sent on normal success (not in alert state)."""
         threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
 
         # Simulate normal operation (below threshold)
-        daemon_with_sentiment._sentiment_fetch_failures = threshold - 1
+        daemon_with_sentiment.ai_service._sentiment_fetch_failures = threshold - 1
 
         # Trigger success
-        daemon_with_sentiment._record_sentiment_success()
+        daemon_with_sentiment.ai_service.record_sentiment_success()
 
         # Verify NO recovery notification sent
         daemon_with_sentiment.notifier.notify_info.assert_not_called()
 
         # Verify counter was still reset
-        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+        assert daemon_with_sentiment.ai_service._sentiment_fetch_failures == 0
 
     def test_no_recovery_notification_on_first_success(self, daemon_with_sentiment):
         """Test recovery notification is NOT sent when starting fresh (0 failures)."""
         # Initial state (no failures)
-        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+        assert daemon_with_sentiment.ai_service._sentiment_fetch_failures == 0
 
         # Trigger success
-        daemon_with_sentiment._record_sentiment_success()
+        daemon_with_sentiment.ai_service.record_sentiment_success()
 
         # Verify NO recovery notification sent
         daemon_with_sentiment.notifier.notify_info.assert_not_called()
 
         # Verify counter remains at 0
-        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+        assert daemon_with_sentiment.ai_service._sentiment_fetch_failures == 0
 
 
 # ============================================================================

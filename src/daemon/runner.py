@@ -106,6 +106,7 @@ from src.daemon.reporting_service import ReportingService, ReportingConfig
 from src.daemon.market_service import MarketService, MarketConfig
 from src.daemon.signal_service import SignalService, SignalConfig
 from src.daemon.position_service import PositionService, PositionConfig
+from src.daemon.ai_service import AIService, AIConfig
 
 logger = structlog.get_logger(__name__)
 
@@ -170,8 +171,7 @@ class TradingDaemon:
         self._last_ai_failure_notification: Optional[datetime] = None  # Cooldown for AI failure notifications
         self._last_interesting_hold_review: Optional[datetime] = None  # Cooldown for interesting_hold reviews
         self._last_interesting_hold_score: Optional[int] = None  # Track signal changes
-        self._last_veto_timestamp: Optional[datetime] = None  # Cooldown after AI veto rejection
-        self._last_veto_direction: Optional[str] = None  # Signal direction at veto ("buy"/"sell")
+        # Veto cooldown state now managed by AIService
 
         # Note: Multi-Timeframe state (HTF bias caching) is now managed by MarketService
 
@@ -183,15 +183,7 @@ class TradingDaemon:
         self._current_signal_id: Optional[int] = None
         # Signal history failures tracked in SignalService
 
-        # Sentiment fetch failure tracking
-        # Thread-safety note: Lock is needed because sentiment fetches occur in both
-        # _trading_iteration() and _check_hourly_analysis(). While the main loop is
-        # synchronous, these methods could theoretically access the counter at overlapping
-        # times if async operations or future refactoring creates concurrency. The lock
-        # ensures atomic counter updates and prevents race conditions during increment/reset.
-        self._sentiment_fetch_failures: int = 0  # Track consecutive sentiment fetch failures
-        self._last_sentiment_fetch_success: Optional[datetime] = None  # Last successful fetch time
-        self._sentiment_lock = Lock()  # Protect sentiment failure counter from race conditions
+        # Sentiment fetch failure tracking now managed by AIService
 
         # Create persistent event loop for async operations (avoids repeated asyncio.run())
         self._loop = asyncio.new_event_loop()
@@ -572,6 +564,19 @@ class TradingDaemon:
         )
         logger.info("position_service_initialized")
 
+        # Initialize AI service
+        ai_config = AIConfig(
+            candle_interval=settings.candle_interval,
+            ai_review_rejection_cooldown=settings.ai_review_rejection_cooldown,
+            ai_recommendation_ttl_minutes=settings.ai_recommendation_ttl_minutes,
+            sentiment_failure_alert_threshold=settings.sentiment_failure_alert_threshold,
+        )
+        self.ai_service = AIService(
+            config=ai_config,
+            notifier=self.notifier,
+        )
+        logger.info("ai_service_initialized")
+
         # Initialize reporting service
         hourly_analysis_enabled = settings.hourly_analysis_enabled and self.trade_reviewer is not None
         reporting_config = ReportingConfig(
@@ -590,8 +595,8 @@ class TradingDaemon:
             exchange_client=self.client,
             signal_scorer=self.signal_scorer,
             trade_reviewer=self.trade_reviewer,
-            on_sentiment_success=self._record_sentiment_success,
-            on_sentiment_failure=self._record_sentiment_failure,
+            on_sentiment_success=self.ai_service.record_sentiment_success,
+            on_sentiment_failure=self.ai_service.record_sentiment_failure,
             event_loop=self._loop,  # Share daemon's event loop
         )
         if hourly_analysis_enabled:
@@ -599,11 +604,7 @@ class TradingDaemon:
         else:
             logger.info("hourly_market_analysis_disabled")
 
-        # AI recommendation state (for threshold adjustments from interesting holds)
-        self._ai_recommendation: Optional[str] = None  # "accumulate", "reduce", "wait"
-        self._ai_recommendation_confidence: float = 0.0
-        self._ai_recommendation_time: Optional[datetime] = None
-        self._ai_recommendation_ttl_minutes: int = settings.ai_recommendation_ttl_minutes
+        # AI recommendation state now managed by AIService
 
         # Check postmortem requirements if enabled
         self._postmortem_available = False
@@ -743,44 +744,7 @@ class TradingDaemon:
                 f"Trading pair '{trading_pair}' is not valid on {self.exchange_name}: {e}"
             ) from e
 
-    def _get_ai_threshold_adjustment(self, action: str) -> int:
-        """
-        Calculate threshold adjustment based on active AI recommendation.
-
-        When the AI judge recommends "accumulate" or "reduce" on an interesting hold,
-        this temporarily adjusts the threshold to make trading easier.
-
-        Args:
-            action: "buy" or "sell"
-
-        Returns:
-            Negative value to lower threshold (easier to trade), 0 otherwise.
-            Decays linearly over TTL period.
-        """
-        if not self._ai_recommendation or not self._ai_recommendation_time:
-            return 0
-
-        # Check if recommendation has expired
-        elapsed = (datetime.now(timezone.utc) - self._ai_recommendation_time).total_seconds() / 60
-        if elapsed > self._ai_recommendation_ttl_minutes:
-            # Clear expired recommendation
-            self._ai_recommendation = None
-            self._ai_recommendation_time = None
-            return 0
-
-        # Calculate decay factor (1.0 at start, 0.0 at TTL)
-        decay = 1.0 - (elapsed / self._ai_recommendation_ttl_minutes)
-
-        # Base adjustment of 15 points, scaled by confidence and decay
-        base_adjustment = 15
-        adjustment = int(base_adjustment * self._ai_recommendation_confidence * decay)
-
-        if self._ai_recommendation == "accumulate" and action == "buy":
-            return -adjustment  # Lower buy threshold (easier to buy)
-        elif self._ai_recommendation == "reduce" and action == "sell":
-            return -adjustment  # Lower sell threshold (easier to sell)
-
-        return 0
+    # AI threshold adjustment moved to AIService.get_threshold_adjustment()
 
     def _handle_shutdown(self, signum: int, frame) -> None:
         """Handle shutdown signals."""
@@ -887,8 +851,14 @@ class TradingDaemon:
             # Update circuit breaker candle interval for adaptive flash crash detection
             self.circuit_breaker.set_candle_interval(new_settings.candle_interval)
 
-            # Update AI recommendation TTL
-            self._ai_recommendation_ttl_minutes = new_settings.ai_recommendation_ttl_minutes
+            # Update AI service config
+            ai_config = AIConfig(
+                candle_interval=new_settings.candle_interval,
+                ai_review_rejection_cooldown=new_settings.ai_review_rejection_cooldown,
+                ai_recommendation_ttl_minutes=new_settings.ai_recommendation_ttl_minutes,
+                sentiment_failure_alert_threshold=new_settings.sentiment_failure_alert_threshold,
+            )
+            self.ai_service.update_config(ai_config)
 
             # Invalidate HTF cache if MTF settings or indicator periods changed
             # Indicator periods affect trend calculation, so cache must be invalidated
@@ -944,99 +914,6 @@ class TradingDaemon:
             "extreme": self.settings.interval_extreme_volatility,
         }
         return interval_map.get(self._last_volatility, self.settings.check_interval_seconds)
-
-    def _get_candle_start(self, timestamp: datetime) -> datetime:
-        """
-        Get start of the candle period containing the given timestamp.
-
-        Args:
-            timestamp: Any datetime within a candle period
-
-        Returns:
-            datetime representing the start of that candle period
-        """
-        granularity_seconds = {
-            "ONE_MINUTE": 60,
-            "FIVE_MINUTE": 300,
-            "FIFTEEN_MINUTE": 900,
-            "THIRTY_MINUTE": 1800,
-            "ONE_HOUR": 3600,
-            "TWO_HOUR": 7200,
-            "SIX_HOUR": 21600,
-            "ONE_DAY": 86400,
-        }
-        seconds = granularity_seconds.get(self.settings.candle_interval, 3600)
-        ts = timestamp.timestamp()
-        candle_start_ts = (ts // seconds) * seconds
-        return datetime.fromtimestamp(candle_start_ts, tz=timezone.utc)
-
-    def _should_skip_review_after_veto(self, signal_action: str) -> tuple[bool, Optional[str]]:
-        """
-        Check if AI review should be skipped due to recent veto rejection.
-
-        After a SKIP or REDUCE veto, skip further reviews until:
-        - A new candle period begins, OR
-        - The signal direction changes (BUY -> SELL or vice versa)
-
-        Args:
-            signal_action: Current signal action ("buy" or "sell")
-
-        Returns:
-            Tuple of (should_skip, reason) where reason explains why if skipping
-        """
-        if not self.settings.ai_review_rejection_cooldown:
-            return False, None
-
-        if self._last_veto_timestamp is None:
-            return False, None
-
-        # Direction changed - allow review
-        if self._last_veto_direction != signal_action:
-            return False, None
-
-        # Check if we're in a new candle period
-        now = datetime.now(timezone.utc)
-        current_candle_start = self._get_candle_start(now)
-        veto_candle_start = self._get_candle_start(self._last_veto_timestamp)
-
-        if current_candle_start > veto_candle_start:
-            # New candle, reset cooldown state
-            self._last_veto_timestamp = None
-            self._last_veto_direction = None
-            return False, None
-
-        # Same candle, same direction - skip review
-        return True, f"veto_cooldown (same candle, direction={signal_action})"
-
-    def _record_veto_timestamp(self, candles: pd.DataFrame) -> None:
-        """
-        Record veto timestamp using candle's market time instead of wall-clock time.
-
-        This avoids edge cases at candle boundaries where wall-clock time might
-        advance to the next candle while processing the current one.
-
-        Args:
-            candles: DataFrame containing candle data with timestamp column
-        """
-        # Use candle timestamp (market time) instead of wall-clock time
-        # to avoid edge cases at candle boundaries
-        if not candles.empty:
-            candle_timestamp = candles.iloc[-1]["timestamp"]
-            # Normalize pd.Timestamp to datetime for consistent handling
-            if isinstance(candle_timestamp, pd.Timestamp):
-                candle_timestamp = candle_timestamp.to_pydatetime()
-            elif not isinstance(candle_timestamp, datetime):
-                # Type safety check for financial system
-                logger.warning(
-                    "candle_timestamp_type_mismatch",
-                    type=type(candle_timestamp).__name__,
-                    message="Expected datetime, falling back to current time"
-                )
-                candle_timestamp = datetime.now(timezone.utc)
-        else:
-            candle_timestamp = datetime.now(timezone.utc)
-
-        self._last_veto_timestamp = candle_timestamp
 
     # Signal history storage and trade marking moved to SignalService
 
@@ -1441,7 +1318,7 @@ class TradingDaemon:
                         value=sentiment.value,
                     )
                     # Record success and handle recovery notification
-                    self._record_sentiment_success()
+                    self.ai_service.record_sentiment_success()
                 else:
                     logger.warning(
                         "sentiment_unavailable_for_trade_evaluation",
@@ -1449,7 +1326,7 @@ class TradingDaemon:
                         impact="extreme_fear_override_disabled",
                     )
                     # Record failure atomically (increments counter and checks threshold)
-                    self._record_sentiment_failure(context="trading")
+                    self.ai_service.record_sentiment_failure(context="trading")
             except Exception as e:
                 logger.warning(
                     "sentiment_fetch_failed_during_trade_evaluation",
@@ -1457,7 +1334,7 @@ class TradingDaemon:
                     impact="extreme_fear_override_disabled",
                 )
                 # Record failure atomically (increments counter and checks threshold)
-                self._record_sentiment_failure(context="trading")
+                self.ai_service.record_sentiment_failure(context="trading")
 
         # Calculate signal with HTF context and sentiment
         signal_result = self.signal_scorer.calculate_score(
@@ -1725,8 +1602,8 @@ class TradingDaemon:
         #
         # See: src/strategy/regime.py for calculation logic
         base_threshold = self.settings.signal_threshold + regime.threshold_adjustment
-        ai_buy_adj = self._get_ai_threshold_adjustment("buy")
-        ai_sell_adj = self._get_ai_threshold_adjustment("sell")
+        ai_buy_adj = self.ai_service.get_threshold_adjustment("buy")
+        ai_sell_adj = self.ai_service.get_threshold_adjustment("sell")
 
         effective_buy_threshold = base_threshold + ai_buy_adj
         effective_sell_threshold = base_threshold + ai_sell_adj
@@ -1743,17 +1620,17 @@ class TradingDaemon:
 
         # Log when AI adjustment is active
         if ai_buy_adj != 0 or ai_sell_adj != 0:
-            elapsed = (datetime.now(timezone.utc) - self._ai_recommendation_time).total_seconds() / 60
-            decay_pct = (1.0 - elapsed / self._ai_recommendation_ttl_minutes) * 100
-            logger.info(
-                "ai_threshold_adjustment_active",
-                recommendation=self._ai_recommendation,
-                buy_adj=ai_buy_adj,
-                sell_adj=ai_sell_adj,
-                decay_remaining=f"{decay_pct:.0f}%",
-                effective_buy_threshold=effective_buy_threshold,
-                effective_sell_threshold=effective_sell_threshold,
-            )
+            rec_info = self.ai_service.get_recommendation_info()
+            if rec_info:
+                logger.info(
+                    "ai_threshold_adjustment_active",
+                    recommendation=rec_info["recommendation"],
+                    buy_adj=ai_buy_adj,
+                    sell_adj=ai_sell_adj,
+                    decay_remaining=f"{rec_info['decay_percent']:.0f}%",
+                    effective_buy_threshold=effective_buy_threshold,
+                    effective_sell_threshold=effective_sell_threshold,
+                )
 
         logger.info(
             "trading_check",
@@ -1919,7 +1796,7 @@ class TradingDaemon:
                 # Veto cooldown: skip trade entirely if recently rejected for same direction
                 # The AI already vetoed this signal - don't retry until next candle
                 if should_review and review_type == "trade":
-                    skip_veto, veto_reason = self._should_skip_review_after_veto(
+                    skip_veto, veto_reason = self.ai_service.should_skip_review_after_veto(
                         signal_result.action
                     )
                     if skip_veto:
@@ -2024,8 +1901,7 @@ class TradingDaemon:
                             if review.final_veto_action == VetoAction.SKIP.value:
                                 logger.info("trade_vetoed", reason=review.judge_reasoning)
                                 # Record veto for cooldown (skip reviews until next candle)
-                                self._record_veto_timestamp(candles)
-                                self._last_veto_direction = signal_result.action
+                                self.ai_service.record_veto(candles, signal_result.action)
                                 return  # Skip this iteration
                             elif review.final_veto_action == VetoAction.REDUCE.value:
                                 claude_veto_multiplier = self.settings.position_reduction
@@ -2034,21 +1910,15 @@ class TradingDaemon:
                                     multiplier=f"{claude_veto_multiplier:.2f}",
                                 )
                                 # Record veto for cooldown (skip reviews until next candle)
-                                self._record_veto_timestamp(candles)
-                                self._last_veto_direction = signal_result.action
+                                self.ai_service.record_veto(candles, signal_result.action)
                             # Tiered system: skip or reduce only (no delay)
 
                         # For interesting holds, store recommendation for threshold adjustment
                         if review_type == "interesting_hold":
                             if review.judge_recommendation in ("accumulate", "reduce"):
-                                self._ai_recommendation = review.judge_recommendation
-                                self._ai_recommendation_confidence = review.judge_confidence
-                                self._ai_recommendation_time = datetime.now(timezone.utc)
-                                logger.info(
-                                    "ai_recommendation_stored",
-                                    recommendation=review.judge_recommendation,
-                                    confidence=f"{review.judge_confidence:.2f}",
-                                    ttl_minutes=self._ai_recommendation_ttl_minutes,
+                                self.ai_service.set_recommendation(
+                                    review.judge_recommendation,
+                                    review.judge_confidence,
                                 )
                             # Update cooldown tracking for interesting_hold
                             self._last_interesting_hold_review = datetime.now(timezone.utc)
@@ -3173,103 +3043,7 @@ class TradingDaemon:
             logger.warning("cramer_portfolio_fetch_error", error=str(e))
             return None
 
-    def _record_sentiment_failure(self, context: str = "unknown") -> None:
-        """Atomically record sentiment fetch failure and alert if threshold is exceeded.
-
-        This method:
-        1. Increments the failure counter
-        2. Checks if the threshold is exceeded
-        3. Alerts if this is the first time we cross the threshold
-
-        Args:
-            context: The context where failure occurred ("trading" or "dashboard")
-
-        Thread-safe: All counter operations are atomic under lock.
-        """
-        threshold = self.settings.sentiment_failure_alert_threshold
-
-        # Atomically increment and check threshold under lock
-        with self._sentiment_lock:
-            self._sentiment_fetch_failures += 1
-            failures_count = self._sentiment_fetch_failures
-
-            # Only alert when we first cross the threshold
-            if failures_count != threshold:
-                # Log for troubleshooting when already past threshold
-                if failures_count > threshold:
-                    logger.debug(
-                        "sentiment_fetch_failures_above_threshold",
-                        consecutive_failures=failures_count,
-                        threshold=threshold,
-                        context=context,
-                    )
-                return
-
-            # Read last success timestamp under lock
-            last_success_timestamp = self._last_sentiment_fetch_success
-
-        # Calculate time since last success outside lock (only read operation needs protection)
-        try:
-            if last_success_timestamp is None:
-                time_since_success = "none (check API connectivity)"
-            else:
-                minutes_ago = (datetime.now(timezone.utc) - last_success_timestamp).total_seconds() / 60
-                if minutes_ago < 0:
-                    # Timestamp is in the future - clock skew detected
-                    time_since_success = "unknown (clock skew detected)"
-                elif minutes_ago < 1:
-                    time_since_success = "just now (< 1 minute ago)"
-                else:
-                    time_since_success = f"{minutes_ago:.0f} minutes ago"
-        except Exception:
-            # If time calculation fails (e.g., system clock issues), use fallback
-            time_since_success = "unknown"
-
-        # Perform logging and notifications outside the lock to minimize lock hold time
-        logger.error(
-            "sentiment_fetch_failure_threshold_exceeded",
-            consecutive_failures=failures_count,
-            threshold=threshold,
-            last_success=time_since_success,
-            impact="extreme_fear_override_disabled",
-            context=context,
-        )
-
-        self.notifier.notify_error(
-            f"Sentiment API failing: {failures_count} consecutive failures. "
-            f"Last success: {time_since_success}. "
-            f"Extreme fear override is disabled until sentiment API recovers.",
-            "Sentiment Fetch Failure Alert"
-        )
-
-    def _record_sentiment_success(self) -> None:
-        """Record successful sentiment fetch and notify recovery if needed.
-
-        This method:
-        1. Checks if we were previously in an alert state
-        2. Resets the failure counter
-        3. Updates the last success timestamp
-        4. Notifies recovery if we were previously failing
-
-        NOTE: This is called from both _trading_iteration() and _check_hourly_analysis().
-        Both code paths share the same failure counter, so "consecutive failures" means
-        consecutive attempts across all contexts (trading + dashboard), not per-context.
-        This is intentional - we want to know about API health globally.
-        """
-        threshold = self.settings.sentiment_failure_alert_threshold
-
-        # Atomically check and reset state under lock
-        with self._sentiment_lock:
-            was_in_alert_state = self._sentiment_fetch_failures >= threshold
-            self._sentiment_fetch_failures = 0
-            self._last_sentiment_fetch_success = datetime.now(timezone.utc)
-
-        # Notify recovery if we were previously failing (outside lock to minimize hold time)
-        if was_in_alert_state:
-            self.notifier.notify_info(
-                "Sentiment API has recovered. Extreme fear override is now active.",
-                "Sentiment API Recovery"
-            )
+    # Sentiment tracking methods moved to AIService
 
     def _create_trailing_stop(
         self,
