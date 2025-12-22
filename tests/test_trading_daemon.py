@@ -572,7 +572,7 @@ def test_get_portfolio_value_includes_base_and_quote(mock_settings, mock_exchang
             with patch('src.daemon.runner.TelegramNotifier'):
                 daemon = TradingDaemon(mock_settings)
 
-                portfolio_value = daemon._get_portfolio_value()
+                portfolio_value = daemon.position_service.get_portfolio_value()
 
                 # 1 BTC * 50000 + 10000 USD = 60000 USD
                 assert portfolio_value == Decimal("60000")
