@@ -13,7 +13,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Callable, Optional, TYPE_CHECKING
+from typing import Any, Callable, Coroutine, Optional, TYPE_CHECKING, TypeVar
 
 import structlog
 
@@ -30,6 +30,9 @@ logger = structlog.get_logger(__name__)
 
 # Default timeout for async operations (AI reviews, sentiment fetch)
 ASYNC_TIMEOUT_SECONDS = 120
+
+# Type variable for generic async return type
+T = TypeVar("T")
 
 
 @dataclass
@@ -124,7 +127,24 @@ class ReportingService:
             except Exception as e:
                 logger.debug("reporting_service_loop_close_failed", error=str(e))
 
-    def _run_async_with_timeout(self, coro, timeout: int = ASYNC_TIMEOUT_SECONDS, default=None):
+    def update_config(self, config: ReportingConfig) -> None:
+        """
+        Update the reporting configuration.
+
+        Used for hot-reload of settings.
+
+        Args:
+            config: New reporting configuration
+        """
+        self.config = config
+        logger.info("reporting_service_config_updated")
+
+    def _run_async_with_timeout(
+        self,
+        coro: Coroutine[Any, Any, T],
+        timeout: int = ASYNC_TIMEOUT_SECONDS,
+        default: Optional[T] = None,
+    ) -> Optional[T]:
         """
         Run an async coroutine with timeout protection.
 
@@ -138,7 +158,7 @@ class ReportingService:
         Returns:
             Coroutine result or default value on timeout
         """
-        async def _with_timeout():
+        async def _with_timeout() -> Optional[T]:
             task = asyncio.create_task(coro)
             try:
                 return await asyncio.wait_for(task, timeout=timeout)
