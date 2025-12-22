@@ -140,6 +140,10 @@ def mock_settings():
     settings.kill_switch_enabled = True
     settings.loss_limiter_enabled = True
     settings.trade_cooldown_enabled = False
+    settings.buy_cooldown_minutes = 240  # 4 hours
+    settings.sell_cooldown_minutes = 60
+    settings.buy_price_change_percent = 0.5
+    settings.sell_price_change_percent = 0.5
     settings.block_trades_extreme_conditions = True
     settings.enable_cramer_mode = False  # Cramer Mode disabled by default
 
@@ -3742,15 +3746,19 @@ def test_cramer_mode_initializes_in_paper_trading(mock_settings):
         with patch('src.daemon.runner.Database', return_value=mock_database):
             with patch('src.daemon.runner.TelegramNotifier'):
                 with patch('src.daemon.runner.PaperTradingClient') as mock_paper_client:
-                    daemon = TradingDaemon(mock_settings)
+                    with patch('src.daemon.cramer_service.PaperTradingClient') as mock_cramer_paper_client:
+                        daemon = TradingDaemon(mock_settings)
 
-                    # PaperTradingClient should be called twice:
-                    # Once for normal bot, once for Cramer Mode
-                    assert mock_paper_client.call_count == 2, \
-                        "Should create two PaperTradingClient instances (normal + Cramer)"
+                        # PaperTradingClient should be called once for normal bot
+                        assert mock_paper_client.call_count == 1, \
+                            "Should create one PaperTradingClient for normal bot"
 
-                    assert daemon.cramer_client is not None, \
-                        "Cramer client should be initialized"
+                        # CramerService creates its own PaperTradingClient
+                        assert mock_cramer_paper_client.call_count == 1, \
+                            "Should create one PaperTradingClient for Cramer Mode"
+
+                        assert daemon.cramer_service.is_enabled, \
+                            "Cramer service should be enabled"
 
 
 def test_cramer_mode_trailing_stop_uses_inverted_bot_mode(mock_settings):
@@ -3770,17 +3778,18 @@ def test_cramer_mode_trailing_stop_uses_inverted_bot_mode(mock_settings):
         with patch('src.daemon.runner.Database', return_value=mock_database):
             with patch('src.daemon.runner.TelegramNotifier'):
                 with patch('src.daemon.runner.PaperTradingClient'):
-                    daemon = TradingDaemon(mock_settings)
+                    with patch('src.daemon.cramer_service.PaperTradingClient'):
+                        daemon = TradingDaemon(mock_settings)
 
-                    # Check trailing stop for Cramer Mode
-                    result = daemon._check_trailing_stop(Decimal("50000"), bot_mode="inverted")
+                        # Check trailing stop for Cramer Mode
+                        result = daemon._check_trailing_stop(Decimal("50000"), bot_mode="inverted")
 
-                    # Verify database was called with correct bot_mode
-                    mock_database.get_active_trailing_stop.assert_called_with(
-                        symbol=mock_settings.trading_pair,
-                        is_paper=True,
-                        bot_mode="inverted",
-                    )
+                        # Verify database was called with correct bot_mode
+                        mock_database.get_active_trailing_stop.assert_called_with(
+                            symbol=mock_settings.trading_pair,
+                            is_paper=True,
+                            bot_mode="inverted",
+                        )
 
 
 def test_cramer_mode_balance_restoration_from_database(mock_settings):
@@ -3803,18 +3812,21 @@ def test_cramer_mode_balance_restoration_from_database(mock_settings):
         with patch('src.daemon.runner.Database', return_value=mock_database):
             with patch('src.daemon.runner.TelegramNotifier'):
                 with patch('src.daemon.runner.PaperTradingClient') as mock_paper_client:
-                    TradingDaemon(mock_settings)
+                    with patch('src.daemon.cramer_service.PaperTradingClient') as mock_cramer_paper_client:
+                        TradingDaemon(mock_settings)
 
-                    # Second call should use restored Cramer Mode balance
-                    calls = mock_paper_client.call_args_list
-                    assert len(calls) == 2, "Should create two PaperTradingClient instances"
+                        # Normal bot should create one PaperTradingClient
+                        assert mock_paper_client.call_count == 1, "Normal bot should create PaperTradingClient"
 
-                    # Cramer Mode should be initialized with restored balance
-                    cramer_call = calls[1]
-                    assert cramer_call.kwargs['initial_quote'] == 8000.0, \
-                        "Cramer Mode should use restored quote balance"
-                    assert cramer_call.kwargs['initial_base'] == 0.5, \
-                        "Cramer Mode should use restored base balance"
+                        # CramerService should create its own PaperTradingClient
+                        assert mock_cramer_paper_client.call_count == 1, "CramerService should create PaperTradingClient"
+
+                        # Cramer Mode should be initialized with restored balance
+                        cramer_call = mock_cramer_paper_client.call_args
+                        assert cramer_call.kwargs['initial_quote'] == 8000.0, \
+                            "Cramer Mode should use restored quote balance"
+                        assert cramer_call.kwargs['initial_base'] == 0.5, \
+                            "Cramer Mode should use restored base balance"
 
 
 def test_cramer_mode_copies_normal_balance_on_first_enable(mock_settings):
@@ -3839,14 +3851,17 @@ def test_cramer_mode_copies_normal_balance_on_first_enable(mock_settings):
         with patch('src.daemon.runner.Database', return_value=mock_database):
             with patch('src.daemon.runner.TelegramNotifier'):
                 with patch('src.daemon.runner.PaperTradingClient') as mock_paper_client:
-                    # First instance is normal client, set it up to return balances
-                    mock_paper_client.return_value = mock_normal_client
+                    with patch('src.daemon.cramer_service.PaperTradingClient') as mock_cramer_paper_client:
+                        # First instance is normal client, set it up to return balances
+                        mock_paper_client.return_value = mock_normal_client
 
-                    TradingDaemon(mock_settings)
+                        TradingDaemon(mock_settings)
 
-                    # Second call (Cramer Mode) should copy from normal bot's balance
-                    calls = mock_paper_client.call_args_list
-                    assert len(calls) == 2, "Should create two PaperTradingClient instances"
+                        # Normal bot should create one PaperTradingClient
+                        assert mock_paper_client.call_count == 1, "Normal bot should create PaperTradingClient"
+
+                        # CramerService should create its own PaperTradingClient
+                        assert mock_cramer_paper_client.call_count == 1, "CramerService should create PaperTradingClient"
 
 
 def test_cramer_mode_warns_when_normal_has_position(mock_settings):

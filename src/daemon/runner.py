@@ -107,6 +107,7 @@ from src.daemon.market_service import MarketService, MarketConfig
 from src.daemon.signal_service import SignalService, SignalConfig
 from src.daemon.position_service import PositionService, PositionConfig
 from src.daemon.ai_service import AIService, AIConfig
+from src.daemon.cramer_service import CramerService, CramerConfig
 
 logger = structlog.get_logger(__name__)
 
@@ -142,8 +143,7 @@ class TradingDaemon:
         self.settings = settings
         self.shutdown_event = Event()
         self._running = False
-        self._cramer_mode_disabled = False  # Disables Cramer Mode for session on balance mismatch
-        self.cramer_trade_cooldown: Optional[TradeCooldown] = None  # Independent cooldown for Cramer Mode
+        # Cramer Mode state now managed by CramerService
 
         # Check for deprecated AI_FAILURE_MODE setting
         import os
@@ -237,64 +237,9 @@ class TradingDaemon:
                 trading_pair=settings.trading_pair,
             )
             logger.info("using_paper_trading_client")
-
-            # Initialize Cramer Mode client if enabled
-            self.cramer_client: Optional[PaperTradingClient] = None
-            if settings.enable_cramer_mode:
-                # Try to restore Cramer Mode balance from database
-                cramer_balance = self.db.get_last_paper_balance(settings.trading_pair, bot_mode=BotMode.INVERTED)
-                if cramer_balance:
-                    cramer_quote, cramer_base, _ = cramer_balance
-                    logger.info(
-                        "cramer_balance_restored_from_db",
-                        quote=str(cramer_quote),
-                        base=str(cramer_base),
-                    )
-                else:
-                    # First-time enable: use normal bot's CURRENT state
-                    cramer_quote = self.client.get_balance(self._quote_currency).available
-                    cramer_base = self.client.get_balance(self._base_currency).available
-                    logger.info(
-                        "cramer_balance_copied_from_normal",
-                        quote=str(cramer_quote),
-                        base=str(cramer_base),
-                    )
-
-                    # Warn if normal bot has open position (unfair comparison)
-                    normal_position = self.db.get_current_position(
-                        settings.trading_pair, is_paper=True, bot_mode=BotMode.NORMAL
-                    )
-                    if normal_position and normal_position.get_quantity() > Decimal("0"):
-                        logger.warning(
-                            "cramer_mode_starting_without_position",
-                            msg="Normal bot has open position but Cramer Mode starts fresh. Consider disabling until position is closed for fair comparison.",
-                            normal_position_size=str(normal_position.get_quantity()),
-                        )
-
-                self.cramer_client = PaperTradingClient(
-                    real_client=self.real_client,
-                    initial_quote=float(cramer_quote),
-                    initial_base=float(cramer_base),
-                    trading_pair=settings.trading_pair,
-                )
-                # Initialize independent cooldown for Cramer Mode (uses same config as normal bot)
-                if settings.trade_cooldown_enabled:
-                    self.cramer_trade_cooldown = TradeCooldown(
-                        config=TradeCooldownConfig(
-                            buy_cooldown_minutes=settings.buy_cooldown_minutes,
-                            sell_cooldown_minutes=settings.sell_cooldown_minutes,
-                            buy_price_change_percent=settings.buy_price_change_percent,
-                            sell_price_change_percent=settings.sell_price_change_percent,
-                        ),
-                        db=self.db,
-                        is_paper=True,  # Cramer Mode is always paper trading
-                        symbol=settings.trading_pair,
-                        bot_mode="inverted",  # Track separately from normal bot
-                    )
-                logger.info("cramer_mode_enabled", mode="inverted")
+            # Cramer Mode initialized later via CramerService (after position_service)
         else:
             self.client = self.real_client
-            self.cramer_client = None
             logger.info("using_live_trading_client")
 
         # Initialize Telegram notifier
@@ -576,6 +521,45 @@ class TradingDaemon:
             notifier=self.notifier,
         )
         logger.info("ai_service_initialized")
+
+        # Initialize Cramer Mode service (inverse trading for comparison)
+        cramer_config = CramerConfig(
+            trading_pair=settings.trading_pair,
+            base_currency=self._base_currency,
+            quote_currency=self._quote_currency,
+            enable_cramer_mode=settings.enable_cramer_mode,
+            min_trade_quote=Decimal(str(settings.min_trade_quote)),
+            min_trade_base=Decimal(str(settings.min_trade_base)),
+            enable_take_profit=settings.enable_take_profit,
+            enable_cooldown=settings.trade_cooldown_enabled,
+            cooldown_period_hours=settings.buy_cooldown_minutes / 60,  # Convert to hours
+            cooldown_min_price_move=settings.buy_price_change_percent,
+        )
+        self.cramer_service = CramerService(
+            config=cramer_config,
+            db=self.db,
+            position_sizer=self.position_sizer,
+            position_service=self.position_service,
+            real_client=self.real_client,
+            create_trailing_stop_callback=self._create_trailing_stop,
+        )
+
+        # Initialize Cramer Mode if enabled (paper trading only)
+        if settings.enable_cramer_mode and settings.is_paper_trading:
+            # Get initial balance from normal bot for first-time setup
+            normal_quote = self.client.get_balance(self._quote_currency).available
+            normal_base = self.client.get_balance(self._base_currency).available
+            normal_position = self.db.get_current_position(
+                settings.trading_pair, is_paper=True, bot_mode=BotMode.NORMAL
+            )
+            normal_has_position = normal_position and normal_position.get_quantity() > Decimal("0")
+
+            self.cramer_service.initialize(
+                initial_quote=normal_quote,
+                initial_base=normal_base,
+                normal_has_position=normal_has_position,
+            )
+        logger.info("cramer_service_initialized", enabled=settings.enable_cramer_mode)
 
         # Initialize reporting service
         hourly_analysis_enabled = settings.hourly_analysis_enabled and self.trade_reviewer is not None
@@ -1009,18 +993,7 @@ class TradingDaemon:
             )
 
             # Initialize Cramer Mode daily stats if enabled
-            if self.cramer_client and self.settings.enable_cramer_mode:
-                cramer_portfolio_value = self._get_cramer_portfolio_value()
-                self.db.update_daily_stats(
-                    starting_balance=cramer_portfolio_value,
-                    starting_price=starting_price,
-                    is_paper=True,  # Cramer Mode is paper-only
-                    bot_mode=BotMode.INVERTED,
-                )
-                logger.info(
-                    "cramer_daily_stats_initialized",
-                    starting_balance=str(cramer_portfolio_value),
-                )
+            self.cramer_service.initialize_daily_stats()
 
             # Send startup notification
             mode = "PAPER" if self.settings.is_paper_trading else "LIVE"
@@ -1200,8 +1173,8 @@ class TradingDaemon:
         self.validator.update_balances(base_balance, quote_balance, current_price)
 
         # Log warning if both bots have positions simultaneously (for visibility)
-        if self.cramer_client and not self._cramer_mode_disabled:
-            cramer_base = self.cramer_client.get_balance(self._base_currency).available
+        if self.cramer_service.is_enabled:
+            cramer_base = self.cramer_service.get_base_balance()
             if base_balance > Decimal("0") and cramer_base > Decimal("0"):
                 normal_value = base_balance * current_price
                 cramer_value = cramer_base * current_price
@@ -1225,9 +1198,9 @@ class TradingDaemon:
         cramer_trailing_action = None
         cramer_base_balance = Decimal("0")
 
-        if self.cramer_client and not self._cramer_mode_disabled:
+        if self.cramer_service.is_enabled:
             # Get balance BEFORE stop check to ensure consistency
-            cramer_base_balance = self.cramer_client.get_balance(self._base_currency).available
+            cramer_base_balance = self.cramer_service.get_base_balance()
             cramer_trailing_action = self._check_trailing_stop(current_price, bot_mode=BotMode.INVERTED)
 
         # Execute Cramer Mode trailing stop FIRST (before normal bot's early return)
@@ -1236,12 +1209,12 @@ class TradingDaemon:
         # 2. If we executed normal first, Cramer's stop would never run
         # 3. Both bots have INDEPENDENT risk management - not mirrored entries
         # 4. This ensures fair comparison: both bots can exit via their own stops
-        if self.cramer_client and not self._cramer_mode_disabled and cramer_trailing_action == "sell" and cramer_base_balance > Decimal("0"):
+        if self.cramer_service.is_enabled and cramer_trailing_action == "sell" and cramer_base_balance > Decimal("0"):
             logger.info(
                 "cramer_trailing_stop_triggered",
                 base_balance=str(cramer_base_balance),
             )
-            self._execute_cramer_trailing_stop_sell(
+            self.cramer_service.execute_trailing_stop_sell(
                 candles=candles,
                 current_price=current_price,
                 base_balance=cramer_base_balance,
@@ -1684,7 +1657,7 @@ class TradingDaemon:
                 "portfolio_value": str(portfolio_value),
                 "position_percent": position_percent,
             },
-            "cramer_portfolio": self._get_cramer_portfolio_info(current_price) if self.cramer_client else None,
+            "cramer_portfolio": self.cramer_service.get_portfolio_info(current_price),
             "regime": regime.regime_name,
             "weight_profile": {
                 "name": self._last_weight_profile,
@@ -1731,26 +1704,7 @@ class TradingDaemon:
 
             # Check if Cramer Mode can trade the INVERSE direction
             # Cramer buys when signal says sell, and vice versa
-            cramer_can_trade = False
-            if self.cramer_client and not self._cramer_mode_disabled:
-                try:
-                    cramer_quote_balance = self.cramer_client.get_balance(self._quote_currency)
-                    cramer_base_balance = self.cramer_client.get_balance(self._base_currency)
-                    if cramer_quote_balance and cramer_base_balance:
-                        cramer_quote = cramer_quote_balance.available
-                        cramer_base = cramer_base_balance.available
-                        min_quote = Decimal(str(self.position_sizer.config.min_trade_quote))
-                        min_base = Decimal(str(self.position_sizer.config.min_trade_base))
-                        cramer_can_buy = cramer_quote > min_quote
-                        cramer_can_sell = cramer_base > min_base
-                        # Cramer trades INVERSE: signal=sell means Cramer buys, signal=buy means Cramer sells
-                        cramer_can_trade = (
-                            (signal_direction == "sell" and cramer_can_buy) or
-                            (signal_direction == "buy" and cramer_can_sell)
-                        )
-                except Exception as e:
-                    logger.warning("cramer_balance_check_failed", error=str(e))
-                    cramer_can_trade = False
+            cramer_can_trade = self.cramer_service.can_trade(signal_direction) if signal_direction else False
 
             direction_is_tradeable = (
                 normal_can_trade or
@@ -1761,9 +1715,9 @@ class TradingDaemon:
             if not direction_is_tradeable:
                 # Neither normal nor Cramer can trade this direction
                 if signal_direction == "sell":
-                    reason = "no_position_either_bot" if self.cramer_client else "no_position"
+                    reason = "no_position_either_bot" if self.cramer_service.is_enabled else "no_position"
                 else:
-                    reason = "fully_allocated_both_bots" if self.cramer_client else "fully_allocated"
+                    reason = "fully_allocated_both_bots" if self.cramer_service.is_enabled else "fully_allocated"
                 logger.info(
                     "ai_review_skipped",
                     signal_direction=signal_direction,
@@ -2082,14 +2036,14 @@ class TradingDaemon:
                     volatility=signal_result.indicators.volatility or "normal",
                 )
                 # Execute opposite trade for Cramer Mode (if enabled)
-                if self.cramer_client:
-                    self._execute_cramer_trade(
-                        side="sell",  # Opposite of buy
-                        candles=candles,
-                        current_price=current_price,
-                        signal_score=signal_result.score,
-                        safety_multiplier=safety_multiplier,
-                    )
+                self.cramer_service.execute_trade(
+                    side="sell",  # Opposite of buy
+                    candles=candles,
+                    current_price=current_price,
+                    signal_score=signal_result.score,
+                    safety_multiplier=safety_multiplier,
+                    volatility=self._last_volatility,
+                )
             # Handle cases where normal bot skips
             if not can_buy or normal_bot_blocked_by_cooldown:
                 if not can_buy:
@@ -2099,13 +2053,14 @@ class TradingDaemon:
                         reason=f"insufficient_balance_or_position_limit (quote={quote_balance}, position={position_percent:.1f}%)",
                         signal_score=signal_result.score,
                     )
-                # Cramer Mode may trade independently (see _maybe_execute_cramer_independent docstring)
-                self._maybe_execute_cramer_independent(
+                # Cramer Mode may trade independently
+                self.cramer_service.maybe_execute_independent(
                     signal_side="buy",
                     candles=candles,
                     current_price=current_price,
                     signal_score=signal_result.score,
                     safety_multiplier=safety_multiplier,
+                    volatility=self._last_volatility,
                 )
 
         elif effective_action == "sell":
@@ -2144,14 +2099,14 @@ class TradingDaemon:
                     signal_result.score, safety_multiplier
                 )
                 # Execute opposite trade for Cramer Mode (if enabled)
-                if self.cramer_client:
-                    self._execute_cramer_trade(
-                        side="buy",  # Opposite of sell
-                        candles=candles,
-                        current_price=current_price,
-                        signal_score=signal_result.score,
-                        safety_multiplier=safety_multiplier,
-                    )
+                self.cramer_service.execute_trade(
+                    side="buy",  # Opposite of sell
+                    candles=candles,
+                    current_price=current_price,
+                    signal_score=signal_result.score,
+                    safety_multiplier=safety_multiplier,
+                    volatility=self._last_volatility,
+                )
 
             # Handle cases where normal bot skips
             if not can_sell or normal_bot_blocked_by_cooldown:
@@ -2162,13 +2117,14 @@ class TradingDaemon:
                         reason=f"insufficient_base_balance ({base_balance})",
                         signal_score=signal_result.score,
                     )
-                # Cramer Mode may trade independently (see _maybe_execute_cramer_independent docstring)
-                self._maybe_execute_cramer_independent(
+                # Cramer Mode may trade independently
+                self.cramer_service.maybe_execute_independent(
                     signal_side="sell",
                     candles=candles,
                     current_price=current_price,
                     signal_score=signal_result.score,
                     safety_multiplier=safety_multiplier,
+                    volatility=self._last_volatility,
                 )
 
     def _execute_buy(
@@ -2606,444 +2562,7 @@ class TradingDaemon:
             self.circuit_breaker.record_order_failure()
             self.notifier.notify_order_failed("sell", size_base, result.error or "Unknown error")
 
-    def _maybe_execute_cramer_independent(
-        self,
-        signal_side: str,
-        candles,
-        current_price: Decimal,
-        signal_score: int,
-        safety_multiplier: float,
-    ) -> None:
-        """
-        Execute Cramer Mode trade (inverse of signal) if conditions allow.
-
-        This is called when the normal bot CANNOT execute (blocked by balance,
-        position limits, or cooldown) but Cramer may still trade independently.
-
-        Cramer Mode is for PAPER MODE strategy comparison only - it uses virtual
-        balance and does not affect real funds.
-
-        Args:
-            signal_side: The direction the normal bot would have traded ("buy" or "sell")
-            candles: OHLCV data for position sizing
-            current_price: Current market price
-            signal_score: Signal strength from scorer
-            safety_multiplier: Combined safety multiplier (circuit breaker, judge, regime)
-        """
-        if not self.cramer_client:
-            return
-
-        # Cramer trades inverse: signal "buy" -> Cramer "sell", and vice versa
-        cramer_side = "sell" if signal_side == "buy" else "buy"
-
-        if safety_multiplier > 0:
-            self._execute_cramer_trade(
-                side=cramer_side,
-                candles=candles,
-                current_price=current_price,
-                signal_score=signal_score,
-                safety_multiplier=safety_multiplier,
-            )
-        else:
-            logger.warning(
-                "cramer_trade_blocked_by_safety",
-                side=cramer_side,
-                safety_multiplier=safety_multiplier,
-                reason="circuit_breaker_active",
-            )
-
-    def _execute_cramer_trade(
-        self,
-        side: str,
-        candles,
-        current_price: Decimal,
-        signal_score: int,
-        safety_multiplier: float,
-    ) -> None:
-        """
-        Execute a trade for the Cramer Mode (inverted mode).
-
-        This executes the OPPOSITE trade of what the normal bot just did,
-        using the Cramer Mode's separate virtual balance.
-        """
-        if not self.cramer_client:
-            return
-
-        if self._cramer_mode_disabled:
-            return  # Cramer Mode disabled due to balance mismatch
-
-        # Get Cramer Mode balances
-        cramer_quote_balance = self.cramer_client.get_balance(self._quote_currency).available
-        cramer_base_balance = self.cramer_client.get_balance(self._base_currency).available
-
-        logger.debug(
-            "cramer_trade_attempt",
-            side=side,
-            quote_balance=str(cramer_quote_balance),
-            base_balance=str(cramer_base_balance),
-        )
-
-        if side == "buy":
-            # Check if Cramer Mode can buy (same constraints as normal bot)
-            min_quote = Decimal(str(self.position_sizer.config.min_trade_quote))
-            if cramer_quote_balance < min_quote:
-                logger.info("cramer_skip_buy", reason="insufficient_quote_balance")
-                return
-
-            # Check Cramer Mode independent cooldown
-            if self.cramer_trade_cooldown:
-                cooldown_ok, cooldown_reason = self.cramer_trade_cooldown.can_execute("buy", current_price)
-                if not cooldown_ok:
-                    logger.info("cramer_skip_buy", reason=f"cooldown: {cooldown_reason}")
-                    return
-
-            # Calculate position size for Cramer Mode buy
-            position = self.position_sizer.calculate_size(
-                df=candles,
-                current_price=current_price,
-                quote_balance=cramer_quote_balance,
-                base_balance=cramer_base_balance,
-                signal_strength=abs(signal_score),
-                side="buy",
-                safety_multiplier=safety_multiplier,
-            )
-
-            if position.size_quote < min_quote:
-                logger.info("cramer_skip_buy", reason="position_too_small")
-                return
-
-            # Execute buy on Cramer Mode client
-            result = self.cramer_client.market_buy(
-                self.settings.trading_pair,
-                position.size_quote,
-            )
-
-            if result.success:
-                filled_price = result.filled_price or current_price
-
-                # Get new balances
-                new_quote = self.cramer_client.get_balance(self._quote_currency).available
-                new_base = self.cramer_client.get_balance(self._base_currency).available
-
-                # Verify balance consistency BEFORE DB writes (defensive check)
-                # If mismatch detected, skip all DB operations to preserve data integrity
-                actual_quote = self.cramer_client.get_balance(self._quote_currency).available
-                actual_base = self.cramer_client.get_balance(self._base_currency).available
-                if actual_quote != new_quote or actual_base != new_base:
-                    logger.error(
-                        "cramer_balance_mismatch",
-                        expected_quote=str(new_quote),
-                        actual_quote=str(actual_quote),
-                        expected_base=str(new_base),
-                        actual_base=str(actual_base),
-                    )
-                    logger.warning("cramer_mode_disabled_due_to_mismatch")
-                    self._cramer_mode_disabled = True
-                    return
-
-                # Update Cramer Mode position
-                new_avg_cost = self.position_service.update_after_buy(
-                    result.size, filled_price, result.fee,
-                    is_paper=True, bot_mode=BotMode.INVERTED
-                )
-
-                # Record trade
-                self.db.record_trade(
-                    side="buy",
-                    size=result.size,
-                    price=filled_price,
-                    fee=result.fee,
-                    symbol=self.settings.trading_pair,
-                    is_paper=True,
-                    bot_mode=BotMode.INVERTED,
-                    quote_balance_after=new_quote,
-                    base_balance_after=new_base,
-                    spot_rate=current_price,
-                )
-                self.db.increment_daily_trade_count(is_paper=True, bot_mode=BotMode.INVERTED)
-
-                # Create trailing stop for Cramer Mode
-                take_profit_price = position.take_profit_price if (self.settings.enable_take_profit and position.take_profit_price) else None
-                self._create_trailing_stop(
-                    filled_price,
-                    candles,
-                    is_paper=True,
-                    avg_cost=new_avg_cost,
-                    volatility=self._last_volatility,
-                    take_profit_price=take_profit_price,
-                    bot_mode=BotMode.INVERTED,
-                )
-
-                logger.info(
-                    "cramer_buy_executed",
-                    size=str(result.size),
-                    price=str(filled_price),
-                    fee=str(result.fee),
-                )
-
-                # Update Cramer cooldown
-                if self.cramer_trade_cooldown:
-                    self.cramer_trade_cooldown.record_trade("buy", filled_price)
-
-                # Update Cramer Mode daily stats with new ending balance
-                cramer_ending_balance = self._get_cramer_portfolio_value()
-                self.db.update_daily_stats(
-                    ending_balance=cramer_ending_balance,
-                    ending_price=current_price,
-                    is_paper=True,
-                    bot_mode=BotMode.INVERTED,
-                )
-            else:
-                logger.warning("cramer_buy_failed", error=result.error)
-
-        elif side == "sell":
-            # Check if Cramer Mode can sell
-            min_base = Decimal(str(self.position_sizer.config.min_trade_base))
-            if cramer_base_balance < min_base:
-                logger.info("cramer_skip_sell", reason="insufficient_base_balance")
-                return
-
-            # Check Cramer Mode independent cooldown
-            if self.cramer_trade_cooldown:
-                cooldown_ok, cooldown_reason = self.cramer_trade_cooldown.can_execute("sell", current_price)
-                if not cooldown_ok:
-                    logger.info("cramer_skip_sell", reason=f"cooldown: {cooldown_reason}")
-                    return
-
-            # For aggressive selling, sell entire position on strong signal
-            if abs(signal_score) >= 80:
-                size_base = cramer_base_balance
-            else:
-                position = self.position_sizer.calculate_size(
-                    df=candles,
-                    current_price=current_price,
-                    quote_balance=Decimal("0"),
-                    base_balance=cramer_base_balance,
-                    signal_strength=abs(signal_score),
-                    side="sell",
-                    safety_multiplier=safety_multiplier,
-                )
-                size_base = position.size_base
-
-            if size_base < min_base:
-                logger.info("cramer_skip_sell", reason="position_too_small")
-                return
-
-            # Execute sell on Cramer Mode client
-            result = self.cramer_client.market_sell(
-                self.settings.trading_pair,
-                size_base,
-            )
-
-            if result.success:
-                filled_price = result.filled_price or current_price
-
-                # Get new balances
-                new_quote = self.cramer_client.get_balance(self._quote_currency).available
-                new_base = self.cramer_client.get_balance(self._base_currency).available
-
-                # Verify balance consistency BEFORE DB writes (defensive check)
-                # If mismatch detected, skip all DB operations to preserve data integrity
-                actual_quote = self.cramer_client.get_balance(self._quote_currency).available
-                actual_base = self.cramer_client.get_balance(self._base_currency).available
-                if actual_quote != new_quote or actual_base != new_base:
-                    logger.error(
-                        "cramer_balance_mismatch",
-                        expected_quote=str(new_quote),
-                        actual_quote=str(actual_quote),
-                        expected_base=str(new_base),
-                        actual_base=str(actual_base),
-                    )
-                    logger.warning("cramer_mode_disabled_due_to_mismatch")
-                    self._cramer_mode_disabled = True
-                    return
-
-                # Calculate realized P&L for Cramer Mode
-                realized_pnl = self.position_service.calculate_realized_pnl(
-                    result.size, filled_price, result.fee,
-                    is_paper=True, bot_mode=BotMode.INVERTED
-                )
-
-                # Deactivate trailing stop
-                self.db.deactivate_trailing_stop(
-                    self.settings.trading_pair, is_paper=True, bot_mode=BotMode.INVERTED
-                )
-
-                # Record trade
-                self.db.record_trade(
-                    side="sell",
-                    size=result.size,
-                    price=filled_price,
-                    fee=result.fee,
-                    realized_pnl=realized_pnl,
-                    symbol=self.settings.trading_pair,
-                    is_paper=True,
-                    bot_mode=BotMode.INVERTED,
-                    quote_balance_after=new_quote,
-                    base_balance_after=new_base,
-                    spot_rate=current_price,
-                )
-                self.db.increment_daily_trade_count(is_paper=True, bot_mode=BotMode.INVERTED)
-
-                logger.info(
-                    "cramer_sell_executed",
-                    size=str(result.size),
-                    price=str(filled_price),
-                    fee=str(result.fee),
-                    realized_pnl=str(realized_pnl),
-                )
-
-                # Update Cramer cooldown
-                if self.cramer_trade_cooldown:
-                    self.cramer_trade_cooldown.record_trade("sell", filled_price)
-
-                # Update Cramer Mode daily stats with new ending balance
-                cramer_ending_balance = self._get_cramer_portfolio_value()
-                self.db.update_daily_stats(
-                    ending_balance=cramer_ending_balance,
-                    ending_price=current_price,
-                    is_paper=True,
-                    bot_mode=BotMode.INVERTED,
-                )
-            else:
-                logger.warning("cramer_sell_failed", error=result.error)
-
-    def _execute_cramer_trailing_stop_sell(
-        self,
-        candles,
-        current_price: Decimal,
-        base_balance: Decimal,
-    ) -> None:
-        """
-        Execute Cramer Mode sell from independent trailing stop trigger.
-
-        This is NOT a mirror of normal bot action - it's Cramer Mode's own
-        risk management exiting its position.
-        """
-        if not self.cramer_client:
-            return
-
-        if self._cramer_mode_disabled:
-            return  # Cramer Mode disabled due to balance mismatch
-
-        # Sell entire position (trailing stop = full exit)
-        result = self.cramer_client.market_sell(
-            self.settings.trading_pair,
-            base_balance,
-        )
-
-        if result.success:
-            filled_price = result.filled_price or current_price
-
-            # Get new balances
-            new_quote = self.cramer_client.get_balance(self._quote_currency).available
-            new_base = self.cramer_client.get_balance(self._base_currency).available
-
-            # Verify balance consistency BEFORE DB writes (defensive check)
-            # If mismatch detected, skip all DB operations to preserve data integrity
-            actual_quote = self.cramer_client.get_balance(self._quote_currency).available
-            actual_base = self.cramer_client.get_balance(self._base_currency).available
-            if actual_quote != new_quote or actual_base != new_base:
-                logger.error(
-                    "cramer_balance_mismatch",
-                    expected_quote=str(new_quote),
-                    actual_quote=str(actual_quote),
-                    expected_base=str(new_base),
-                    actual_base=str(actual_base),
-                )
-                logger.warning("cramer_mode_disabled_due_to_mismatch")
-                self._cramer_mode_disabled = True
-                return
-
-            # Calculate realized P&L
-            realized_pnl = self.position_service.calculate_realized_pnl(
-                result.size, filled_price, result.fee,
-                is_paper=True, bot_mode=BotMode.INVERTED
-            )
-
-            # Record trade
-            self.db.record_trade(
-                side="sell",
-                size=result.size,
-                price=filled_price,
-                fee=result.fee,
-                realized_pnl=realized_pnl,
-                symbol=self.settings.trading_pair,
-                is_paper=True,
-                bot_mode=BotMode.INVERTED,
-                quote_balance_after=new_quote,
-                base_balance_after=new_base,
-                spot_rate=current_price,
-            )
-            self.db.increment_daily_trade_count(is_paper=True, bot_mode=BotMode.INVERTED)
-
-            # Deactivate trailing stop (critical: prevent repeated triggers)
-            self.db.deactivate_trailing_stop(
-                symbol=self.settings.trading_pair,
-                is_paper=True,
-                bot_mode=BotMode.INVERTED,
-            )
-
-            # Record to Cramer Mode cooldown
-            if self.cramer_trade_cooldown:
-                self.cramer_trade_cooldown.record_trade("sell", filled_price)
-
-            logger.info(
-                "cramer_trailing_stop_sell_executed",
-                size=str(result.size),
-                price=str(filled_price),
-                fee=str(result.fee),
-                realized_pnl=str(realized_pnl),
-            )
-
-            # Update Cramer Mode daily stats with new ending balance
-            cramer_ending_balance = self._get_cramer_portfolio_value()
-            self.db.update_daily_stats(
-                ending_balance=cramer_ending_balance,
-                ending_price=current_price,
-                is_paper=True,
-                bot_mode=BotMode.INVERTED,
-            )
-        else:
-            logger.warning("cramer_trailing_stop_sell_failed", error=result.error)
-
-    def _get_cramer_portfolio_value(self) -> Decimal:
-        """Get Cramer Mode total portfolio value in quote currency."""
-        if not self.cramer_client:
-            return Decimal("0")
-
-        base_balance = self.cramer_client.get_balance(self._base_currency).available
-        quote_balance = self.cramer_client.get_balance(self._quote_currency).available
-        current_price = self.client.get_current_price(self.settings.trading_pair)
-
-        base_value = base_balance * current_price
-        return quote_balance + base_value
-
-    def _get_cramer_portfolio_info(self, current_price: Decimal) -> Optional[dict]:
-        """Get Cramer Mode portfolio info for dashboard display."""
-        if not self.cramer_client:
-            return None
-
-        try:
-            base_balance = self.cramer_client.get_balance(self._base_currency).available
-            quote_balance = self.cramer_client.get_balance(self._quote_currency).available
-            base_value = base_balance * current_price
-            portfolio_value = quote_balance + base_value
-
-            # Calculate position percent (how much is in BTC)
-            position_percent = float(base_value / portfolio_value * 100) if portfolio_value > 0 else 0.0
-
-            return {
-                "quote_balance": str(quote_balance),
-                "base_balance": str(base_balance),
-                "portfolio_value": str(portfolio_value),
-                "position_percent": position_percent,
-            }
-        except Exception as e:
-            logger.warning("cramer_portfolio_fetch_error", error=str(e))
-            return None
-
-    # Sentiment tracking methods moved to AIService
+    # Cramer Mode trade execution methods moved to CramerService
 
     def _create_trailing_stop(
         self,
@@ -3554,14 +3073,7 @@ class TradingDaemon:
             )
 
             # Save Cramer Mode final state if enabled
-            if self.cramer_client and self.settings.enable_cramer_mode:
-                cramer_portfolio_value = self._get_cramer_portfolio_value()
-                self.db.update_daily_stats(
-                    ending_balance=cramer_portfolio_value,
-                    ending_price=ending_price,
-                    is_paper=True,
-                    bot_mode=BotMode.INVERTED,
-                )
+            self.cramer_service.save_final_state(ending_price)
         except Exception as e:
             logger.error("shutdown_state_save_failed", error=str(e))
 
