@@ -149,6 +149,7 @@ class MarketService:
             config: New market configuration
         """
         self.config = config
+        logger.info("market_service_config_updated")
 
     def _get_timeframe_trend(self, granularity: str, cache_minutes: int) -> str:
         """

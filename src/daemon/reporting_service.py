@@ -11,7 +11,7 @@ Extracted from TradingDaemon as part of the runner.py refactoring (Issue #58).
 
 import asyncio
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Callable, Optional, TYPE_CHECKING
 
@@ -70,6 +70,7 @@ class ReportingService:
         trade_reviewer: Optional["TradeReviewer"] = None,
         on_sentiment_success: Optional[Callable[[], None]] = None,
         on_sentiment_failure: Optional[Callable[[str], None]] = None,
+        event_loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         """
         Initialize reporting service.
@@ -83,6 +84,7 @@ class ReportingService:
             trade_reviewer: Optional AI trade reviewer for hourly analysis
             on_sentiment_success: Callback when sentiment fetch succeeds
             on_sentiment_failure: Callback when sentiment fetch fails
+            event_loop: Optional event loop to use (if None, creates a new one)
         """
         self.config = config
         self.notifier = notifier
@@ -105,8 +107,22 @@ class ReportingService:
         self._last_hourly_analysis: Optional[datetime] = None
         self._pending_post_volatility_analysis: bool = False
 
-        # Create persistent event loop for async operations
-        self._loop = asyncio.new_event_loop()
+        # Use provided event loop or create a new one
+        self._loop = event_loop if event_loop is not None else asyncio.new_event_loop()
+        self._owns_loop = event_loop is None  # Track if we own the loop (for cleanup)
+
+    def close(self) -> None:
+        """
+        Clean up resources.
+
+        Only closes the event loop if this service created it (not shared).
+        """
+        if self._owns_loop:
+            try:
+                self._loop.close()
+                logger.debug("reporting_service_loop_closed")
+            except Exception as e:
+                logger.debug("reporting_service_loop_close_failed", error=str(e))
 
     def _run_async_with_timeout(self, coro, timeout: int = ASYNC_TIMEOUT_SECONDS, default=None):
         """
@@ -150,7 +166,6 @@ class ReportingService:
             return
 
         # Get yesterday's stats (if exists)
-        from datetime import timedelta
         yesterday = today - timedelta(days=1)
         stats = self.db.get_daily_stats(yesterday, is_paper=self.config.is_paper_trading)
 
@@ -204,8 +219,6 @@ class ReportingService:
 
     def check_weekly_report(self) -> None:
         """Check if we should generate weekly performance report (on Mondays, UTC)."""
-        from datetime import timedelta
-
         today = datetime.now(timezone.utc).date()
 
         # Only on Mondays
@@ -225,8 +238,6 @@ class ReportingService:
 
     def check_monthly_report(self) -> None:
         """Check if we should generate monthly performance report (on 1st of month, UTC)."""
-        from datetime import timedelta
-
         today = datetime.now(timezone.utc).date()
 
         # Only on 1st of month

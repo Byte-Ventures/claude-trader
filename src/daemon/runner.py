@@ -563,6 +563,7 @@ class TradingDaemon:
             trade_reviewer=self.trade_reviewer,
             on_sentiment_success=self._record_sentiment_success,
             on_sentiment_failure=self._record_sentiment_failure,
+            event_loop=self._loop,  # Share daemon's event loop
         )
         if hourly_analysis_enabled:
             logger.info("hourly_market_analysis_enabled", uses_trade_reviewer=True)
@@ -3982,6 +3983,9 @@ class TradingDaemon:
                 logger.debug("postmortem_executor_shutdown")
             except Exception as e:
                 logger.debug("postmortem_executor_shutdown_failed", error=str(e))
+
+        # Close reporting service (will skip if sharing our event loop)
+        self.reporting_service.close()
 
         # Close the async event loop
         try:
