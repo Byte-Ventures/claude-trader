@@ -26,7 +26,7 @@ from src.state.database import Database, BotMode
 
 if TYPE_CHECKING:
     import pandas as pd
-    from src.strategy.position_sizer import PositionSizer, PositionSize
+    from src.strategy.position_sizer import PositionSizer
     from src.daemon.position_service import PositionService
 
 logger = structlog.get_logger(__name__)
@@ -626,7 +626,7 @@ class CramerService:
 
     def execute_trailing_stop_sell(
         self,
-        candles: "pd.DataFrame",
+        _candles: "pd.DataFrame",
         current_price: Decimal,
         base_balance: Decimal,
     ) -> None:
@@ -637,7 +637,7 @@ class CramerService:
         risk management exiting its position.
 
         Args:
-            candles: OHLCV data (unused but kept for consistency)
+            _candles: OHLCV data (unused, kept for interface consistency with normal bot)
             current_price: Current market price
             base_balance: Base balance to sell
         """
@@ -717,6 +717,12 @@ class CramerService:
         Verify balance consistency after trade.
 
         If mismatch detected, disable Cramer Mode to preserve data integrity.
+
+        This is a defensive check that re-fetches balances immediately after
+        trade execution. While PaperTradingClient is synchronous and in-memory,
+        this guards against potential future changes (async operations, caching)
+        or bugs in balance calculation. The check is cheap and provides an
+        important safety net for data integrity.
 
         Args:
             expected_quote: Expected quote balance
