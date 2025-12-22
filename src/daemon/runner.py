@@ -92,7 +92,7 @@ from src.safety.loss_limiter import LossLimiter, LossLimitConfig
 from src.safety.trade_cooldown import TradeCooldown, TradeCooldownConfig
 from src.safety.validator import OrderValidator, OrderRequest, ValidatorConfig
 from sqlalchemy.exc import SQLAlchemyError
-from src.state.database import BotMode, Database, SignalHistory
+from src.state.database import BotMode, Database
 from src.strategy.signal_scorer import SignalScorer, SignalResult
 from src.strategy.weight_profile_selector import (
     WeightProfileSelector,
@@ -104,6 +104,7 @@ from src.strategy.regime import MarketRegime, RegimeConfig, RegimeAdjustments, g
 from src.indicators.ema import get_ema_trend_from_values
 from src.daemon.reporting_service import ReportingService, ReportingConfig
 from src.daemon.market_service import MarketService, MarketConfig
+from src.daemon.signal_service import SignalService, SignalConfig
 
 logger = structlog.get_logger(__name__)
 
@@ -179,7 +180,7 @@ class TradingDaemon:
         # in _execute_buy()/_execute_sell() within the same iteration. No concurrent
         # iterations can occur because the main loop is synchronous.
         self._current_signal_id: Optional[int] = None
-        self._signal_history_failures: int = 0  # Track consecutive storage failures
+        # Signal history failures tracked in SignalService
 
         # Sentiment fetch failure tracking
         # Thread-safety note: Lock is needed because sentiment fetches occur in both
@@ -542,6 +543,19 @@ class TradingDaemon:
             )
         else:
             logger.info("market_service_initialized", mtf_enabled=False)
+
+        # Initialize signal service
+        signal_config = SignalConfig(
+            trading_pair=settings.trading_pair,
+            is_paper_trading=settings.is_paper_trading,
+            signal_history_failure_threshold=settings.signal_history_failure_threshold,
+        )
+        self.signal_service = SignalService(
+            config=signal_config,
+            db=self.db,
+            notifier=self.notifier,
+        )
+        logger.info("signal_service_initialized")
 
         # Initialize reporting service
         hourly_analysis_enabled = settings.hourly_analysis_enabled and self.trade_reviewer is not None
@@ -1009,111 +1023,7 @@ class TradingDaemon:
 
         self._last_veto_timestamp = candle_timestamp
 
-    def _store_signal_history(
-        self,
-        signal_result: SignalResult,
-        current_price: Decimal,
-        htf_bias: str,
-        daily_trend: Optional[str],
-        four_hour_trend: Optional[str],
-        threshold: int,
-        trade_executed: bool = False,
-    ) -> Optional[int]:
-        """
-        Store signal calculation for historical analysis.
-
-        Called every iteration to enable post-mortem analysis of trades.
-
-        Args:
-            signal_result (SignalResult): The calculated signal with scores and metadata
-            current_price (Decimal): Current market price
-            htf_bias (str): Higher timeframe bias (bullish/bearish/neutral)
-            daily_trend (str): Daily trend direction
-            four_hour_trend (str): 4-hour trend direction
-            threshold (int): Signal threshold used for trading decision
-            trade_executed (bool, optional): Whether a trade was executed based on this signal. Defaults to False.
-
-        Returns:
-            The signal history record ID, or None if storage failed.
-        """
-        try:
-            breakdown = signal_result.breakdown
-            with self.db.session() as session:
-                history = SignalHistory(
-                    symbol=self.settings.trading_pair,
-                    is_paper=self.settings.is_paper_trading,
-                    current_price=str(current_price),
-                    rsi_score=breakdown.get("rsi", 0),
-                    macd_score=breakdown.get("macd", 0),
-                    bollinger_score=breakdown.get("bollinger", 0),
-                    ema_score=breakdown.get("ema", 0),
-                    volume_score=breakdown.get("volume", 0),
-                    rsi_value=breakdown.get("_rsi_value"),
-                    macd_histogram=breakdown.get("_macd_histogram"),
-                    bb_position=breakdown.get("_bb_position"),
-                    ema_gap_percent=breakdown.get("_ema_gap_percent"),
-                    volume_ratio=breakdown.get("_volume_ratio"),
-                    trend_filter_adj=breakdown.get("trend_filter", 0),
-                    momentum_mode_adj=breakdown.get("_momentum_active", 0),
-                    whale_activity_adj=breakdown.get("_whale_activity", 0),
-                    htf_bias_adj=breakdown.get("htf_bias", 0),
-                    htf_bias=htf_bias,
-                    htf_daily_trend=daily_trend,
-                    htf_4h_trend=four_hour_trend,
-                    raw_score=breakdown.get("_raw_score", signal_result.score),
-                    final_score=signal_result.score,
-                    action=signal_result.action,
-                    threshold_used=threshold,
-                    trade_executed=trade_executed,
-                )
-                session.add(history)
-                session.commit()
-                self._signal_history_failures = 0  # Reset on success
-                return history.id
-        except SQLAlchemyError as e:
-            # Database errors are non-critical - don't block trading for history storage
-            self._signal_history_failures += 1
-            logger.warning(
-                "signal_history_store_failed",
-                error=str(e),
-                error_type=type(e).__name__,
-                consecutive_failures=self._signal_history_failures,
-            )
-            # Alert at threshold failures, then every 50 additional failures
-            threshold = self.settings.signal_history_failure_threshold
-            if self._signal_history_failures == threshold or (
-                self._signal_history_failures > threshold
-                and (self._signal_history_failures - threshold) % 50 == 0
-            ):
-                self.notifier.notify_error(
-                    f"Signal history storage failing ({self._signal_history_failures} consecutive failures)",
-                    context=f"Last error: {str(e)}",
-                )
-            return None
-
-    def _mark_signal_trade_executed(self, signal_id: Optional[int]) -> None:
-        """
-        Mark a specific signal history record as having resulted in a trade.
-
-        Called after successful buy/sell to enable accurate post-mortem analysis.
-
-        Args:
-            signal_id: The ID of the signal history record to mark.
-                       If None, the operation is skipped (signal storage may have failed).
-        """
-        if signal_id is None:
-            return
-
-        try:
-            with self.db.session() as session:
-                session.query(SignalHistory).filter(
-                    SignalHistory.id == signal_id
-                ).update({"trade_executed": True})
-                session.commit()
-                logger.debug("signal_history_trade_marked", signal_id=signal_id)
-        except SQLAlchemyError as e:
-            # Non-critical - don't block trading for history update
-            logger.warning("signal_history_trade_flag_update_failed", error=str(e))
+    # Signal history storage and trade marking moved to SignalService
 
     def _run_postmortem_async(self, trade_id: Optional[int] = None) -> None:
         """
@@ -1905,7 +1815,7 @@ class TradingDaemon:
 
         # Store signal for historical analysis (every iteration)
         # Store the ID to mark as executed if a trade occurs (avoids race condition)
-        self._current_signal_id = self._store_signal_history(
+        self._current_signal_id = self.signal_service.store_signal(
             signal_result=signal_result,
             current_price=current_price,
             htf_bias=htf_bias,
@@ -2607,7 +2517,7 @@ class TradingDaemon:
             self.circuit_breaker.record_order_success()
 
             # Mark signal history as having resulted in trade (for post-mortem analysis)
-            self._mark_signal_trade_executed(self._current_signal_id)
+            self.signal_service.mark_trade_executed(self._current_signal_id)
 
             # Run post-mortem analysis asynchronously (if enabled)
             self._run_postmortem_async()
@@ -2802,7 +2712,7 @@ class TradingDaemon:
             self.circuit_breaker.record_order_success()
 
             # Mark signal history as having resulted in trade (for post-mortem analysis)
-            self._mark_signal_trade_executed(self._current_signal_id)
+            self.signal_service.mark_trade_executed(self._current_signal_id)
 
             # Run post-mortem analysis asynchronously (if enabled)
             self._run_postmortem_async()

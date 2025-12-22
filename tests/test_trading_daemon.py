@@ -2141,7 +2141,7 @@ def test_store_signal_history_returns_id(htf_mock_settings, mock_exchange_client
     with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
         with patch('src.daemon.runner.Database', return_value=mock_database):
             with patch('src.daemon.runner.TelegramNotifier'):
-                with patch('src.daemon.runner.SignalHistory') as mock_signal_history_class:
+                with patch('src.daemon.signal_service.SignalHistory') as mock_signal_history_class:
                     # Make the SignalHistory class return our mock
                     mock_signal_history_class.return_value = mock_history
 
@@ -2161,7 +2161,7 @@ def test_store_signal_history_returns_id(htf_mock_settings, mock_exchange_client
                         confidence=0.8,
                     )
 
-                    signal_id = daemon._store_signal_history(
+                    signal_id = daemon.signal_service.store_signal(
                         signal_result=signal_result,
                         current_price=Decimal("50000"),
                         htf_bias="bullish",
@@ -2204,7 +2204,7 @@ def test_store_signal_history_handles_db_error(htf_mock_settings, mock_exchange_
                 )
 
                 # Should return None (not raise) on DB error
-                signal_id = daemon._store_signal_history(
+                signal_id = daemon.signal_service.store_signal(
                     signal_result=signal_result,
                     current_price=Decimal("50000"),
                     htf_bias="bullish",
@@ -2251,7 +2251,7 @@ def test_store_signal_history_alerts_after_repeated_failures(htf_mock_settings, 
 
                 # Call 9 times - should NOT alert yet
                 for _ in range(9):
-                    daemon._store_signal_history(
+                    daemon.signal_service.store_signal(
                         signal_result=signal_result,
                         current_price=Decimal("50000"),
                         htf_bias="bullish",
@@ -2262,7 +2262,7 @@ def test_store_signal_history_alerts_after_repeated_failures(htf_mock_settings, 
                 mock_notifier.notify_error.assert_not_called()
 
                 # 10th failure should trigger alert
-                daemon._store_signal_history(
+                daemon.signal_service.store_signal(
                     signal_result=signal_result,
                     current_price=Decimal("50000"),
                     htf_bias="bullish",
@@ -2318,7 +2318,7 @@ def test_store_signal_history_truncates_long_errors(htf_mock_settings, mock_exch
 
                 # Call 10 times to trigger alert with long error
                 for _ in range(10):
-                    daemon._store_signal_history(
+                    daemon.signal_service.store_signal(
                         signal_result=signal_result,
                         current_price=Decimal("50000"),
                         htf_bias="bullish",
@@ -2378,7 +2378,7 @@ def test_store_signal_history_short_errors_not_truncated(htf_mock_settings, mock
 
                 # Call 10 times to trigger alert with short error
                 for _ in range(10):
-                    daemon._store_signal_history(
+                    daemon.signal_service.store_signal(
                         signal_result=signal_result,
                         current_price=Decimal("50000"),
                         htf_bias="bullish",
@@ -2437,7 +2437,7 @@ def test_store_signal_history_alerts_every_50_after_initial(htf_mock_settings, m
 
                 # Helper to call _store_signal_history
                 def trigger_failure():
-                    daemon._store_signal_history(
+                    daemon.signal_service.store_signal(
                         signal_result=signal_result,
                         current_price=Decimal("50000"),
                         htf_bias="bullish",
@@ -2470,7 +2470,7 @@ def test_store_signal_history_resets_failure_counter_on_success(htf_mock_setting
     with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
         with patch('src.daemon.runner.Database', return_value=mock_database):
             with patch('src.daemon.runner.TelegramNotifier') as mock_notifier_class:
-                with patch('src.daemon.runner.SignalHistory') as mock_signal_history_class:
+                with patch('src.daemon.signal_service.SignalHistory') as mock_signal_history_class:
                     mock_notifier = Mock()
                     mock_notifier_class.return_value = mock_notifier
                     mock_history = Mock()
@@ -2500,7 +2500,7 @@ def test_store_signal_history_resets_failure_counter_on_success(htf_mock_setting
                     mock_database.session.return_value = mock_session_fail
 
                     for _ in range(5):
-                        daemon._store_signal_history(
+                        daemon.signal_service.store_signal(
                             signal_result=signal_result,
                             current_price=Decimal("50000"),
                             htf_bias="bullish",
@@ -2509,7 +2509,7 @@ def test_store_signal_history_resets_failure_counter_on_success(htf_mock_setting
                             threshold=60,
                         )
 
-                    assert daemon._signal_history_failures == 5
+                    assert daemon.signal_service._signal_history_failures == 5
 
                     # One successful call should reset counter
                     mock_session_success = MagicMock()
@@ -2517,7 +2517,7 @@ def test_store_signal_history_resets_failure_counter_on_success(htf_mock_setting
                     mock_session_success.__exit__ = Mock(return_value=False)
                     mock_database.session.return_value = mock_session_success
 
-                    daemon._store_signal_history(
+                    daemon.signal_service.store_signal(
                         signal_result=signal_result,
                         current_price=Decimal("50000"),
                         htf_bias="bullish",
@@ -2526,7 +2526,7 @@ def test_store_signal_history_resets_failure_counter_on_success(htf_mock_setting
                         threshold=60,
                     )
 
-                    assert daemon._signal_history_failures == 0
+                    assert daemon.signal_service._signal_history_failures == 0
 
 
 def test_mark_signal_trade_executed_with_none_id(htf_mock_settings, mock_exchange_client, mock_database):
@@ -2540,7 +2540,7 @@ def test_mark_signal_trade_executed_with_none_id(htf_mock_settings, mock_exchang
                 mock_database.session.reset_mock()
 
                 # Should not raise or call database
-                daemon._mark_signal_trade_executed(None)
+                daemon.signal_service.mark_trade_executed(None)
 
                 # Verify no database session was requested
                 mock_database.session.assert_not_called()
@@ -2562,7 +2562,7 @@ def test_mark_signal_trade_executed_with_valid_id(htf_mock_settings, mock_exchan
             with patch('src.daemon.runner.TelegramNotifier'):
                 daemon = TradingDaemon(htf_mock_settings)
 
-                daemon._mark_signal_trade_executed(42)
+                daemon.signal_service.mark_trade_executed(42)
 
                 # Verify update was called with trade_executed=True
                 mock_query.update.assert_called_once_with({"trade_executed": True})
