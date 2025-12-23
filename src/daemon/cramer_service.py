@@ -26,6 +26,7 @@ from src.state.database import Database, BotMode
 
 if TYPE_CHECKING:
     import pandas as pd
+    from src.api.exchange_protocol import ExchangeClient
     from src.strategy.position_sizer import PositionSizer
     from src.daemon.position_service import PositionService
 
@@ -81,7 +82,7 @@ class CramerService:
         db: Database,
         position_sizer: "PositionSizer",
         position_service: "PositionService",
-        real_client,  # Real exchange client for market data (used by PaperTradingClient)
+        real_client: "ExchangeClient",
         create_trailing_stop_callback: Callable,
     ):
         """
