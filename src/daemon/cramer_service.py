@@ -768,9 +768,9 @@ class CramerService:
             return
 
         portfolio_value = self.get_portfolio_value()
-        self.db.initialize_daily_stats(
+        # update_daily_stats creates the record if it doesn't exist
+        self.db.update_daily_stats(
             starting_balance=portfolio_value,
-            starting_price=None,  # Will be set on first iteration
             is_paper=True,
             bot_mode=BotMode.INVERTED,
         )
