@@ -53,3 +53,4 @@ slowapi>=0.1.9
 # Testing
 pytest>=7.4.0
 pytest-cov>=4.1.0
+freezegun>=1.2.0

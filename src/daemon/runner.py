@@ -92,7 +92,7 @@ from src.safety.loss_limiter import LossLimiter, LossLimitConfig
 from src.safety.trade_cooldown import TradeCooldown, TradeCooldownConfig
 from src.safety.validator import OrderValidator, OrderRequest, ValidatorConfig
 from sqlalchemy.exc import SQLAlchemyError
-from src.state.database import BotMode, Database, SignalHistory
+from src.state.database import BotMode, Database
 from src.strategy.signal_scorer import SignalScorer, SignalResult
 from src.strategy.weight_profile_selector import (
     WeightProfileSelector,
@@ -102,6 +102,12 @@ from src.strategy.weight_profile_selector import (
 from src.strategy.position_sizer import PositionSizer, PositionSizeConfig
 from src.strategy.regime import MarketRegime, RegimeConfig, RegimeAdjustments, get_cached_sentiment
 from src.indicators.ema import get_ema_trend_from_values
+from src.daemon.reporting_service import ReportingService, ReportingConfig
+from src.daemon.market_service import MarketService, MarketConfig
+from src.daemon.signal_service import SignalService, SignalConfig
+from src.daemon.position_service import PositionService, PositionConfig
+from src.daemon.ai_service import AIService, AIConfig
+from src.daemon.cramer_service import CramerService, CramerConfig
 
 logger = structlog.get_logger(__name__)
 
@@ -137,8 +143,7 @@ class TradingDaemon:
         self.settings = settings
         self.shutdown_event = Event()
         self._running = False
-        self._cramer_mode_disabled = False  # Disables Cramer Mode for session on balance mismatch
-        self.cramer_trade_cooldown: Optional[TradeCooldown] = None  # Independent cooldown for Cramer Mode
+        # Cramer Mode state now managed by CramerService
 
         # Check for deprecated AI_FAILURE_MODE setting
         import os
@@ -151,10 +156,8 @@ class TradingDaemon:
                 message="AI_FAILURE_MODE is deprecated. Use AI_FAILURE_MODE_BUY and AI_FAILURE_MODE_SELL instead. "
                         "New defaults: BUY=safe (skip on AI failure), SELL=open (proceed on AI failure)."
             )
-        self._last_daily_report: Optional[date] = None
-        self._last_weekly_report: Optional[date] = None
-        self._last_monthly_report: Optional[date] = None
-        self._last_cleanup_date: Optional[date] = None
+        # Note: Report state (_last_daily_report, _last_weekly_report, etc.)
+        # is now managed by ReportingService
         # For adaptive interval and emergency stop creation. Default "normal" is intentionally
         # conservative - if bot restarts during extreme volatility before first iteration,
         # emergency stops use tighter (1.5x ATR) rather than wider (2.0x) multiplier.
@@ -162,25 +165,15 @@ class TradingDaemon:
         self._last_volatility: str = "normal"
         self._last_regime: str = "neutral"  # For regime change notifications
         self._pending_regime: Optional[str] = None  # Flap protection: pending regime change
-        self._last_hourly_analysis: Optional[datetime] = None  # For hourly market analysis
-        self._pending_post_volatility_analysis: bool = False  # Trigger analysis when volatility calms
+        # Note: _last_hourly_analysis and _pending_post_volatility_analysis
+        # are now managed by ReportingService
         self._last_stop_check: Optional[datetime] = None  # For periodic stop protection checks
         self._last_ai_failure_notification: Optional[datetime] = None  # Cooldown for AI failure notifications
         self._last_interesting_hold_review: Optional[datetime] = None  # Cooldown for interesting_hold reviews
         self._last_interesting_hold_score: Optional[int] = None  # Track signal changes
-        self._last_veto_timestamp: Optional[datetime] = None  # Cooldown after AI veto rejection
-        self._last_veto_direction: Optional[str] = None  # Signal direction at veto ("buy"/"sell")
+        # Veto cooldown state now managed by AIService
 
-        # Multi-Timeframe state (for HTF bias caching)
-        self._daily_trend: str = "neutral"
-        self._daily_last_fetch: Optional[datetime] = None
-        self._4h_trend: str = "neutral"
-        self._4h_last_fetch: Optional[datetime] = None
-        # HTF cache performance metrics (accumulate over daemon lifetime)
-        # Note: Counters grow unbounded, but Python ints have arbitrary precision
-        # (no overflow). Safe for 24/7 operation.
-        self._htf_cache_hits: int = 0
-        self._htf_cache_misses: int = 0
+        # Note: Multi-Timeframe state (HTF bias caching) is now managed by MarketService
 
         # Signal history tracking for marking executed trades.
         # Thread-safety note: This is safe because TradingDaemon runs single-threaded.
@@ -188,17 +181,9 @@ class TradingDaemon:
         # in _execute_buy()/_execute_sell() within the same iteration. No concurrent
         # iterations can occur because the main loop is synchronous.
         self._current_signal_id: Optional[int] = None
-        self._signal_history_failures: int = 0  # Track consecutive storage failures
+        # Signal history failures tracked in SignalService
 
-        # Sentiment fetch failure tracking
-        # Thread-safety note: Lock is needed because sentiment fetches occur in both
-        # _trading_iteration() and _check_hourly_analysis(). While the main loop is
-        # synchronous, these methods could theoretically access the counter at overlapping
-        # times if async operations or future refactoring creates concurrency. The lock
-        # ensures atomic counter updates and prevents race conditions during increment/reset.
-        self._sentiment_fetch_failures: int = 0  # Track consecutive sentiment fetch failures
-        self._last_sentiment_fetch_success: Optional[datetime] = None  # Last successful fetch time
-        self._sentiment_lock = Lock()  # Protect sentiment failure counter from race conditions
+        # Sentiment fetch failure tracking now managed by AIService
 
         # Create persistent event loop for async operations (avoids repeated asyncio.run())
         self._loop = asyncio.new_event_loop()
@@ -252,64 +237,9 @@ class TradingDaemon:
                 trading_pair=settings.trading_pair,
             )
             logger.info("using_paper_trading_client")
-
-            # Initialize Cramer Mode client if enabled
-            self.cramer_client: Optional[PaperTradingClient] = None
-            if settings.enable_cramer_mode:
-                # Try to restore Cramer Mode balance from database
-                cramer_balance = self.db.get_last_paper_balance(settings.trading_pair, bot_mode=BotMode.INVERTED)
-                if cramer_balance:
-                    cramer_quote, cramer_base, _ = cramer_balance
-                    logger.info(
-                        "cramer_balance_restored_from_db",
-                        quote=str(cramer_quote),
-                        base=str(cramer_base),
-                    )
-                else:
-                    # First-time enable: use normal bot's CURRENT state
-                    cramer_quote = self.client.get_balance(self._quote_currency).available
-                    cramer_base = self.client.get_balance(self._base_currency).available
-                    logger.info(
-                        "cramer_balance_copied_from_normal",
-                        quote=str(cramer_quote),
-                        base=str(cramer_base),
-                    )
-
-                    # Warn if normal bot has open position (unfair comparison)
-                    normal_position = self.db.get_current_position(
-                        settings.trading_pair, is_paper=True, bot_mode=BotMode.NORMAL
-                    )
-                    if normal_position and normal_position.get_quantity() > Decimal("0"):
-                        logger.warning(
-                            "cramer_mode_starting_without_position",
-                            msg="Normal bot has open position but Cramer Mode starts fresh. Consider disabling until position is closed for fair comparison.",
-                            normal_position_size=str(normal_position.get_quantity()),
-                        )
-
-                self.cramer_client = PaperTradingClient(
-                    real_client=self.real_client,
-                    initial_quote=float(cramer_quote),
-                    initial_base=float(cramer_base),
-                    trading_pair=settings.trading_pair,
-                )
-                # Initialize independent cooldown for Cramer Mode (uses same config as normal bot)
-                if settings.trade_cooldown_enabled:
-                    self.cramer_trade_cooldown = TradeCooldown(
-                        config=TradeCooldownConfig(
-                            buy_cooldown_minutes=settings.buy_cooldown_minutes,
-                            sell_cooldown_minutes=settings.sell_cooldown_minutes,
-                            buy_price_change_percent=settings.buy_price_change_percent,
-                            sell_price_change_percent=settings.sell_price_change_percent,
-                        ),
-                        db=self.db,
-                        is_paper=True,  # Cramer Mode is always paper trading
-                        symbol=settings.trading_pair,
-                        bot_mode="inverted",  # Track separately from normal bot
-                    )
-                logger.info("cramer_mode_enabled", mode="inverted")
+            # Cramer Mode initialized later via CramerService (after position_service)
         else:
             self.client = self.real_client
-            self.cramer_client = None
             logger.info("using_live_trading_client")
 
         # Initialize Telegram notifier
@@ -358,12 +288,7 @@ class TradingDaemon:
         else:
             logger.info("ai_trade_reviewer_disabled")
 
-        # Hourly market analysis uses trade_reviewer (if AI review enabled)
-        self._hourly_analysis_enabled = settings.hourly_analysis_enabled and self.trade_reviewer is not None
-        if self._hourly_analysis_enabled:
-            logger.info("hourly_market_analysis_enabled", uses_trade_reviewer=True)
-        else:
-            logger.info("hourly_market_analysis_disabled")
+        # Note: Hourly analysis enabled/disabled is now managed by ReportingService
 
         # Initialize safety systems
         self.kill_switch = KillSwitch(
@@ -533,11 +458,137 @@ class TradingDaemon:
         else:
             logger.info("ai_weight_profile_selector_disabled")
 
-        # AI recommendation state (for threshold adjustments from interesting holds)
-        self._ai_recommendation: Optional[str] = None  # "accumulate", "reduce", "wait"
-        self._ai_recommendation_confidence: float = 0.0
-        self._ai_recommendation_time: Optional[datetime] = None
-        self._ai_recommendation_ttl_minutes: int = settings.ai_recommendation_ttl_minutes
+        # Initialize market service (HTF trend caching)
+        market_config = MarketConfig(
+            trading_pair=settings.trading_pair,
+            mtf_enabled=settings.mtf_enabled,
+            mtf_4h_enabled=settings.mtf_4h_enabled,
+            mtf_daily_cache_minutes=settings.mtf_daily_cache_minutes,
+            mtf_4h_cache_minutes=settings.mtf_4h_cache_minutes,
+            mtf_daily_candle_limit=settings.mtf_daily_candle_limit,
+            mtf_4h_candle_limit=settings.mtf_4h_candle_limit,
+        )
+        self.market_service = MarketService(
+            config=market_config,
+            exchange_client=self.client,
+            signal_scorer=self.signal_scorer,
+        )
+        if settings.mtf_enabled:
+            logger.info(
+                "market_service_initialized",
+                mtf_enabled=True,
+                mtf_4h_enabled=settings.mtf_4h_enabled,
+            )
+        else:
+            logger.info("market_service_initialized", mtf_enabled=False)
+
+        # Initialize signal service
+        signal_config = SignalConfig(
+            trading_pair=settings.trading_pair,
+            is_paper_trading=settings.is_paper_trading,
+            signal_history_failure_threshold=settings.signal_history_failure_threshold,
+        )
+        self.signal_service = SignalService(
+            config=signal_config,
+            db=self.db,
+            notifier=self.notifier,
+        )
+        logger.info("signal_service_initialized")
+
+        # Initialize position service
+        position_config = PositionConfig(
+            trading_pair=settings.trading_pair,
+            is_paper_trading=settings.is_paper_trading,
+            base_currency=self._base_currency,
+            quote_currency=self._quote_currency,
+        )
+        self.position_service = PositionService(
+            config=position_config,
+            db=self.db,
+            exchange_client=self.client,
+        )
+        logger.info("position_service_initialized")
+
+        # Initialize AI service
+        ai_config = AIConfig(
+            candle_interval=settings.candle_interval,
+            ai_review_rejection_cooldown=settings.ai_review_rejection_cooldown,
+            ai_recommendation_ttl_minutes=settings.ai_recommendation_ttl_minutes,
+            sentiment_failure_alert_threshold=settings.sentiment_failure_alert_threshold,
+        )
+        self.ai_service = AIService(
+            config=ai_config,
+            notifier=self.notifier,
+        )
+        logger.info("ai_service_initialized")
+
+        # Initialize Cramer Mode service (inverse trading for comparison)
+        cramer_config = CramerConfig(
+            trading_pair=settings.trading_pair,
+            base_currency=self._base_currency,
+            quote_currency=self._quote_currency,
+            enable_cramer_mode=settings.enable_cramer_mode,
+            min_trade_quote=Decimal(str(settings.min_trade_quote)),
+            min_trade_base=Decimal(str(settings.min_trade_base)),
+            enable_take_profit=settings.enable_take_profit,
+            enable_cooldown=settings.trade_cooldown_enabled,
+            cooldown_period_hours=settings.buy_cooldown_minutes / 60,  # Convert to hours
+            cooldown_min_price_move=settings.buy_price_change_percent,
+        )
+        self.cramer_service = CramerService(
+            config=cramer_config,
+            db=self.db,
+            position_sizer=self.position_sizer,
+            position_service=self.position_service,
+            real_client=self.real_client,
+            create_trailing_stop_callback=self._create_trailing_stop,
+        )
+
+        # Initialize Cramer Mode if enabled (paper trading only)
+        if settings.enable_cramer_mode and settings.is_paper_trading:
+            # Get initial balance from normal bot for first-time setup
+            normal_quote = self.client.get_balance(self._quote_currency).available
+            normal_base = self.client.get_balance(self._base_currency).available
+            normal_position = self.db.get_current_position(
+                settings.trading_pair, is_paper=True, bot_mode=BotMode.NORMAL
+            )
+            normal_has_position = normal_position and normal_position.get_quantity() > Decimal("0")
+
+            self.cramer_service.initialize(
+                initial_quote=normal_quote,
+                initial_base=normal_base,
+                normal_has_position=normal_has_position,
+            )
+        logger.info("cramer_service_initialized", enabled=settings.enable_cramer_mode)
+
+        # Initialize reporting service
+        hourly_analysis_enabled = settings.hourly_analysis_enabled and self.trade_reviewer is not None
+        reporting_config = ReportingConfig(
+            is_paper_trading=settings.is_paper_trading,
+            trading_pair=settings.trading_pair,
+            signal_history_retention_days=settings.signal_history_retention_days,
+            hourly_analysis_enabled=hourly_analysis_enabled,
+            candle_interval=settings.candle_interval,
+            candle_limit=settings.candle_limit,
+            regime_sentiment_enabled=settings.regime_sentiment_enabled,
+        )
+        self.reporting_service = ReportingService(
+            config=reporting_config,
+            notifier=self.notifier,
+            db=self.db,
+            exchange_client=self.client,
+            signal_scorer=self.signal_scorer,
+            trade_reviewer=self.trade_reviewer,
+            on_sentiment_success=self.ai_service.record_sentiment_success,
+            on_sentiment_failure=self.ai_service.record_sentiment_failure,
+            event_loop=self._loop,  # Share daemon's event loop
+        )
+        if hourly_analysis_enabled:
+            logger.info("hourly_market_analysis_enabled", uses_trade_reviewer=True)
+        else:
+            logger.info("hourly_market_analysis_disabled")
+
+        # AI recommendation state now managed by AIService
 
         # Check postmortem requirements if enabled
         self._postmortem_available = False
@@ -677,44 +728,7 @@ class TradingDaemon:
                 f"Trading pair '{trading_pair}' is not valid on {self.exchange_name}: {e}"
             ) from e
 
-    def _get_ai_threshold_adjustment(self, action: str) -> int:
-        """
-        Calculate threshold adjustment based on active AI recommendation.
-
-        When the AI judge recommends "accumulate" or "reduce" on an interesting hold,
-        this temporarily adjusts the threshold to make trading easier.
-
-        Args:
-            action: "buy" or "sell"
-
-        Returns:
-            Negative value to lower threshold (easier to trade), 0 otherwise.
-            Decays linearly over TTL period.
-        """
-        if not self._ai_recommendation or not self._ai_recommendation_time:
-            return 0
-
-        # Check if recommendation has expired
-        elapsed = (datetime.now(timezone.utc) - self._ai_recommendation_time).total_seconds() / 60
-        if elapsed > self._ai_recommendation_ttl_minutes:
-            # Clear expired recommendation
-            self._ai_recommendation = None
-            self._ai_recommendation_time = None
-            return 0
-
-        # Calculate decay factor (1.0 at start, 0.0 at TTL)
-        decay = 1.0 - (elapsed / self._ai_recommendation_ttl_minutes)
-
-        # Base adjustment of 15 points, scaled by confidence and decay
-        base_adjustment = 15
-        adjustment = int(base_adjustment * self._ai_recommendation_confidence * decay)
-
-        if self._ai_recommendation == "accumulate" and action == "buy":
-            return -adjustment  # Lower buy threshold (easier to buy)
-        elif self._ai_recommendation == "reduce" and action == "sell":
-            return -adjustment  # Lower sell threshold (easier to sell)
-
-        return 0
+    # AI threshold adjustment moved to AIService.get_threshold_adjustment()
 
     def _handle_shutdown(self, signum: int, frame) -> None:
         """Handle shutdown signals."""
@@ -821,8 +835,14 @@ class TradingDaemon:
             # Update circuit breaker candle interval for adaptive flash crash detection
             self.circuit_breaker.set_candle_interval(new_settings.candle_interval)
 
-            # Update AI recommendation TTL
-            self._ai_recommendation_ttl_minutes = new_settings.ai_recommendation_ttl_minutes
+            # Update AI service config
+            ai_config = AIConfig(
+                candle_interval=new_settings.candle_interval,
+                ai_review_rejection_cooldown=new_settings.ai_review_rejection_cooldown,
+                ai_recommendation_ttl_minutes=new_settings.ai_recommendation_ttl_minutes,
+                sentiment_failure_alert_threshold=new_settings.sentiment_failure_alert_threshold,
+            )
+            self.ai_service.update_config(ai_config)
 
             # Invalidate HTF cache if MTF settings or indicator periods changed
             # Indicator periods affect trend calculation, so cache must be invalidated
@@ -835,7 +855,17 @@ class TradingDaemon:
                                            "mtf_daily_cache_minutes", "mtf_4h_cache_minutes",
                                            "ema_slow", "bollinger_period", "macd_slow"}
             if mtf_cache_affecting_settings & set(changes.keys()):
-                self._invalidate_htf_cache()
+                # Update market service config and invalidate cache
+                self.market_service.update_config(MarketConfig(
+                    trading_pair=self.settings.trading_pair,
+                    mtf_enabled=self.settings.mtf_enabled,
+                    mtf_4h_enabled=self.settings.mtf_4h_enabled,
+                    mtf_daily_cache_minutes=self.settings.mtf_daily_cache_minutes,
+                    mtf_4h_cache_minutes=self.settings.mtf_4h_cache_minutes,
+                    mtf_daily_candle_limit=self.settings.mtf_daily_candle_limit,
+                    mtf_4h_candle_limit=self.settings.mtf_4h_candle_limit,
+                ))
+                self.market_service.invalidate_cache()
 
             logger.info(
                 "config_reload_complete",
@@ -869,347 +899,7 @@ class TradingDaemon:
         }
         return interval_map.get(self._last_volatility, self.settings.check_interval_seconds)
 
-    def _get_candle_start(self, timestamp: datetime) -> datetime:
-        """
-        Get start of the candle period containing the given timestamp.
-
-        Args:
-            timestamp: Any datetime within a candle period
-
-        Returns:
-            datetime representing the start of that candle period
-        """
-        granularity_seconds = {
-            "ONE_MINUTE": 60,
-            "FIVE_MINUTE": 300,
-            "FIFTEEN_MINUTE": 900,
-            "THIRTY_MINUTE": 1800,
-            "ONE_HOUR": 3600,
-            "TWO_HOUR": 7200,
-            "SIX_HOUR": 21600,
-            "ONE_DAY": 86400,
-        }
-        seconds = granularity_seconds.get(self.settings.candle_interval, 3600)
-        ts = timestamp.timestamp()
-        candle_start_ts = (ts // seconds) * seconds
-        return datetime.fromtimestamp(candle_start_ts, tz=timezone.utc)
-
-    def _should_skip_review_after_veto(self, signal_action: str) -> tuple[bool, Optional[str]]:
-        """
-        Check if AI review should be skipped due to recent veto rejection.
-
-        After a SKIP or REDUCE veto, skip further reviews until:
-        - A new candle period begins, OR
-        - The signal direction changes (BUY -> SELL or vice versa)
-
-        Args:
-            signal_action: Current signal action ("buy" or "sell")
-
-        Returns:
-            Tuple of (should_skip, reason) where reason explains why if skipping
-        """
-        if not self.settings.ai_review_rejection_cooldown:
-            return False, None
-
-        if self._last_veto_timestamp is None:
-            return False, None
-
-        # Direction changed - allow review
-        if self._last_veto_direction != signal_action:
-            return False, None
-
-        # Check if we're in a new candle period
-        now = datetime.now(timezone.utc)
-        current_candle_start = self._get_candle_start(now)
-        veto_candle_start = self._get_candle_start(self._last_veto_timestamp)
-
-        if current_candle_start > veto_candle_start:
-            # New candle, reset cooldown state
-            self._last_veto_timestamp = None
-            self._last_veto_direction = None
-            return False, None
-
-        # Same candle, same direction - skip review
-        return True, f"veto_cooldown (same candle, direction={signal_action})"
-
-    def _record_veto_timestamp(self, candles: pd.DataFrame) -> None:
-        """
-        Record veto timestamp using candle's market time instead of wall-clock time.
-
-        This avoids edge cases at candle boundaries where wall-clock time might
-        advance to the next candle while processing the current one.
-
-        Args:
-            candles: DataFrame containing candle data with timestamp column
-        """
-        # Use candle timestamp (market time) instead of wall-clock time
-        # to avoid edge cases at candle boundaries
-        if not candles.empty:
-            candle_timestamp = candles.iloc[-1]["timestamp"]
-            # Normalize pd.Timestamp to datetime for consistent handling
-            if isinstance(candle_timestamp, pd.Timestamp):
-                candle_timestamp = candle_timestamp.to_pydatetime()
-            elif not isinstance(candle_timestamp, datetime):
-                # Type safety check for financial system
-                logger.warning(
-                    "candle_timestamp_type_mismatch",
-                    type=type(candle_timestamp).__name__,
-                    message="Expected datetime, falling back to current time"
-                )
-                candle_timestamp = datetime.now(timezone.utc)
-        else:
-            candle_timestamp = datetime.now(timezone.utc)
-
-        self._last_veto_timestamp = candle_timestamp
-
-    def _get_timeframe_trend(self, granularity: str, cache_minutes: int) -> str:
-        """
-        Get trend for a specific timeframe with caching.
-
-        Args:
-            granularity: Candle granularity ("ONE_DAY" or "FOUR_HOUR")
-            cache_minutes: Cache TTL in minutes
-
-        Returns:
-            Trend direction: "bullish", "bearish", or "neutral"
-        """
-        # Select appropriate cache based on granularity
-        if granularity == "ONE_DAY":
-            last_fetch = self._daily_last_fetch
-            cached_trend = self._daily_trend
-        elif granularity == "FOUR_HOUR":
-            last_fetch = self._4h_last_fetch
-            cached_trend = self._4h_trend
-        else:
-            raise ValueError(f"Unsupported granularity for HTF: {granularity}")
-
-        now = datetime.now(timezone.utc)
-        if last_fetch and (now - last_fetch) < timedelta(minutes=cache_minutes):
-            self._htf_cache_hits += 1
-            return cached_trend
-
-        # Cache is stale or non-existent - count as cache miss
-        # We count the miss once here, regardless of fetch outcome
-        self._htf_cache_misses += 1
-
-        # Select appropriate candle limit based on timeframe
-        if granularity == "ONE_DAY":
-            candle_limit = self.settings.mtf_daily_candle_limit
-        else:  # FOUR_HOUR
-            candle_limit = self.settings.mtf_4h_candle_limit
-
-        try:
-            candles = self.client.get_candles(
-                self.settings.trading_pair,
-                granularity=granularity,
-                limit=candle_limit,
-            )
-
-            # Validate candles before processing - need enough data for trend calculation
-            min_required = max(
-                self.signal_scorer.ema_slow_period,
-                self.signal_scorer.bollinger_period,
-                self.signal_scorer.macd_slow,
-            )
-            if candles is None or candles.empty or len(candles) < min_required:
-                logger.warning(
-                    "htf_insufficient_data",
-                    timeframe=granularity,
-                    candle_count=len(candles) if candles is not None and not candles.empty else 0,
-                    required=min_required,
-                )
-                return cached_trend or "neutral"
-
-            trend = self.signal_scorer.get_trend(candles)
-
-            # Update cache
-            if granularity == "ONE_DAY":
-                self._daily_trend = trend
-                self._daily_last_fetch = now
-            elif granularity == "FOUR_HOUR":
-                self._4h_trend = trend
-                self._4h_last_fetch = now
-            else:
-                raise ValueError(f"Unsupported granularity for HTF: {granularity}")
-
-            logger.info(
-                "htf_trend_updated",
-                timeframe=granularity,
-                trend=trend,
-                cache_hits=self._htf_cache_hits,
-                cache_misses=self._htf_cache_misses,
-            )
-            return trend
-        except (ConnectionError, TimeoutError, OSError, ValueError, KeyError, NotImplementedError) as e:
-            # Expected failures: network issues, API errors, data parsing issues,
-            # or unsupported granularity (NotImplementedError).
-            # Cache miss was already counted above when we decided to fetch
-            # Fail-open: return cached trend or neutral, never block trading
-            logger.warning("htf_fetch_failed", timeframe=granularity, error=str(e), error_type=type(e).__name__)
-            return cached_trend or "neutral"
-        except Exception as e:
-            # Unexpected errors - log at error level but still fail-open
-            # Cache miss was already counted above when we decided to fetch
-            # Financial bot should never crash due to HTF analysis failure
-            logger.error("htf_fetch_unexpected_error", timeframe=granularity, error=str(e), error_type=type(e).__name__, traceback=traceback.format_exc())
-            return cached_trend or "neutral"
-
-    def _get_htf_bias(self) -> tuple[str, Optional[str], Optional[str]]:
-        """
-        Get combined HTF bias from daily + 4-hour trends.
-
-        Returns:
-            Tuple of (combined_bias, daily_trend, 4h_trend)
-            - Both bullish → "bullish"
-            - Both bearish → "bearish"
-            - Mixed/neutral → "neutral"
-            - daily_trend is None when mtf_enabled=False
-            - 4h_trend is None when mtf_4h_enabled=False
-        """
-        if not self.settings.mtf_enabled:
-            # When MTF is disabled, we don't fetch ANY HTF data, so both trends should be None
-            return "neutral", None, None
-
-        daily = self._get_timeframe_trend("ONE_DAY", self.settings.mtf_daily_cache_minutes)
-
-        # 4H is optional - when disabled, just use daily trend directly
-        if not self.settings.mtf_4h_enabled:
-            # Daily-only mode: simpler, fewer API calls
-            return daily, daily, None
-
-        # MTF uses FOUR_HOUR (not SIX_HOUR) because:
-        # - More frequent data points (6 candles/day vs 4 for 6H)
-        # - More responsive to intraday trend shifts while still filtering hourly noise
-        # - Provides good intermediate timeframe between daily and hourly trading
-        # Note: SIX_HOUR remains a valid granularity for other uses, just not for MTF
-        four_hour = self._get_timeframe_trend("FOUR_HOUR", self.settings.mtf_4h_cache_minutes)
-
-        # Combine: both must agree for strong bias
-        if daily == "bullish" and four_hour == "bullish":
-            combined = "bullish"
-        elif daily == "bearish" and four_hour == "bearish":
-            combined = "bearish"
-        else:
-            combined = "neutral"
-
-        return combined, daily, four_hour
-
-    def _invalidate_htf_cache(self) -> None:
-        """
-        Invalidate HTF trend cache when settings change.
-
-        Called when MTF-related settings are updated at runtime to ensure
-        the next iteration uses fresh data with the new parameters.
-        """
-        self._daily_last_fetch = None
-        self._4h_last_fetch = None
-        logger.info("htf_cache_invalidated")
-
-    def _store_signal_history(
-        self,
-        signal_result: SignalResult,
-        current_price: Decimal,
-        htf_bias: str,
-        daily_trend: Optional[str],
-        four_hour_trend: Optional[str],
-        threshold: int,
-        trade_executed: bool = False,
-    ) -> Optional[int]:
-        """
-        Store signal calculation for historical analysis.
-
-        Called every iteration to enable post-mortem analysis of trades.
-
-        Args:
-            signal_result (SignalResult): The calculated signal with scores and metadata
-            current_price (Decimal): Current market price
-            htf_bias (str): Higher timeframe bias (bullish/bearish/neutral)
-            daily_trend (str): Daily trend direction
-            four_hour_trend (str): 4-hour trend direction
-            threshold (int): Signal threshold used for trading decision
-            trade_executed (bool, optional): Whether a trade was executed based on this signal. Defaults to False.
-
-        Returns:
-            The signal history record ID, or None if storage failed.
-        """
-        try:
-            breakdown = signal_result.breakdown
-            with self.db.session() as session:
-                history = SignalHistory(
-                    symbol=self.settings.trading_pair,
-                    is_paper=self.settings.is_paper_trading,
-                    current_price=str(current_price),
-                    rsi_score=breakdown.get("rsi", 0),
-                    macd_score=breakdown.get("macd", 0),
-                    bollinger_score=breakdown.get("bollinger", 0),
-                    ema_score=breakdown.get("ema", 0),
-                    volume_score=breakdown.get("volume", 0),
-                    rsi_value=breakdown.get("_rsi_value"),
-                    macd_histogram=breakdown.get("_macd_histogram"),
-                    bb_position=breakdown.get("_bb_position"),
-                    ema_gap_percent=breakdown.get("_ema_gap_percent"),
-                    volume_ratio=breakdown.get("_volume_ratio"),
-                    trend_filter_adj=breakdown.get("trend_filter", 0),
-                    momentum_mode_adj=breakdown.get("_momentum_active", 0),
-                    whale_activity_adj=breakdown.get("_whale_activity", 0),
-                    htf_bias_adj=breakdown.get("htf_bias", 0),
-                    htf_bias=htf_bias,
-                    htf_daily_trend=daily_trend,
-                    htf_4h_trend=four_hour_trend,
-                    raw_score=breakdown.get("_raw_score", signal_result.score),
-                    final_score=signal_result.score,
-                    action=signal_result.action,
-                    threshold_used=threshold,
-                    trade_executed=trade_executed,
-                )
-                session.add(history)
-                session.commit()
-                self._signal_history_failures = 0  # Reset on success
-                return history.id
-        except SQLAlchemyError as e:
-            # Database errors are non-critical - don't block trading for history storage
-            self._signal_history_failures += 1
-            logger.warning(
-                "signal_history_store_failed",
-                error=str(e),
-                error_type=type(e).__name__,
-                consecutive_failures=self._signal_history_failures,
-            )
-            # Alert at threshold failures, then every 50 additional failures
-            threshold = self.settings.signal_history_failure_threshold
-            if self._signal_history_failures == threshold or (
-                self._signal_history_failures > threshold
-                and (self._signal_history_failures - threshold) % 50 == 0
-            ):
-                self.notifier.notify_error(
-                    f"Signal history storage failing ({self._signal_history_failures} consecutive failures)",
-                    context=f"Last error: {str(e)}",
-                )
-            return None
-
-    def _mark_signal_trade_executed(self, signal_id: Optional[int]) -> None:
-        """
-        Mark a specific signal history record as having resulted in a trade.
-
-        Called after successful buy/sell to enable accurate post-mortem analysis.
-
-        Args:
-            signal_id: The ID of the signal history record to mark.
-                       If None, the operation is skipped (signal storage may have failed).
-        """
-        if signal_id is None:
-            return
-
-        try:
-            with self.db.session() as session:
-                session.query(SignalHistory).filter(
-                    SignalHistory.id == signal_id
-                ).update({"trade_executed": True})
-                session.commit()
-                logger.debug("signal_history_trade_marked", signal_id=signal_id)
-        except SQLAlchemyError as e:
-            # Non-critical - don't block trading for history update
-            logger.warning("signal_history_trade_flag_update_failed", error=str(e))
+    # Signal history storage and trade marking moved to SignalService
 
     def _run_postmortem_async(self, trade_id: Optional[int] = None) -> None:
         """
@@ -1291,7 +981,7 @@ class TradingDaemon:
 
         try:
             # Get initial portfolio value and price
-            portfolio_value = self._get_portfolio_value()
+            portfolio_value = self.position_service.get_portfolio_value()
             starting_price = self.client.get_current_price(self.settings.trading_pair)
             self.loss_limiter.set_starting_balance(portfolio_value)
 
@@ -1303,18 +993,7 @@ class TradingDaemon:
             )
 
             # Initialize Cramer Mode daily stats if enabled
-            if self.cramer_client and self.settings.enable_cramer_mode:
-                cramer_portfolio_value = self._get_cramer_portfolio_value()
-                self.db.update_daily_stats(
-                    starting_balance=cramer_portfolio_value,
-                    starting_price=starting_price,
-                    is_paper=True,  # Cramer Mode is paper-only
-                    bot_mode=BotMode.INVERTED,
-                )
-                logger.info(
-                    "cramer_daily_stats_initialized",
-                    starting_balance=str(cramer_portfolio_value),
-                )
+            self.cramer_service.initialize_daily_stats()
 
             # Send startup notification
             mode = "PAPER" if self.settings.is_paper_trading else "LIVE"
@@ -1344,15 +1023,18 @@ class TradingDaemon:
                     self._reload_config()
 
                 # Check for performance reports
-                self._check_daily_report()
-                self._check_weekly_report()
-                self._check_monthly_report()
+                self.reporting_service.check_daily_report()
+                self.reporting_service.check_weekly_report()
+                self.reporting_service.check_monthly_report()
 
                 # Check for signal history cleanup
-                self._check_signal_history_cleanup()
+                self.reporting_service.check_signal_history_cleanup()
 
                 # Check for hourly market analysis
-                self._check_hourly_analysis()
+                self.reporting_service.check_hourly_analysis(
+                    volatility=self._last_volatility,
+                    regime=self._last_regime,
+                )
 
                 # Periodic safety check: ensure positions have stop protection
                 # This catches edge cases like manual position opens or recovery failures
@@ -1491,8 +1173,8 @@ class TradingDaemon:
         self.validator.update_balances(base_balance, quote_balance, current_price)
 
         # Log warning if both bots have positions simultaneously (for visibility)
-        if self.cramer_client and not self._cramer_mode_disabled:
-            cramer_base = self.cramer_client.get_balance(self._base_currency).available
+        if self.cramer_service.is_enabled:
+            cramer_base = self.cramer_service.get_base_balance()
             if base_balance > Decimal("0") and cramer_base > Decimal("0"):
                 normal_value = base_balance * current_price
                 cramer_value = cramer_base * current_price
@@ -1516,9 +1198,9 @@ class TradingDaemon:
         cramer_trailing_action = None
         cramer_base_balance = Decimal("0")
 
-        if self.cramer_client and not self._cramer_mode_disabled:
+        if self.cramer_service.is_enabled:
             # Get balance BEFORE stop check to ensure consistency
-            cramer_base_balance = self.cramer_client.get_balance(self._base_currency).available
+            cramer_base_balance = self.cramer_service.get_base_balance()
             cramer_trailing_action = self._check_trailing_stop(current_price, bot_mode=BotMode.INVERTED)
 
         # Execute Cramer Mode trailing stop FIRST (before normal bot's early return)
@@ -1527,12 +1209,12 @@ class TradingDaemon:
         # 2. If we executed normal first, Cramer's stop would never run
         # 3. Both bots have INDEPENDENT risk management - not mirrored entries
         # 4. This ensures fair comparison: both bots can exit via their own stops
-        if self.cramer_client and not self._cramer_mode_disabled and cramer_trailing_action == "sell" and cramer_base_balance > Decimal("0"):
+        if self.cramer_service.is_enabled and cramer_trailing_action == "sell" and cramer_base_balance > Decimal("0"):
             logger.info(
                 "cramer_trailing_stop_triggered",
                 base_balance=str(cramer_base_balance),
             )
-            self._execute_cramer_trailing_stop_sell(
+            self.cramer_service.execute_trailing_stop_sell(
                 candles=candles,
                 current_price=current_price,
                 base_balance=cramer_base_balance,
@@ -1590,7 +1272,7 @@ class TradingDaemon:
         # - MTF enabled, 4H disabled: returns (daily, daily, None)
         # - MTF fully enabled: returns (combined, daily, four_hour)
         # These variables are used in signal calculation AND dashboard state, ensuring consistency
-        htf_bias, daily_trend, four_hour_trend = self._get_htf_bias()
+        htf_bias, daily_trend, four_hour_trend = self.market_service.get_htf_bias()
 
         # Fetch sentiment before signal calculation to enable extreme fear override in MTF logic.
         # This must happen BEFORE calculate_score() because sentiment_category is used to
@@ -1609,7 +1291,7 @@ class TradingDaemon:
                         value=sentiment.value,
                     )
                     # Record success and handle recovery notification
-                    self._record_sentiment_success()
+                    self.ai_service.record_sentiment_success()
                 else:
                     logger.warning(
                         "sentiment_unavailable_for_trade_evaluation",
@@ -1617,7 +1299,7 @@ class TradingDaemon:
                         impact="extreme_fear_override_disabled",
                     )
                     # Record failure atomically (increments counter and checks threshold)
-                    self._record_sentiment_failure(context="trading")
+                    self.ai_service.record_sentiment_failure(context="trading")
             except Exception as e:
                 logger.warning(
                     "sentiment_fetch_failed_during_trade_evaluation",
@@ -1625,7 +1307,7 @@ class TradingDaemon:
                     impact="extreme_fear_override_disabled",
                 )
                 # Record failure atomically (increments counter and checks threshold)
-                self._record_sentiment_failure(context="trading")
+                self.ai_service.record_sentiment_failure(context="trading")
 
         # Calculate signal with HTF context and sentiment
         signal_result = self.signal_scorer.calculate_score(
@@ -1673,7 +1355,7 @@ class TradingDaemon:
 
             # Detect transition from high/extreme to normal/low
             if old_volatility in ("high", "extreme") and ind.volatility in ("normal", "low"):
-                self._pending_post_volatility_analysis = True
+                self.reporting_service.set_pending_post_volatility_analysis(True)
                 logger.info(
                     "post_volatility_analysis_pending",
                     from_volatility=old_volatility,
@@ -1893,8 +1575,8 @@ class TradingDaemon:
         #
         # See: src/strategy/regime.py for calculation logic
         base_threshold = self.settings.signal_threshold + regime.threshold_adjustment
-        ai_buy_adj = self._get_ai_threshold_adjustment("buy")
-        ai_sell_adj = self._get_ai_threshold_adjustment("sell")
+        ai_buy_adj = self.ai_service.get_threshold_adjustment("buy")
+        ai_sell_adj = self.ai_service.get_threshold_adjustment("sell")
 
         effective_buy_threshold = base_threshold + ai_buy_adj
         effective_sell_threshold = base_threshold + ai_sell_adj
@@ -1911,17 +1593,17 @@ class TradingDaemon:
 
         # Log when AI adjustment is active
         if ai_buy_adj != 0 or ai_sell_adj != 0:
-            elapsed = (datetime.now(timezone.utc) - self._ai_recommendation_time).total_seconds() / 60
-            decay_pct = (1.0 - elapsed / self._ai_recommendation_ttl_minutes) * 100
-            logger.info(
-                "ai_threshold_adjustment_active",
-                recommendation=self._ai_recommendation,
-                buy_adj=ai_buy_adj,
-                sell_adj=ai_sell_adj,
-                decay_remaining=f"{decay_pct:.0f}%",
-                effective_buy_threshold=effective_buy_threshold,
-                effective_sell_threshold=effective_sell_threshold,
-            )
+            rec_info = self.ai_service.get_recommendation_info()
+            if rec_info:
+                logger.info(
+                    "ai_threshold_adjustment_active",
+                    recommendation=rec_info["recommendation"],
+                    buy_adj=ai_buy_adj,
+                    sell_adj=ai_sell_adj,
+                    decay_remaining=f"{rec_info['decay_percent']:.0f}%",
+                    effective_buy_threshold=effective_buy_threshold,
+                    effective_sell_threshold=effective_sell_threshold,
+                )
 
         logger.info(
             "trading_check",
@@ -1975,7 +1657,7 @@ class TradingDaemon:
                 "portfolio_value": str(portfolio_value),
                 "position_percent": position_percent,
             },
-            "cramer_portfolio": self._get_cramer_portfolio_info(current_price) if self.cramer_client else None,
+            "cramer_portfolio": self.cramer_service.get_portfolio_info(current_price),
             "regime": regime.regime_name,
             "weight_profile": {
                 "name": self._last_weight_profile,
@@ -1998,7 +1680,7 @@ class TradingDaemon:
 
         # Store signal for historical analysis (every iteration)
         # Store the ID to mark as executed if a trade occurs (avoids race condition)
-        self._current_signal_id = self._store_signal_history(
+        self._current_signal_id = self.signal_service.store_signal(
             signal_result=signal_result,
             current_price=current_price,
             htf_bias=htf_bias,
@@ -2022,26 +1704,7 @@ class TradingDaemon:
 
             # Check if Cramer Mode can trade the INVERSE direction
             # Cramer buys when signal says sell, and vice versa
-            cramer_can_trade = False
-            if self.cramer_client and not self._cramer_mode_disabled:
-                try:
-                    cramer_quote_balance = self.cramer_client.get_balance(self._quote_currency)
-                    cramer_base_balance = self.cramer_client.get_balance(self._base_currency)
-                    if cramer_quote_balance and cramer_base_balance:
-                        cramer_quote = cramer_quote_balance.available
-                        cramer_base = cramer_base_balance.available
-                        min_quote = Decimal(str(self.position_sizer.config.min_trade_quote))
-                        min_base = Decimal(str(self.position_sizer.config.min_trade_base))
-                        cramer_can_buy = cramer_quote > min_quote
-                        cramer_can_sell = cramer_base > min_base
-                        # Cramer trades INVERSE: signal=sell means Cramer buys, signal=buy means Cramer sells
-                        cramer_can_trade = (
-                            (signal_direction == "sell" and cramer_can_buy) or
-                            (signal_direction == "buy" and cramer_can_sell)
-                        )
-                except Exception as e:
-                    logger.warning("cramer_balance_check_failed", error=str(e))
-                    cramer_can_trade = False
+            cramer_can_trade = self.cramer_service.can_trade(signal_direction) if signal_direction else False
 
             direction_is_tradeable = (
                 normal_can_trade or
@@ -2052,9 +1715,9 @@ class TradingDaemon:
             if not direction_is_tradeable:
                 # Neither normal nor Cramer can trade this direction
                 if signal_direction == "sell":
-                    reason = "no_position_either_bot" if self.cramer_client else "no_position"
+                    reason = "no_position_either_bot" if self.cramer_service.is_enabled else "no_position"
                 else:
-                    reason = "fully_allocated_both_bots" if self.cramer_client else "fully_allocated"
+                    reason = "fully_allocated_both_bots" if self.cramer_service.is_enabled else "fully_allocated"
                 logger.info(
                     "ai_review_skipped",
                     signal_direction=signal_direction,
@@ -2087,7 +1750,7 @@ class TradingDaemon:
                 # Veto cooldown: skip trade entirely if recently rejected for same direction
                 # The AI already vetoed this signal - don't retry until next candle
                 if should_review and review_type == "trade":
-                    skip_veto, veto_reason = self._should_skip_review_after_veto(
+                    skip_veto, veto_reason = self.ai_service.should_skip_review_after_veto(
                         signal_result.action
                     )
                     if skip_veto:
@@ -2192,8 +1855,7 @@ class TradingDaemon:
                             if review.final_veto_action == VetoAction.SKIP.value:
                                 logger.info("trade_vetoed", reason=review.judge_reasoning)
                                 # Record veto for cooldown (skip reviews until next candle)
-                                self._record_veto_timestamp(candles)
-                                self._last_veto_direction = signal_result.action
+                                self.ai_service.record_veto(candles, signal_result.action)
                                 return  # Skip this iteration
                             elif review.final_veto_action == VetoAction.REDUCE.value:
                                 claude_veto_multiplier = self.settings.position_reduction
@@ -2202,21 +1864,15 @@ class TradingDaemon:
                                     multiplier=f"{claude_veto_multiplier:.2f}",
                                 )
                                 # Record veto for cooldown (skip reviews until next candle)
-                                self._record_veto_timestamp(candles)
-                                self._last_veto_direction = signal_result.action
+                                self.ai_service.record_veto(candles, signal_result.action)
                             # Tiered system: skip or reduce only (no delay)
 
                         # For interesting holds, store recommendation for threshold adjustment
                         if review_type == "interesting_hold":
                             if review.judge_recommendation in ("accumulate", "reduce"):
-                                self._ai_recommendation = review.judge_recommendation
-                                self._ai_recommendation_confidence = review.judge_confidence
-                                self._ai_recommendation_time = datetime.now(timezone.utc)
-                                logger.info(
-                                    "ai_recommendation_stored",
-                                    recommendation=review.judge_recommendation,
-                                    confidence=f"{review.judge_confidence:.2f}",
-                                    ttl_minutes=self._ai_recommendation_ttl_minutes,
+                                self.ai_service.set_recommendation(
+                                    review.judge_recommendation,
+                                    review.judge_confidence,
                                 )
                             # Update cooldown tracking for interesting_hold
                             self._last_interesting_hold_review = datetime.now(timezone.utc)
@@ -2380,14 +2036,14 @@ class TradingDaemon:
                     volatility=signal_result.indicators.volatility or "normal",
                 )
                 # Execute opposite trade for Cramer Mode (if enabled)
-                if self.cramer_client:
-                    self._execute_cramer_trade(
-                        side="sell",  # Opposite of buy
-                        candles=candles,
-                        current_price=current_price,
-                        signal_score=signal_result.score,
-                        safety_multiplier=safety_multiplier,
-                    )
+                self.cramer_service.execute_trade(
+                    side="sell",  # Opposite of buy
+                    candles=candles,
+                    current_price=current_price,
+                    signal_score=signal_result.score,
+                    safety_multiplier=safety_multiplier,
+                    volatility=self._last_volatility,
+                )
             # Handle cases where normal bot skips
             if not can_buy or normal_bot_blocked_by_cooldown:
                 if not can_buy:
@@ -2397,13 +2053,14 @@ class TradingDaemon:
                         reason=f"insufficient_balance_or_position_limit (quote={quote_balance}, position={position_percent:.1f}%)",
                         signal_score=signal_result.score,
                     )
-                # Cramer Mode may trade independently (see _maybe_execute_cramer_independent docstring)
-                self._maybe_execute_cramer_independent(
+                # Cramer Mode may trade independently
+                self.cramer_service.maybe_execute_independent(
                     signal_side="buy",
                     candles=candles,
                     current_price=current_price,
                     signal_score=signal_result.score,
                     safety_multiplier=safety_multiplier,
+                    volatility=self._last_volatility,
                 )
 
         elif effective_action == "sell":
@@ -2442,14 +2099,14 @@ class TradingDaemon:
                     signal_result.score, safety_multiplier
                 )
                 # Execute opposite trade for Cramer Mode (if enabled)
-                if self.cramer_client:
-                    self._execute_cramer_trade(
-                        side="buy",  # Opposite of sell
-                        candles=candles,
-                        current_price=current_price,
-                        signal_score=signal_result.score,
-                        safety_multiplier=safety_multiplier,
-                    )
+                self.cramer_service.execute_trade(
+                    side="buy",  # Opposite of sell
+                    candles=candles,
+                    current_price=current_price,
+                    signal_score=signal_result.score,
+                    safety_multiplier=safety_multiplier,
+                    volatility=self._last_volatility,
+                )
 
             # Handle cases where normal bot skips
             if not can_sell or normal_bot_blocked_by_cooldown:
@@ -2460,13 +2117,14 @@ class TradingDaemon:
                         reason=f"insufficient_base_balance ({base_balance})",
                         signal_score=signal_result.score,
                     )
-                # Cramer Mode may trade independently (see _maybe_execute_cramer_independent docstring)
-                self._maybe_execute_cramer_independent(
+                # Cramer Mode may trade independently
+                self.cramer_service.maybe_execute_independent(
                     signal_side="sell",
                     candles=candles,
                     current_price=current_price,
                     signal_score=signal_result.score,
                     safety_multiplier=safety_multiplier,
+                    volatility=self._last_volatility,
                 )
 
     def _execute_buy(
@@ -2617,7 +2275,7 @@ class TradingDaemon:
             # Update position tracking and create stop protection
             # CRITICAL: If stop creation fails, immediately close position (fail-safe)
             try:
-                new_avg_cost = self._update_position_after_buy(result.size, filled_price, result.fee, is_paper, bot_mode=BotMode.NORMAL)
+                new_avg_cost = self.position_service.update_after_buy(result.size, filled_price, result.fee, is_paper, bot_mode=BotMode.NORMAL)
                 take_profit_price = position.take_profit_price if (self.settings.enable_take_profit and position.take_profit_price) else None
                 self._create_trailing_stop(
                     filled_price,
@@ -2700,7 +2358,7 @@ class TradingDaemon:
             self.circuit_breaker.record_order_success()
 
             # Mark signal history as having resulted in trade (for post-mortem analysis)
-            self._mark_signal_trade_executed(self._current_signal_id)
+            self.signal_service.mark_trade_executed(self._current_signal_id)
 
             # Run post-mortem analysis asynchronously (if enabled)
             self._run_postmortem_async()
@@ -2838,7 +2496,7 @@ class TradingDaemon:
             entry_price = current_position.get_average_cost() if current_position else None
 
             # Calculate realized P&L based on average cost basis
-            realized_pnl = self._calculate_realized_pnl(result.size, filled_price, result.fee, is_paper, bot_mode=BotMode.NORMAL)
+            realized_pnl = self.position_service.calculate_realized_pnl(result.size, filled_price, result.fee, is_paper, bot_mode=BotMode.NORMAL)
 
             # Get balance after trade for snapshot
             new_base_balance = self.client.get_balance(self._base_currency).available
@@ -2895,7 +2553,7 @@ class TradingDaemon:
             self.circuit_breaker.record_order_success()
 
             # Mark signal history as having resulted in trade (for post-mortem analysis)
-            self._mark_signal_trade_executed(self._current_signal_id)
+            self.signal_service.mark_trade_executed(self._current_signal_id)
 
             # Run post-mortem analysis asynchronously (if enabled)
             self._run_postmortem_async()
@@ -2904,1066 +2562,7 @@ class TradingDaemon:
             self.circuit_breaker.record_order_failure()
             self.notifier.notify_order_failed("sell", size_base, result.error or "Unknown error")
 
-    def _maybe_execute_cramer_independent(
-        self,
-        signal_side: str,
-        candles,
-        current_price: Decimal,
-        signal_score: int,
-        safety_multiplier: float,
-    ) -> None:
-        """
-        Execute Cramer Mode trade (inverse of signal) if conditions allow.
-
-        This is called when the normal bot CANNOT execute (blocked by balance,
-        position limits, or cooldown) but Cramer may still trade independently.
-
-        Cramer Mode is for PAPER MODE strategy comparison only - it uses virtual
-        balance and does not affect real funds.
-
-        Args:
-            signal_side: The direction the normal bot would have traded ("buy" or "sell")
-            candles: OHLCV data for position sizing
-            current_price: Current market price
-            signal_score: Signal strength from scorer
-            safety_multiplier: Combined safety multiplier (circuit breaker, judge, regime)
-        """
-        if not self.cramer_client:
-            return
-
-        # Cramer trades inverse: signal "buy" -> Cramer "sell", and vice versa
-        cramer_side = "sell" if signal_side == "buy" else "buy"
-
-        if safety_multiplier > 0:
-            self._execute_cramer_trade(
-                side=cramer_side,
-                candles=candles,
-                current_price=current_price,
-                signal_score=signal_score,
-                safety_multiplier=safety_multiplier,
-            )
-        else:
-            logger.warning(
-                "cramer_trade_blocked_by_safety",
-                side=cramer_side,
-                safety_multiplier=safety_multiplier,
-                reason="circuit_breaker_active",
-            )
-
-    def _execute_cramer_trade(
-        self,
-        side: str,
-        candles,
-        current_price: Decimal,
-        signal_score: int,
-        safety_multiplier: float,
-    ) -> None:
-        """
-        Execute a trade for the Cramer Mode (inverted mode).
-
-        This executes the OPPOSITE trade of what the normal bot just did,
-        using the Cramer Mode's separate virtual balance.
-        """
-        if not self.cramer_client:
-            return
-
-        if self._cramer_mode_disabled:
-            return  # Cramer Mode disabled due to balance mismatch
-
-        # Get Cramer Mode balances
-        cramer_quote_balance = self.cramer_client.get_balance(self._quote_currency).available
-        cramer_base_balance = self.cramer_client.get_balance(self._base_currency).available
-
-        logger.debug(
-            "cramer_trade_attempt",
-            side=side,
-            quote_balance=str(cramer_quote_balance),
-            base_balance=str(cramer_base_balance),
-        )
-
-        if side == "buy":
-            # Check if Cramer Mode can buy (same constraints as normal bot)
-            min_quote = Decimal(str(self.position_sizer.config.min_trade_quote))
-            if cramer_quote_balance < min_quote:
-                logger.info("cramer_skip_buy", reason="insufficient_quote_balance")
-                return
-
-            # Check Cramer Mode independent cooldown
-            if self.cramer_trade_cooldown:
-                cooldown_ok, cooldown_reason = self.cramer_trade_cooldown.can_execute("buy", current_price)
-                if not cooldown_ok:
-                    logger.info("cramer_skip_buy", reason=f"cooldown: {cooldown_reason}")
-                    return
-
-            # Calculate position size for Cramer Mode buy
-            position = self.position_sizer.calculate_size(
-                df=candles,
-                current_price=current_price,
-                quote_balance=cramer_quote_balance,
-                base_balance=cramer_base_balance,
-                signal_strength=abs(signal_score),
-                side="buy",
-                safety_multiplier=safety_multiplier,
-            )
-
-            if position.size_quote < min_quote:
-                logger.info("cramer_skip_buy", reason="position_too_small")
-                return
-
-            # Execute buy on Cramer Mode client
-            result = self.cramer_client.market_buy(
-                self.settings.trading_pair,
-                position.size_quote,
-            )
-
-            if result.success:
-                filled_price = result.filled_price or current_price
-
-                # Get new balances
-                new_quote = self.cramer_client.get_balance(self._quote_currency).available
-                new_base = self.cramer_client.get_balance(self._base_currency).available
-
-                # Verify balance consistency BEFORE DB writes (defensive check)
-                # If mismatch detected, skip all DB operations to preserve data integrity
-                actual_quote = self.cramer_client.get_balance(self._quote_currency).available
-                actual_base = self.cramer_client.get_balance(self._base_currency).available
-                if actual_quote != new_quote or actual_base != new_base:
-                    logger.error(
-                        "cramer_balance_mismatch",
-                        expected_quote=str(new_quote),
-                        actual_quote=str(actual_quote),
-                        expected_base=str(new_base),
-                        actual_base=str(actual_base),
-                    )
-                    logger.warning("cramer_mode_disabled_due_to_mismatch")
-                    self._cramer_mode_disabled = True
-                    return
-
-                # Update Cramer Mode position
-                new_avg_cost = self._update_position_after_buy(
-                    result.size, filled_price, result.fee,
-                    is_paper=True, bot_mode=BotMode.INVERTED
-                )
-
-                # Record trade
-                self.db.record_trade(
-                    side="buy",
-                    size=result.size,
-                    price=filled_price,
-                    fee=result.fee,
-                    symbol=self.settings.trading_pair,
-                    is_paper=True,
-                    bot_mode=BotMode.INVERTED,
-                    quote_balance_after=new_quote,
-                    base_balance_after=new_base,
-                    spot_rate=current_price,
-                )
-                self.db.increment_daily_trade_count(is_paper=True, bot_mode=BotMode.INVERTED)
-
-                # Create trailing stop for Cramer Mode
-                take_profit_price = position.take_profit_price if (self.settings.enable_take_profit and position.take_profit_price) else None
-                self._create_trailing_stop(
-                    filled_price,
-                    candles,
-                    is_paper=True,
-                    avg_cost=new_avg_cost,
-                    volatility=self._last_volatility,
-                    take_profit_price=take_profit_price,
-                    bot_mode=BotMode.INVERTED,
-                )
-
-                logger.info(
-                    "cramer_buy_executed",
-                    size=str(result.size),
-                    price=str(filled_price),
-                    fee=str(result.fee),
-                )
-
-                # Update Cramer cooldown
-                if self.cramer_trade_cooldown:
-                    self.cramer_trade_cooldown.record_trade("buy", filled_price)
-
-                # Update Cramer Mode daily stats with new ending balance
-                cramer_ending_balance = self._get_cramer_portfolio_value()
-                self.db.update_daily_stats(
-                    ending_balance=cramer_ending_balance,
-                    ending_price=current_price,
-                    is_paper=True,
-                    bot_mode=BotMode.INVERTED,
-                )
-            else:
-                logger.warning("cramer_buy_failed", error=result.error)
-
-        elif side == "sell":
-            # Check if Cramer Mode can sell
-            min_base = Decimal(str(self.position_sizer.config.min_trade_base))
-            if cramer_base_balance < min_base:
-                logger.info("cramer_skip_sell", reason="insufficient_base_balance")
-                return
-
-            # Check Cramer Mode independent cooldown
-            if self.cramer_trade_cooldown:
-                cooldown_ok, cooldown_reason = self.cramer_trade_cooldown.can_execute("sell", current_price)
-                if not cooldown_ok:
-                    logger.info("cramer_skip_sell", reason=f"cooldown: {cooldown_reason}")
-                    return
-
-            # For aggressive selling, sell entire position on strong signal
-            if abs(signal_score) >= 80:
-                size_base = cramer_base_balance
-            else:
-                position = self.position_sizer.calculate_size(
-                    df=candles,
-                    current_price=current_price,
-                    quote_balance=Decimal("0"),
-                    base_balance=cramer_base_balance,
-                    signal_strength=abs(signal_score),
-                    side="sell",
-                    safety_multiplier=safety_multiplier,
-                )
-                size_base = position.size_base
-
-            if size_base < min_base:
-                logger.info("cramer_skip_sell", reason="position_too_small")
-                return
-
-            # Execute sell on Cramer Mode client
-            result = self.cramer_client.market_sell(
-                self.settings.trading_pair,
-                size_base,
-            )
-
-            if result.success:
-                filled_price = result.filled_price or current_price
-
-                # Get new balances
-                new_quote = self.cramer_client.get_balance(self._quote_currency).available
-                new_base = self.cramer_client.get_balance(self._base_currency).available
-
-                # Verify balance consistency BEFORE DB writes (defensive check)
-                # If mismatch detected, skip all DB operations to preserve data integrity
-                actual_quote = self.cramer_client.get_balance(self._quote_currency).available
-                actual_base = self.cramer_client.get_balance(self._base_currency).available
-                if actual_quote != new_quote or actual_base != new_base:
-                    logger.error(
-                        "cramer_balance_mismatch",
-                        expected_quote=str(new_quote),
-                        actual_quote=str(actual_quote),
-                        expected_base=str(new_base),
-                        actual_base=str(actual_base),
-                    )
-                    logger.warning("cramer_mode_disabled_due_to_mismatch")
-                    self._cramer_mode_disabled = True
-                    return
-
-                # Calculate realized P&L for Cramer Mode
-                realized_pnl = self._calculate_realized_pnl(
-                    result.size, filled_price, result.fee,
-                    is_paper=True, bot_mode=BotMode.INVERTED
-                )
-
-                # Deactivate trailing stop
-                self.db.deactivate_trailing_stop(
-                    self.settings.trading_pair, is_paper=True, bot_mode=BotMode.INVERTED
-                )
-
-                # Record trade
-                self.db.record_trade(
-                    side="sell",
-                    size=result.size,
-                    price=filled_price,
-                    fee=result.fee,
-                    realized_pnl=realized_pnl,
-                    symbol=self.settings.trading_pair,
-                    is_paper=True,
-                    bot_mode=BotMode.INVERTED,
-                    quote_balance_after=new_quote,
-                    base_balance_after=new_base,
-                    spot_rate=current_price,
-                )
-                self.db.increment_daily_trade_count(is_paper=True, bot_mode=BotMode.INVERTED)
-
-                logger.info(
-                    "cramer_sell_executed",
-                    size=str(result.size),
-                    price=str(filled_price),
-                    fee=str(result.fee),
-                    realized_pnl=str(realized_pnl),
-                )
-
-                # Update Cramer cooldown
-                if self.cramer_trade_cooldown:
-                    self.cramer_trade_cooldown.record_trade("sell", filled_price)
-
-                # Update Cramer Mode daily stats with new ending balance
-                cramer_ending_balance = self._get_cramer_portfolio_value()
-                self.db.update_daily_stats(
-                    ending_balance=cramer_ending_balance,
-                    ending_price=current_price,
-                    is_paper=True,
-                    bot_mode=BotMode.INVERTED,
-                )
-            else:
-                logger.warning("cramer_sell_failed", error=result.error)
-
-    def _execute_cramer_trailing_stop_sell(
-        self,
-        candles,
-        current_price: Decimal,
-        base_balance: Decimal,
-    ) -> None:
-        """
-        Execute Cramer Mode sell from independent trailing stop trigger.
-
-        This is NOT a mirror of normal bot action - it's Cramer Mode's own
-        risk management exiting its position.
-        """
-        if not self.cramer_client:
-            return
-
-        if self._cramer_mode_disabled:
-            return  # Cramer Mode disabled due to balance mismatch
-
-        # Sell entire position (trailing stop = full exit)
-        result = self.cramer_client.market_sell(
-            self.settings.trading_pair,
-            base_balance,
-        )
-
-        if result.success:
-            filled_price = result.filled_price or current_price
-
-            # Get new balances
-            new_quote = self.cramer_client.get_balance(self._quote_currency).available
-            new_base = self.cramer_client.get_balance(self._base_currency).available
-
-            # Verify balance consistency BEFORE DB writes (defensive check)
-            # If mismatch detected, skip all DB operations to preserve data integrity
-            actual_quote = self.cramer_client.get_balance(self._quote_currency).available
-            actual_base = self.cramer_client.get_balance(self._base_currency).available
-            if actual_quote != new_quote or actual_base != new_base:
-                logger.error(
-                    "cramer_balance_mismatch",
-                    expected_quote=str(new_quote),
-                    actual_quote=str(actual_quote),
-                    expected_base=str(new_base),
-                    actual_base=str(actual_base),
-                )
-                logger.warning("cramer_mode_disabled_due_to_mismatch")
-                self._cramer_mode_disabled = True
-                return
-
-            # Calculate realized P&L
-            realized_pnl = self._calculate_realized_pnl(
-                result.size, filled_price, result.fee,
-                is_paper=True, bot_mode=BotMode.INVERTED
-            )
-
-            # Record trade
-            self.db.record_trade(
-                side="sell",
-                size=result.size,
-                price=filled_price,
-                fee=result.fee,
-                realized_pnl=realized_pnl,
-                symbol=self.settings.trading_pair,
-                is_paper=True,
-                bot_mode=BotMode.INVERTED,
-                quote_balance_after=new_quote,
-                base_balance_after=new_base,
-                spot_rate=current_price,
-            )
-            self.db.increment_daily_trade_count(is_paper=True, bot_mode=BotMode.INVERTED)
-
-            # Deactivate trailing stop (critical: prevent repeated triggers)
-            self.db.deactivate_trailing_stop(
-                symbol=self.settings.trading_pair,
-                is_paper=True,
-                bot_mode=BotMode.INVERTED,
-            )
-
-            # Record to Cramer Mode cooldown
-            if self.cramer_trade_cooldown:
-                self.cramer_trade_cooldown.record_trade("sell", filled_price)
-
-            logger.info(
-                "cramer_trailing_stop_sell_executed",
-                size=str(result.size),
-                price=str(filled_price),
-                fee=str(result.fee),
-                realized_pnl=str(realized_pnl),
-            )
-
-            # Update Cramer Mode daily stats with new ending balance
-            cramer_ending_balance = self._get_cramer_portfolio_value()
-            self.db.update_daily_stats(
-                ending_balance=cramer_ending_balance,
-                ending_price=current_price,
-                is_paper=True,
-                bot_mode=BotMode.INVERTED,
-            )
-        else:
-            logger.warning("cramer_trailing_stop_sell_failed", error=result.error)
-
-    def _update_position_after_buy(
-        self, size: Decimal, price: Decimal, fee: Decimal, is_paper: bool = False, bot_mode: BotMode = BotMode.NORMAL
-    ) -> Decimal:
-        """
-        Update position with new buy, recalculating weighted average cost.
-
-        Cost basis includes fees to accurately reflect break-even price.
-
-        Args:
-            size: Base currency amount bought (e.g., BTC)
-            price: Price paid per unit
-            fee: Trading fee paid (in quote currency)
-            is_paper: Whether this is a paper trade
-            bot_mode: Bot mode ("normal" or "inverted")
-
-        Returns:
-            The new weighted average cost for the position
-        """
-        current = self.db.get_current_position(self.settings.trading_pair, is_paper=is_paper, bot_mode=bot_mode)
-
-        if current:
-            old_qty = current.get_quantity()
-            old_cost = current.get_average_cost()
-            old_value = old_qty * old_cost
-        else:
-            old_qty = Decimal("0")
-            old_value = Decimal("0")
-
-        new_qty = old_qty + size
-        # Include fee in cost basis for accurate break-even calculation
-        new_value = old_value + (size * price) + fee
-        new_avg_cost = new_value / new_qty if new_qty > 0 else Decimal("0")
-
-        self.db.update_position(
-            symbol=self.settings.trading_pair,
-            quantity=new_qty,
-            average_cost=new_avg_cost,
-            is_paper=is_paper,
-            bot_mode=bot_mode,
-        )
-
-        logger.debug(
-            "position_updated_after_buy",
-            old_qty=str(old_qty),
-            new_qty=str(new_qty),
-            new_avg_cost=str(new_avg_cost),
-        )
-
-        return new_avg_cost
-
-    def _calculate_realized_pnl(
-        self, size: Decimal, sell_price: Decimal, fee: Decimal, is_paper: bool = False, bot_mode: BotMode = BotMode.NORMAL
-    ) -> Decimal:
-        """
-        Calculate realized PnL for a sell based on average cost.
-
-        Net PnL = (sell_price - avg_cost) * size - sell_fee
-
-        Args:
-            size: Base currency amount sold (e.g., BTC)
-            sell_price: Price received per unit
-            fee: Trading fee paid on sell (in quote currency)
-            is_paper: Whether this is a paper trade
-            bot_mode: Bot mode ("normal" or "inverted")
-
-        Returns:
-            Realized profit/loss (positive = profit, negative = loss)
-        """
-        current = self.db.get_current_position(self.settings.trading_pair, is_paper=is_paper, bot_mode=bot_mode)
-
-        if not current or current.get_quantity() <= 0:
-            return Decimal("0") - fee  # Still deduct fee even without position
-
-        avg_cost = current.get_average_cost()
-        # Deduct sell fee for accurate net P&L
-        pnl = ((sell_price - avg_cost) * size) - fee
-
-        # Update position (reduce quantity, keep avg cost)
-        new_qty = current.get_quantity() - size
-        if new_qty < Decimal("0"):
-            new_qty = Decimal("0")
-
-        self.db.update_position(
-            symbol=self.settings.trading_pair,
-            quantity=new_qty,
-            average_cost=avg_cost,
-            is_paper=is_paper,
-            bot_mode=bot_mode,
-        )
-
-        logger.info(
-            "realized_pnl_calculated",
-            size=str(size),
-            sell_price=str(sell_price),
-            avg_cost=str(avg_cost),
-            pnl=str(pnl),
-            remaining_qty=str(new_qty),
-            bot_mode=bot_mode,
-        )
-
-        return pnl
-
-    def _get_portfolio_value(self) -> Decimal:
-        """Get total portfolio value in quote currency."""
-        base_balance = self.client.get_balance(self._base_currency).available
-        quote_balance = self.client.get_balance(self._quote_currency).available
-        current_price = self.client.get_current_price(self.settings.trading_pair)
-
-        base_value = base_balance * current_price
-        return quote_balance + base_value
-
-    def _get_cramer_portfolio_value(self) -> Decimal:
-        """Get Cramer Mode total portfolio value in quote currency."""
-        if not self.cramer_client:
-            return Decimal("0")
-
-        base_balance = self.cramer_client.get_balance(self._base_currency).available
-        quote_balance = self.cramer_client.get_balance(self._quote_currency).available
-        current_price = self.client.get_current_price(self.settings.trading_pair)
-
-        base_value = base_balance * current_price
-        return quote_balance + base_value
-
-    def _get_cramer_portfolio_info(self, current_price: Decimal) -> Optional[dict]:
-        """Get Cramer Mode portfolio info for dashboard display."""
-        if not self.cramer_client:
-            return None
-
-        try:
-            base_balance = self.cramer_client.get_balance(self._base_currency).available
-            quote_balance = self.cramer_client.get_balance(self._quote_currency).available
-            base_value = base_balance * current_price
-            portfolio_value = quote_balance + base_value
-
-            # Calculate position percent (how much is in BTC)
-            position_percent = float(base_value / portfolio_value * 100) if portfolio_value > 0 else 0.0
-
-            return {
-                "quote_balance": str(quote_balance),
-                "base_balance": str(base_balance),
-                "portfolio_value": str(portfolio_value),
-                "position_percent": position_percent,
-            }
-        except Exception as e:
-            logger.warning("cramer_portfolio_fetch_error", error=str(e))
-            return None
-
-    def _record_sentiment_failure(self, context: str = "unknown") -> None:
-        """Atomically record sentiment fetch failure and alert if threshold is exceeded.
-
-        This method:
-        1. Increments the failure counter
-        2. Checks if the threshold is exceeded
-        3. Alerts if this is the first time we cross the threshold
-
-        Args:
-            context: The context where failure occurred ("trading" or "dashboard")
-
-        Thread-safe: All counter operations are atomic under lock.
-        """
-        threshold = self.settings.sentiment_failure_alert_threshold
-
-        # Atomically increment and check threshold under lock
-        with self._sentiment_lock:
-            self._sentiment_fetch_failures += 1
-            failures_count = self._sentiment_fetch_failures
-
-            # Only alert when we first cross the threshold
-            if failures_count != threshold:
-                # Log for troubleshooting when already past threshold
-                if failures_count > threshold:
-                    logger.debug(
-                        "sentiment_fetch_failures_above_threshold",
-                        consecutive_failures=failures_count,
-                        threshold=threshold,
-                        context=context,
-                    )
-                return
-
-            # Read last success timestamp under lock
-            last_success_timestamp = self._last_sentiment_fetch_success
-
-        # Calculate time since last success outside lock (only read operation needs protection)
-        try:
-            if last_success_timestamp is None:
-                time_since_success = "none (check API connectivity)"
-            else:
-                minutes_ago = (datetime.now(timezone.utc) - last_success_timestamp).total_seconds() / 60
-                if minutes_ago < 0:
-                    # Timestamp is in the future - clock skew detected
-                    time_since_success = "unknown (clock skew detected)"
-                elif minutes_ago < 1:
-                    time_since_success = "just now (< 1 minute ago)"
-                else:
-                    time_since_success = f"{minutes_ago:.0f} minutes ago"
-        except Exception:
-            # If time calculation fails (e.g., system clock issues), use fallback
-            time_since_success = "unknown"
-
-        # Perform logging and notifications outside the lock to minimize lock hold time
-        logger.error(
-            "sentiment_fetch_failure_threshold_exceeded",
-            consecutive_failures=failures_count,
-            threshold=threshold,
-            last_success=time_since_success,
-            impact="extreme_fear_override_disabled",
-            context=context,
-        )
-
-        self.notifier.notify_error(
-            f"Sentiment API failing: {failures_count} consecutive failures. "
-            f"Last success: {time_since_success}. "
-            f"Extreme fear override is disabled until sentiment API recovers.",
-            "Sentiment Fetch Failure Alert"
-        )
-
-    def _record_sentiment_success(self) -> None:
-        """Record successful sentiment fetch and notify recovery if needed.
-
-        This method:
-        1. Checks if we were previously in an alert state
-        2. Resets the failure counter
-        3. Updates the last success timestamp
-        4. Notifies recovery if we were previously failing
-
-        NOTE: This is called from both _trading_iteration() and _check_hourly_analysis().
-        Both code paths share the same failure counter, so "consecutive failures" means
-        consecutive attempts across all contexts (trading + dashboard), not per-context.
-        This is intentional - we want to know about API health globally.
-        """
-        threshold = self.settings.sentiment_failure_alert_threshold
-
-        # Atomically check and reset state under lock
-        with self._sentiment_lock:
-            was_in_alert_state = self._sentiment_fetch_failures >= threshold
-            self._sentiment_fetch_failures = 0
-            self._last_sentiment_fetch_success = datetime.now(timezone.utc)
-
-        # Notify recovery if we were previously failing (outside lock to minimize hold time)
-        if was_in_alert_state:
-            self.notifier.notify_info(
-                "Sentiment API has recovered. Extreme fear override is now active.",
-                "Sentiment API Recovery"
-            )
-
-    def _check_daily_report(self) -> None:
-        """Check if we should generate daily performance report (UTC)."""
-        today = datetime.now(timezone.utc).date()
-
-        # Only report once per day
-        if self._last_daily_report == today:
-            return
-
-        # Get yesterday's stats (if exists)
-        from datetime import timedelta
-        yesterday = today - timedelta(days=1)
-        stats = self.db.get_daily_stats(yesterday, is_paper=self.settings.is_paper_trading)
-
-        if stats and stats.starting_balance and stats.ending_balance:
-            try:
-                starting_balance = Decimal(stats.starting_balance)
-                ending_balance = Decimal(stats.ending_balance)
-                starting_price = Decimal(stats.starting_price) if stats.starting_price else None
-                ending_price = Decimal(stats.ending_price) if stats.ending_price else None
-
-                # Calculate portfolio return
-                if starting_balance > 0:
-                    portfolio_return = float((ending_balance - starting_balance) / starting_balance * 100)
-                else:
-                    portfolio_return = 0.0
-
-                # Calculate BTC return (buy-and-hold benchmark)
-                btc_return = 0.0
-                if starting_price and ending_price and starting_price > 0:
-                    btc_return = float((ending_price - starting_price) / starting_price * 100)
-
-                # Calculate alpha (outperformance vs buy-and-hold)
-                alpha = portfolio_return - btc_return
-
-                logger.info(
-                    "daily_performance",
-                    date=str(yesterday),
-                    portfolio_return=f"{portfolio_return:+.2f}%",
-                    btc_return=f"{btc_return:+.2f}%",
-                    alpha=f"{alpha:+.2f}%",
-                    starting_balance=str(starting_balance),
-                    ending_balance=str(ending_balance),
-                    trades=stats.total_trades or 0,
-                )
-
-                # Send Telegram notification
-                self._send_daily_report(
-                    yesterday,
-                    portfolio_return,
-                    btc_return,
-                    alpha,
-                    starting_balance,
-                    ending_balance,
-                    stats.total_trades or 0,
-                )
-
-            except Exception as e:
-                logger.error("daily_report_failed", error=str(e))
-
-        self._last_daily_report = today
-
-    def _send_daily_report(
-        self,
-        report_date: date,
-        portfolio_return: float,
-        btc_return: float,
-        alpha: float,
-        starting_balance: Decimal,
-        ending_balance: Decimal,
-        trades: int,
-    ) -> None:
-        """Send daily performance report via unified notification method."""
-        pnl = ending_balance - starting_balance
-
-        self.notifier.notify_periodic_report(
-            period="Daily",
-            report_date=f"Date: {report_date}",
-            portfolio_return=portfolio_return,
-            btc_return=btc_return,
-            alpha=alpha,
-            pnl=pnl,
-            ending_balance=ending_balance,
-            trades=trades,
-            is_paper=self.settings.is_paper_trading,
-        )
-
-    def _check_weekly_report(self) -> None:
-        """Check if we should generate weekly performance report (on Mondays, UTC)."""
-        from datetime import timedelta
-
-        today = datetime.now(timezone.utc).date()
-
-        # Only on Mondays
-        if today.weekday() != 0:
-            return
-
-        # Only report once per week
-        if self._last_weekly_report and (today - self._last_weekly_report).days < 7:
-            return
-
-        # Get last week's date range (Monday to Sunday)
-        last_monday = today - timedelta(days=7)
-        last_sunday = today - timedelta(days=1)
-
-        self._generate_period_report("Weekly", last_monday, last_sunday)
-        self._last_weekly_report = today
-
-    def _check_monthly_report(self) -> None:
-        """Check if we should generate monthly performance report (on 1st of month, UTC)."""
-        from datetime import timedelta
-
-        today = datetime.now(timezone.utc).date()
-
-        # Only on 1st of month
-        if today.day != 1:
-            return
-
-        # Only report once per month
-        if self._last_monthly_report and self._last_monthly_report.month == today.month:
-            return
-
-        # Get last month's date range
-        last_day_prev_month = today - timedelta(days=1)
-        first_day_prev_month = last_day_prev_month.replace(day=1)
-
-        self._generate_period_report("Monthly", first_day_prev_month, last_day_prev_month)
-        self._last_monthly_report = today
-
-    def _check_signal_history_cleanup(self) -> None:
-        """Check if we should clean up old signal history records (once per day, UTC)."""
-        today = datetime.now(timezone.utc).date()
-
-        # Only clean up once per day
-        if self._last_cleanup_date == today:
-            return
-
-        try:
-            deleted = self.db.cleanup_signal_history(
-                retention_days=self.settings.signal_history_retention_days,
-                is_paper=self.settings.is_paper_trading
-            )
-            if deleted > 0:
-                logger.info("signal_history_cleanup", deleted_count=deleted)
-            self._last_cleanup_date = today
-        except Exception as e:
-            logger.error("signal_history_cleanup_failed", error=str(e))
-
-    def _generate_period_report(self, period: str, start_date: date, end_date: date) -> None:
-        """Generate and send a performance report for a date range."""
-        stats_list = self.db.get_daily_stats_range(
-            start_date, end_date, is_paper=self.settings.is_paper_trading
-        )
-
-        if not stats_list:
-            logger.debug(f"no_stats_for_{period.lower()}_report", start=str(start_date), end=str(end_date))
-            return
-
-        try:
-            # Get first and last stats with valid data
-            first_stats = None
-            last_stats = None
-            total_trades = 0
-
-            for s in stats_list:
-                if s.starting_balance and s.starting_price:
-                    if first_stats is None:
-                        first_stats = s
-                if s.ending_balance and s.ending_price:
-                    last_stats = s
-                total_trades += s.total_trades or 0
-
-            if not first_stats or not last_stats:
-                logger.debug(f"incomplete_stats_for_{period.lower()}_report")
-                return
-
-            starting_balance = Decimal(first_stats.starting_balance)
-            ending_balance = Decimal(last_stats.ending_balance)
-            starting_price = Decimal(first_stats.starting_price)
-            ending_price = Decimal(last_stats.ending_price)
-
-            # Calculate returns
-            portfolio_return = 0.0
-            if starting_balance > 0:
-                portfolio_return = float((ending_balance - starting_balance) / starting_balance * 100)
-
-            btc_return = 0.0
-            if starting_price > 0:
-                btc_return = float((ending_price - starting_price) / starting_price * 100)
-
-            alpha = portfolio_return - btc_return
-
-            logger.info(
-                f"{period.lower()}_performance",
-                period=f"{start_date} to {end_date}",
-                portfolio_return=f"{portfolio_return:+.2f}%",
-                btc_return=f"{btc_return:+.2f}%",
-                alpha=f"{alpha:+.2f}%",
-                trades=total_trades,
-            )
-
-            # Send Telegram notification
-            self._send_period_report(
-                period,
-                start_date,
-                end_date,
-                portfolio_return,
-                btc_return,
-                alpha,
-                starting_balance,
-                ending_balance,
-                total_trades,
-            )
-
-        except Exception as e:
-            logger.error(f"{period.lower()}_report_failed", error=str(e))
-
-    def _send_period_report(
-        self,
-        period: str,
-        start_date: date,
-        end_date: date,
-        portfolio_return: float,
-        btc_return: float,
-        alpha: float,
-        starting_balance: Decimal,
-        ending_balance: Decimal,
-        trades: int,
-    ) -> None:
-        """Send weekly/monthly performance report via unified notification method."""
-        pnl = ending_balance - starting_balance
-
-        self.notifier.notify_periodic_report(
-            period=period,
-            report_date=f"{start_date} → {end_date}",
-            portfolio_return=portfolio_return,
-            btc_return=btc_return,
-            alpha=alpha,
-            pnl=pnl,
-            ending_balance=ending_balance,
-            trades=trades,
-            is_paper=self.settings.is_paper_trading,
-        )
-
-    def _check_hourly_analysis(self) -> None:
-        """Run hourly market analysis during volatile conditions or post-volatility."""
-        # Skip if hourly analysis not enabled
-        if not self._hourly_analysis_enabled:
-            return
-
-        now = datetime.now(timezone.utc)
-        is_post_volatility = self._pending_post_volatility_analysis
-
-        # Check if we should run analysis
-        should_run = False
-        analysis_reason = ""
-
-        if is_post_volatility:
-            # Post-volatility analysis: run immediately (don't wait for hourly cooldown)
-            should_run = True
-            analysis_reason = "post_volatility"
-            self._pending_post_volatility_analysis = False
-        elif self._last_volatility in ("high", "extreme"):
-            # During high/extreme volatility: run once per hour
-            if self._last_hourly_analysis:
-                elapsed = (now - self._last_hourly_analysis).total_seconds()
-                if elapsed >= 3600:
-                    should_run = True
-                    analysis_reason = "hourly_volatile"
-            else:
-                should_run = True
-                analysis_reason = "hourly_volatile"
-
-        if not should_run:
-            return
-
-        # Run analysis
-        try:
-            # Get current market data for analysis
-            current_price = self.client.get_current_price(self.settings.trading_pair)
-            candles = self.client.get_candles(
-                self.settings.trading_pair,
-                granularity=self.settings.candle_interval,
-                limit=self.settings.candle_limit,
-            )
-
-            # Calculate indicators
-            signal_result = self.signal_scorer.calculate_score(candles, current_price)
-            indicators = signal_result.indicators
-
-            # Get sentiment
-            sentiment_value = None
-            sentiment_class = "Unknown"
-            if self.settings.regime_sentiment_enabled:
-                try:
-                    sentiment_result = self._run_async_with_timeout(get_cached_sentiment(), timeout=30)
-                    if sentiment_result and sentiment_result.value:
-                        sentiment_value = sentiment_result.value
-                        sentiment_class = sentiment_result.classification or "Unknown"
-                        # Record success and handle recovery notification
-                        self._record_sentiment_success()
-                    else:
-                        logger.warning(
-                            "sentiment_unavailable_for_dashboard",
-                            reason="fetch_returned_none",
-                            impact="extreme_fear_override_disabled",
-                        )
-                        # Record failure atomically (increments counter and checks threshold)
-                        self._record_sentiment_failure(context="dashboard")
-                except Exception as e:
-                    logger.warning(
-                        "sentiment_fetch_failed_during_dashboard",
-                        error=str(e),
-                        impact="extreme_fear_override_disabled",
-                    )
-                    # Record failure atomically (increments counter and checks threshold)
-                    self._record_sentiment_failure(context="dashboard")
-
-            # Calculate price changes from candles
-            price_change_1h = None
-            price_change_24h = None
-            if len(candles) >= 2:
-                prev_close = candles["close"].iloc[-2]
-                curr_close = candles["close"].iloc[-1]
-                if prev_close > 0:
-                    price_change_1h = ((curr_close - prev_close) / prev_close) * 100
-            if len(candles) >= 24:
-                prev_24h = candles["close"].iloc[-24]
-                curr_close = candles["close"].iloc[-1]
-                if prev_24h > 0:
-                    price_change_24h = ((curr_close - prev_24h) / prev_24h) * 100
-
-            # Build indicators dict for analyze_market
-            indicators_dict = {
-                "rsi": indicators.rsi,
-                "macd_histogram": indicators.macd_histogram,
-                "bb_percent_b": None,
-                "ema_gap": None,
-            }
-            # Calculate Bollinger %B
-            if indicators.bb_lower and indicators.bb_upper:
-                bb_range = indicators.bb_upper - indicators.bb_lower
-                if bb_range > 0:
-                    indicators_dict["bb_percent_b"] = round(
-                        (float(current_price) - indicators.bb_lower) / bb_range, 2
-                    )
-            # Calculate EMA gap
-            if indicators.ema_slow and indicators.ema_slow > 0:
-                indicators_dict["ema_gap"] = round(
-                    ((float(current_price) - indicators.ema_slow) / indicators.ema_slow) * 100, 2
-                )
-
-            # Run multi-agent market analysis with timeout protection
-            review = self._run_async_with_timeout(
-                self.trade_reviewer.analyze_market(
-                    indicators=indicators_dict,
-                    current_price=current_price,
-                    fear_greed=sentiment_value or 50,
-                    fear_greed_class=sentiment_class,
-                    regime=self._last_regime,
-                    volatility=self._last_volatility,
-                    price_change_1h=price_change_1h,
-                    price_change_24h=price_change_24h,
-                ),
-                timeout=ASYNC_TIMEOUT_SECONDS,
-            )
-            if review is None:
-                logger.warning("market_analysis_timeout")
-                return  # Skip this analysis cycle
-
-            # Log multi-agent analysis summary
-            agent_summary = [
-                {
-                    "model": r.model.split("/")[-1],
-                    "stance": r.stance,
-                    "outlook": r.sentiment,
-                    "confidence": f"{r.confidence:.2f}",
-                    "summary": getattr(r, 'summary', '')[:50],
-                }
-                for r in review.reviews
-            ]
-            logger.info(
-                "hourly_market_analysis",
-                reason=analysis_reason,
-                agents=agent_summary,
-                judge_confidence=f"{review.judge_confidence:.2f}",
-                judge_recommendation=review.judge_recommendation,
-                judge_reasoning=review.judge_reasoning,
-            )
-
-            # Log full reasoning for each agent at debug level
-            for r in review.reviews:
-                logger.debug(
-                    "market_analysis_agent_reasoning",
-                    model=r.model.split("/")[-1],
-                    stance=r.stance,
-                    reasoning=r.reasoning,
-                )
-
-            # Send Telegram notification
-            self.notifier.notify_market_analysis(
-                review=review,
-                indicators=indicators,
-                volatility=self._last_volatility,
-                fear_greed=sentiment_value or 50,
-                fear_greed_class=sentiment_class,
-                current_price=current_price,
-                analysis_reason=analysis_reason,
-            )
-
-        except Exception as e:
-            logger.error("hourly_analysis_failed", error=str(e))
-
-        # Update timestamp regardless of success/failure to prevent spam on errors
-        self._last_hourly_analysis = now
+    # Cramer Mode trade execution methods moved to CramerService
 
     def _create_trailing_stop(
         self,
@@ -4465,7 +3064,7 @@ class TradingDaemon:
 
         # Save final state
         try:
-            portfolio_value = self._get_portfolio_value()
+            portfolio_value = self.position_service.get_portfolio_value()
             ending_price = self.client.get_current_price(self.settings.trading_pair)
             self.db.update_daily_stats(
                 ending_balance=portfolio_value,
@@ -4474,14 +3073,7 @@ class TradingDaemon:
             )
 
             # Save Cramer Mode final state if enabled
-            if self.cramer_client and self.settings.enable_cramer_mode:
-                cramer_portfolio_value = self._get_cramer_portfolio_value()
-                self.db.update_daily_stats(
-                    ending_balance=cramer_portfolio_value,
-                    ending_price=ending_price,
-                    is_paper=True,
-                    bot_mode=BotMode.INVERTED,
-                )
+            self.cramer_service.save_final_state(ending_price)
         except Exception as e:
             logger.error("shutdown_state_save_failed", error=str(e))
 
@@ -4492,6 +3084,9 @@ class TradingDaemon:
                 logger.debug("postmortem_executor_shutdown")
             except Exception as e:
                 logger.debug("postmortem_executor_shutdown_failed", error=str(e))
+
+        # Close reporting service (will skip if sharing our event loop)
+        self.reporting_service.close()
 
         # Close the async event loop
         try:

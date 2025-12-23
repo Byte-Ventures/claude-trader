@@ -80,12 +80,14 @@ def mock_settings():
     settings.openrouter_api_key = None
     settings.hourly_analysis_enabled = False
     settings.ai_recommendation_ttl_minutes = 20
+    settings.signal_history_retention_days = 90
     settings.veto_reduce_threshold = 0.65
     settings.veto_skip_threshold = 0.80
     settings.position_reduction = 0.5
     settings.ai_api_timeout = 120
     settings.postmortem_enabled = False
     settings.ai_review_rejection_cooldown = True
+    settings.sentiment_failure_alert_threshold = 5
 
     # Strategy config
     settings.signal_threshold = 50
@@ -138,6 +140,10 @@ def mock_settings():
     settings.kill_switch_enabled = True
     settings.loss_limiter_enabled = True
     settings.trade_cooldown_enabled = False
+    settings.buy_cooldown_minutes = 240  # 4 hours
+    settings.sell_cooldown_minutes = 60
+    settings.buy_price_change_percent = 0.5
+    settings.sell_price_change_percent = 0.5
     settings.block_trades_extreme_conditions = True
     settings.enable_cramer_mode = False  # Cramer Mode disabled by default
 
@@ -160,7 +166,10 @@ def mock_settings():
 
     # MTF config (defaults to disabled)
     settings.mtf_enabled = False
+    settings.mtf_4h_enabled = True
     settings.mtf_candle_limit = 50
+    settings.mtf_daily_candle_limit = 50
+    settings.mtf_4h_candle_limit = 50
     settings.mtf_daily_cache_minutes = 60
     settings.mtf_4h_cache_minutes = 30
     settings.mtf_aligned_boost = 20
@@ -568,7 +577,7 @@ def test_get_portfolio_value_includes_base_and_quote(mock_settings, mock_exchang
             with patch('src.daemon.runner.TelegramNotifier'):
                 daemon = TradingDaemon(mock_settings)
 
-                portfolio_value = daemon._get_portfolio_value()
+                portfolio_value = daemon.position_service.get_portfolio_value()
 
                 # 1 BTC * 50000 + 10000 USD = 60000 USD
                 assert portfolio_value == Decimal("60000")
@@ -709,11 +718,11 @@ def test_ai_threshold_adjustment_returns_zero_without_recommendation(mock_settin
                 daemon = TradingDaemon(mock_settings)
 
                 # No recommendation set
-                assert daemon._ai_recommendation is None
+                assert daemon.ai_service._ai_recommendation is None
 
                 # Should return 0 for both buy and sell
-                assert daemon._get_ai_threshold_adjustment("buy") == 0
-                assert daemon._get_ai_threshold_adjustment("sell") == 0
+                assert daemon.ai_service.get_threshold_adjustment("buy") == 0
+                assert daemon.ai_service.get_threshold_adjustment("sell") == 0
 
 
 def test_ai_threshold_adjustment_accumulate_lowers_buy_threshold(mock_settings, mock_exchange_client, mock_database):
@@ -724,12 +733,12 @@ def test_ai_threshold_adjustment_accumulate_lowers_buy_threshold(mock_settings, 
                 daemon = TradingDaemon(mock_settings)
 
                 # Set accumulate recommendation with high confidence
-                daemon._ai_recommendation = "accumulate"
-                daemon._ai_recommendation_confidence = 0.9
-                daemon._ai_recommendation_time = datetime.now(timezone.utc)
+                daemon.ai_service._ai_recommendation = "accumulate"
+                daemon.ai_service._ai_recommendation_confidence = 0.9
+                daemon.ai_service._ai_recommendation_time = datetime.now(timezone.utc)
 
-                buy_adj = daemon._get_ai_threshold_adjustment("buy")
-                sell_adj = daemon._get_ai_threshold_adjustment("sell")
+                buy_adj = daemon.ai_service.get_threshold_adjustment("buy")
+                sell_adj = daemon.ai_service.get_threshold_adjustment("sell")
 
                 # Buy threshold should be lowered (negative adjustment)
                 assert buy_adj < 0
@@ -748,12 +757,12 @@ def test_ai_threshold_adjustment_reduce_lowers_sell_threshold(mock_settings, moc
                 daemon = TradingDaemon(mock_settings)
 
                 # Set reduce recommendation with high confidence
-                daemon._ai_recommendation = "reduce"
-                daemon._ai_recommendation_confidence = 0.9
-                daemon._ai_recommendation_time = datetime.now(timezone.utc)
+                daemon.ai_service._ai_recommendation = "reduce"
+                daemon.ai_service._ai_recommendation_confidence = 0.9
+                daemon.ai_service._ai_recommendation_time = datetime.now(timezone.utc)
 
-                buy_adj = daemon._get_ai_threshold_adjustment("buy")
-                sell_adj = daemon._get_ai_threshold_adjustment("sell")
+                buy_adj = daemon.ai_service.get_threshold_adjustment("buy")
+                sell_adj = daemon.ai_service.get_threshold_adjustment("sell")
 
                 # Buy threshold should not be affected
                 assert buy_adj == 0
@@ -769,13 +778,13 @@ def test_ai_threshold_adjustment_wait_has_no_effect(mock_settings, mock_exchange
                 daemon = TradingDaemon(mock_settings)
 
                 # Set wait recommendation
-                daemon._ai_recommendation = "wait"
-                daemon._ai_recommendation_confidence = 0.9
-                daemon._ai_recommendation_time = datetime.now(timezone.utc)
+                daemon.ai_service._ai_recommendation = "wait"
+                daemon.ai_service._ai_recommendation_confidence = 0.9
+                daemon.ai_service._ai_recommendation_time = datetime.now(timezone.utc)
 
                 # Neither threshold should be affected
-                assert daemon._get_ai_threshold_adjustment("buy") == 0
-                assert daemon._get_ai_threshold_adjustment("sell") == 0
+                assert daemon.ai_service.get_threshold_adjustment("buy") == 0
+                assert daemon.ai_service.get_threshold_adjustment("sell") == 0
 
 
 def test_ai_threshold_adjustment_decays_over_time(mock_settings, mock_exchange_client, mock_database):
@@ -788,17 +797,17 @@ def test_ai_threshold_adjustment_decays_over_time(mock_settings, mock_exchange_c
                 daemon = TradingDaemon(mock_settings)
 
                 # Set accumulate recommendation with full confidence
-                daemon._ai_recommendation = "accumulate"
-                daemon._ai_recommendation_confidence = 1.0
-                daemon._ai_recommendation_ttl_minutes = 20
+                daemon.ai_service._ai_recommendation = "accumulate"
+                daemon.ai_service._ai_recommendation_confidence = 1.0
+                daemon.ai_service.config.ai_recommendation_ttl_minutes = 20
 
                 # Test at start (no decay)
-                daemon._ai_recommendation_time = datetime.now(timezone.utc)
-                adj_at_start = daemon._get_ai_threshold_adjustment("buy")
+                daemon.ai_service._ai_recommendation_time = datetime.now(timezone.utc)
+                adj_at_start = daemon.ai_service.get_threshold_adjustment("buy")
 
                 # Test at 50% through TTL (should be ~50% of original)
-                daemon._ai_recommendation_time = datetime.now(timezone.utc) - timedelta(minutes=10)
-                adj_at_half = daemon._get_ai_threshold_adjustment("buy")
+                daemon.ai_service._ai_recommendation_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+                adj_at_half = daemon.ai_service.get_threshold_adjustment("buy")
 
                 # Adjustment should decay (less negative over time)
                 assert adj_at_start < adj_at_half < 0  # Both negative, but half is closer to 0
@@ -814,17 +823,17 @@ def test_ai_threshold_adjustment_expires_after_ttl(mock_settings, mock_exchange_
                 daemon = TradingDaemon(mock_settings)
 
                 # Set recommendation with 20 minute TTL
-                daemon._ai_recommendation = "accumulate"
-                daemon._ai_recommendation_confidence = 1.0
-                daemon._ai_recommendation_ttl_minutes = 20
+                daemon.ai_service._ai_recommendation = "accumulate"
+                daemon.ai_service._ai_recommendation_confidence = 1.0
+                daemon.ai_service.config.ai_recommendation_ttl_minutes = 20
 
                 # Set time to beyond TTL
-                daemon._ai_recommendation_time = datetime.now(timezone.utc) - timedelta(minutes=25)
+                daemon.ai_service._ai_recommendation_time = datetime.now(timezone.utc) - timedelta(minutes=25)
 
                 # Should return 0 and clear the recommendation
-                assert daemon._get_ai_threshold_adjustment("buy") == 0
-                assert daemon._ai_recommendation is None
-                assert daemon._ai_recommendation_time is None
+                assert daemon.ai_service.get_threshold_adjustment("buy") == 0
+                assert daemon.ai_service._ai_recommendation is None
+                assert daemon.ai_service._ai_recommendation_time is None
 
 
 def test_ai_threshold_adjustment_scales_with_confidence(mock_settings, mock_exchange_client, mock_database):
@@ -834,16 +843,16 @@ def test_ai_threshold_adjustment_scales_with_confidence(mock_settings, mock_exch
             with patch('src.daemon.runner.TelegramNotifier'):
                 daemon = TradingDaemon(mock_settings)
 
-                daemon._ai_recommendation = "accumulate"
-                daemon._ai_recommendation_time = datetime.now(timezone.utc)
+                daemon.ai_service._ai_recommendation = "accumulate"
+                daemon.ai_service._ai_recommendation_time = datetime.now(timezone.utc)
 
                 # Test with high confidence
-                daemon._ai_recommendation_confidence = 1.0
-                high_conf_adj = daemon._get_ai_threshold_adjustment("buy")
+                daemon.ai_service._ai_recommendation_confidence = 1.0
+                high_conf_adj = daemon.ai_service.get_threshold_adjustment("buy")
 
                 # Test with low confidence
-                daemon._ai_recommendation_confidence = 0.5
-                low_conf_adj = daemon._get_ai_threshold_adjustment("buy")
+                daemon.ai_service._ai_recommendation_confidence = 0.5
+                low_conf_adj = daemon.ai_service.get_threshold_adjustment("buy")
 
                 # Higher confidence should give larger (more negative) adjustment
                 assert high_conf_adj < low_conf_adj < 0
@@ -1860,9 +1869,9 @@ def test_get_htf_bias_both_bullish(htf_mock_settings, mock_exchange_client, mock
                 daemon = TradingDaemon(htf_mock_settings)
 
                 # Mock _get_timeframe_trend to return bullish for both
-                daemon._get_timeframe_trend = Mock(return_value="bullish")
+                daemon.market_service._get_timeframe_trend = Mock(return_value="bullish")
 
-                bias, daily, six_h = daemon._get_htf_bias()
+                bias, daily, six_h = daemon.market_service.get_htf_bias()
 
                 assert bias == "bullish"
                 assert daily == "bullish"
@@ -1877,9 +1886,9 @@ def test_get_htf_bias_both_bearish(htf_mock_settings, mock_exchange_client, mock
                 daemon = TradingDaemon(htf_mock_settings)
 
                 # Mock _get_timeframe_trend to return bearish for both
-                daemon._get_timeframe_trend = Mock(return_value="bearish")
+                daemon.market_service._get_timeframe_trend = Mock(return_value="bearish")
 
-                bias, daily, six_h = daemon._get_htf_bias()
+                bias, daily, six_h = daemon.market_service.get_htf_bias()
 
                 assert bias == "bearish"
                 assert daily == "bearish"
@@ -1894,9 +1903,9 @@ def test_get_htf_bias_mixed_returns_neutral(htf_mock_settings, mock_exchange_cli
                 daemon = TradingDaemon(htf_mock_settings)
 
                 # Mock _get_timeframe_trend to return different values
-                daemon._get_timeframe_trend = Mock(side_effect=["bullish", "bearish"])
+                daemon.market_service._get_timeframe_trend = Mock(side_effect=["bullish", "bearish"])
 
-                bias, daily, six_h = daemon._get_htf_bias()
+                bias, daily, six_h = daemon.market_service.get_htf_bias()
 
                 assert bias == "neutral"
                 assert daily == "bullish"
@@ -1912,7 +1921,7 @@ def test_get_htf_bias_disabled_returns_neutral(mock_settings, mock_exchange_clie
             with patch('src.daemon.runner.TelegramNotifier'):
                 daemon = TradingDaemon(mock_settings)
 
-                bias, daily, four_h = daemon._get_htf_bias()
+                bias, daily, four_h = daemon.market_service.get_htf_bias()
 
                 assert bias == "neutral"
                 assert daily is None  # None when MTF disabled, per type signature
@@ -1929,30 +1938,30 @@ def test_get_timeframe_trend_caching(htf_mock_settings, mock_exchange_client, mo
                 daemon = TradingDaemon(htf_mock_settings)
 
                 # Mock signal scorer get_trend
-                daemon.signal_scorer.get_trend = Mock(return_value="bullish")
+                daemon.market_service.signal_scorer.get_trend = Mock(return_value="bullish")
 
                 # First call should fetch (cache miss)
-                trend1 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                trend1 = daemon.market_service._get_timeframe_trend("ONE_DAY", 60)
 
                 # Verify get_candles was called
                 assert mock_exchange_client.get_candles.called
                 # Verify cache miss counter incremented
-                assert daemon._htf_cache_misses == 1
-                assert daemon._htf_cache_hits == 0
+                assert daemon.market_service._htf_cache_misses == 1
+                assert daemon.market_service._htf_cache_hits == 0
 
                 # Reset mock to verify caching
                 mock_exchange_client.get_candles.reset_mock()
-                daemon.signal_scorer.get_trend.reset_mock()
+                daemon.market_service.signal_scorer.get_trend.reset_mock()
 
                 # Second call within cache period should use cache (cache hit)
-                trend2 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                trend2 = daemon.market_service._get_timeframe_trend("ONE_DAY", 60)
 
                 # Should NOT call get_candles again (cache hit)
                 assert not mock_exchange_client.get_candles.called
                 assert trend1 == trend2 == "bullish"
                 # Verify cache hit counter incremented
-                assert daemon._htf_cache_misses == 1  # Still 1
-                assert daemon._htf_cache_hits == 1    # Now 1
+                assert daemon.market_service._htf_cache_misses == 1  # Still 1
+                assert daemon.market_service._htf_cache_hits == 1    # Now 1
 
 
 def test_get_timeframe_trend_cache_expiration(htf_mock_settings, mock_exchange_client, mock_database):
@@ -1966,46 +1975,46 @@ def test_get_timeframe_trend_cache_expiration(htf_mock_settings, mock_exchange_c
                 daemon = TradingDaemon(htf_mock_settings)
 
                 # Mock signal scorer get_trend
-                daemon.signal_scorer.get_trend = Mock(return_value="bullish")
+                daemon.market_service.signal_scorer.get_trend = Mock(return_value="bullish")
 
                 # Call 1: First fetch (cache miss)
-                trend1 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                trend1 = daemon.market_service._get_timeframe_trend("ONE_DAY", 60)
                 assert trend1 == "bullish"
-                assert daemon._htf_cache_misses == 1
-                assert daemon._htf_cache_hits == 0
+                assert daemon.market_service._htf_cache_misses == 1
+                assert daemon.market_service._htf_cache_hits == 0
 
                 # Call 2: Within cache period (cache hit)
-                trend2 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                trend2 = daemon.market_service._get_timeframe_trend("ONE_DAY", 60)
                 assert trend2 == "bullish"
-                assert daemon._htf_cache_misses == 1
-                assert daemon._htf_cache_hits == 1
+                assert daemon.market_service._htf_cache_misses == 1
+                assert daemon.market_service._htf_cache_hits == 1
 
                 # Fast-forward time to expire cache (61 minutes > 60 minute cache)
                 mock_now = datetime.now(timezone.utc) + timedelta(minutes=61)
-                with patch('src.daemon.runner.datetime') as mock_datetime:
+                with patch('src.daemon.market_service.datetime') as mock_datetime:
                     mock_datetime.now.return_value = mock_now
                     # Need to also patch timedelta to work with mocked datetime
                     mock_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
 
-                    # Update daemon's last fetch to be 61 minutes ago
-                    daemon._daily_last_fetch = mock_now - timedelta(minutes=61)
+                    # Update market_service's last fetch to be 61 minutes ago
+                    daemon.market_service._daily_last_fetch = mock_now - timedelta(minutes=61)
 
                     # Call 3: Cache expired (cache miss)
-                    daemon.signal_scorer.get_trend.return_value = "bearish"
-                    trend3 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                    daemon.market_service.signal_scorer.get_trend.return_value = "bearish"
+                    trend3 = daemon.market_service._get_timeframe_trend("ONE_DAY", 60)
                     assert trend3 == "bearish"
-                    assert daemon._htf_cache_misses == 2
-                    assert daemon._htf_cache_hits == 1
+                    assert daemon.market_service._htf_cache_misses == 2
+                    assert daemon.market_service._htf_cache_hits == 1
 
                 # Call 4: Within new cache period (cache hit)
-                trend4 = daemon._get_timeframe_trend("ONE_DAY", 60)
+                trend4 = daemon.market_service._get_timeframe_trend("ONE_DAY", 60)
                 assert trend4 == "bearish"
-                assert daemon._htf_cache_misses == 2
-                assert daemon._htf_cache_hits == 2
+                assert daemon.market_service._htf_cache_misses == 2
+                assert daemon.market_service._htf_cache_hits == 2
 
                 # Verify counters accumulated correctly over multiple cycles
-                assert daemon._htf_cache_misses == 2  # Two fetches
-                assert daemon._htf_cache_hits == 2    # Two cache hits
+                assert daemon.market_service._htf_cache_misses == 2  # Two fetches
+                assert daemon.market_service._htf_cache_hits == 2    # Two cache hits
 
 
 def test_get_timeframe_trend_fail_open(htf_mock_settings, mock_database):
@@ -2023,16 +2032,16 @@ def test_get_timeframe_trend_fail_open(htf_mock_settings, mock_database):
                 daemon = TradingDaemon(htf_mock_settings)
 
                 # Clear any cached trend
-                daemon._daily_last_fetch = None
-                daemon._daily_trend = "neutral"
+                daemon.market_service._daily_last_fetch = None
+                daemon.market_service._daily_trend = "neutral"
 
                 # Should return neutral (fail-open) instead of raising
-                trend = daemon._get_timeframe_trend("ONE_DAY", 60)
+                trend = daemon.market_service._get_timeframe_trend("ONE_DAY", 60)
 
                 assert trend == "neutral"
                 # Verify cache miss counter incremented on error path
-                assert daemon._htf_cache_misses == 1
-                assert daemon._htf_cache_hits == 0
+                assert daemon.market_service._htf_cache_misses == 1
+                assert daemon.market_service._htf_cache_hits == 0
 
 
 def test_get_timeframe_trend_insufficient_data(htf_mock_settings, mock_database):
@@ -2056,16 +2065,16 @@ def test_get_timeframe_trend_insufficient_data(htf_mock_settings, mock_database)
                 daemon = TradingDaemon(htf_mock_settings)
 
                 # Clear any cached trend
-                daemon._daily_last_fetch = None
-                daemon._daily_trend = "neutral"
+                daemon.market_service._daily_last_fetch = None
+                daemon.market_service._daily_trend = "neutral"
 
                 # Should return neutral when insufficient data
-                trend = daemon._get_timeframe_trend("ONE_DAY", 60)
+                trend = daemon.market_service._get_timeframe_trend("ONE_DAY", 60)
 
                 assert trend == "neutral"
                 # Verify cache miss counter incremented on insufficient data path
-                assert daemon._htf_cache_misses == 1
-                assert daemon._htf_cache_hits == 0
+                assert daemon.market_service._htf_cache_misses == 1
+                assert daemon.market_service._htf_cache_hits == 0
 
 
 def test_invalidate_htf_cache(htf_mock_settings, mock_exchange_client, mock_database):
@@ -2078,15 +2087,15 @@ def test_invalidate_htf_cache(htf_mock_settings, mock_exchange_client, mock_data
                 daemon = TradingDaemon(htf_mock_settings)
 
                 # Set cache timestamps
-                daemon._daily_last_fetch = datetime.now(timezone.utc)
-                daemon._4h_last_fetch = datetime.now(timezone.utc)
+                daemon.market_service._daily_last_fetch = datetime.now(timezone.utc)
+                daemon.market_service._4h_last_fetch = datetime.now(timezone.utc)
 
                 # Invalidate cache
-                daemon._invalidate_htf_cache()
+                daemon.market_service.invalidate_cache()
 
                 # Verify timestamps are cleared
-                assert daemon._daily_last_fetch is None
-                assert daemon._4h_last_fetch is None
+                assert daemon.market_service._daily_last_fetch is None
+                assert daemon.market_service._4h_last_fetch is None
 
 
 def test_get_timeframe_trend_uses_correct_candle_limits(htf_mock_settings, mock_exchange_client, mock_database):
@@ -2097,10 +2106,10 @@ def test_get_timeframe_trend_uses_correct_candle_limits(htf_mock_settings, mock_
                 daemon = TradingDaemon(htf_mock_settings)
 
                 # Mock signal scorer get_trend
-                daemon.signal_scorer.get_trend = Mock(return_value="bullish")
+                daemon.market_service.signal_scorer.get_trend = Mock(return_value="bullish")
 
                 # Test ONE_DAY uses mtf_daily_candle_limit (50)
-                daemon._get_timeframe_trend("ONE_DAY", 60)
+                daemon.market_service._get_timeframe_trend("ONE_DAY", 60)
                 # Verify get_candles was called with correct limit
                 assert_candle_limit(mock_exchange_client.get_candles.call_args, 50)
                 args, kwargs = mock_exchange_client.get_candles.call_args
@@ -2110,10 +2119,10 @@ def test_get_timeframe_trend_uses_correct_candle_limits(htf_mock_settings, mock_
                 mock_exchange_client.get_candles.reset_mock()
 
                 # Clear cache to force fresh fetch
-                daemon._4h_last_fetch = None
+                daemon.market_service._4h_last_fetch = None
 
                 # Test FOUR_HOUR uses mtf_4h_candle_limit (84)
-                daemon._get_timeframe_trend("FOUR_HOUR", 30)
+                daemon.market_service._get_timeframe_trend("FOUR_HOUR", 30)
                 # Verify get_candles was called with correct limit
                 assert_candle_limit(mock_exchange_client.get_candles.call_args, 84)
                 args, kwargs = mock_exchange_client.get_candles.call_args
@@ -2137,7 +2146,7 @@ def test_store_signal_history_returns_id(htf_mock_settings, mock_exchange_client
     with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
         with patch('src.daemon.runner.Database', return_value=mock_database):
             with patch('src.daemon.runner.TelegramNotifier'):
-                with patch('src.daemon.runner.SignalHistory') as mock_signal_history_class:
+                with patch('src.daemon.signal_service.SignalHistory') as mock_signal_history_class:
                     # Make the SignalHistory class return our mock
                     mock_signal_history_class.return_value = mock_history
 
@@ -2157,7 +2166,7 @@ def test_store_signal_history_returns_id(htf_mock_settings, mock_exchange_client
                         confidence=0.8,
                     )
 
-                    signal_id = daemon._store_signal_history(
+                    signal_id = daemon.signal_service.store_signal(
                         signal_result=signal_result,
                         current_price=Decimal("50000"),
                         htf_bias="bullish",
@@ -2200,7 +2209,7 @@ def test_store_signal_history_handles_db_error(htf_mock_settings, mock_exchange_
                 )
 
                 # Should return None (not raise) on DB error
-                signal_id = daemon._store_signal_history(
+                signal_id = daemon.signal_service.store_signal(
                     signal_result=signal_result,
                     current_price=Decimal("50000"),
                     htf_bias="bullish",
@@ -2247,7 +2256,7 @@ def test_store_signal_history_alerts_after_repeated_failures(htf_mock_settings, 
 
                 # Call 9 times - should NOT alert yet
                 for _ in range(9):
-                    daemon._store_signal_history(
+                    daemon.signal_service.store_signal(
                         signal_result=signal_result,
                         current_price=Decimal("50000"),
                         htf_bias="bullish",
@@ -2258,7 +2267,7 @@ def test_store_signal_history_alerts_after_repeated_failures(htf_mock_settings, 
                 mock_notifier.notify_error.assert_not_called()
 
                 # 10th failure should trigger alert
-                daemon._store_signal_history(
+                daemon.signal_service.store_signal(
                     signal_result=signal_result,
                     current_price=Decimal("50000"),
                     htf_bias="bullish",
@@ -2314,7 +2323,7 @@ def test_store_signal_history_truncates_long_errors(htf_mock_settings, mock_exch
 
                 # Call 10 times to trigger alert with long error
                 for _ in range(10):
-                    daemon._store_signal_history(
+                    daemon.signal_service.store_signal(
                         signal_result=signal_result,
                         current_price=Decimal("50000"),
                         htf_bias="bullish",
@@ -2374,7 +2383,7 @@ def test_store_signal_history_short_errors_not_truncated(htf_mock_settings, mock
 
                 # Call 10 times to trigger alert with short error
                 for _ in range(10):
-                    daemon._store_signal_history(
+                    daemon.signal_service.store_signal(
                         signal_result=signal_result,
                         current_price=Decimal("50000"),
                         htf_bias="bullish",
@@ -2433,7 +2442,7 @@ def test_store_signal_history_alerts_every_50_after_initial(htf_mock_settings, m
 
                 # Helper to call _store_signal_history
                 def trigger_failure():
-                    daemon._store_signal_history(
+                    daemon.signal_service.store_signal(
                         signal_result=signal_result,
                         current_price=Decimal("50000"),
                         htf_bias="bullish",
@@ -2466,7 +2475,7 @@ def test_store_signal_history_resets_failure_counter_on_success(htf_mock_setting
     with patch('src.daemon.runner.create_exchange_client', return_value=mock_exchange_client):
         with patch('src.daemon.runner.Database', return_value=mock_database):
             with patch('src.daemon.runner.TelegramNotifier') as mock_notifier_class:
-                with patch('src.daemon.runner.SignalHistory') as mock_signal_history_class:
+                with patch('src.daemon.signal_service.SignalHistory') as mock_signal_history_class:
                     mock_notifier = Mock()
                     mock_notifier_class.return_value = mock_notifier
                     mock_history = Mock()
@@ -2496,7 +2505,7 @@ def test_store_signal_history_resets_failure_counter_on_success(htf_mock_setting
                     mock_database.session.return_value = mock_session_fail
 
                     for _ in range(5):
-                        daemon._store_signal_history(
+                        daemon.signal_service.store_signal(
                             signal_result=signal_result,
                             current_price=Decimal("50000"),
                             htf_bias="bullish",
@@ -2505,7 +2514,7 @@ def test_store_signal_history_resets_failure_counter_on_success(htf_mock_setting
                             threshold=60,
                         )
 
-                    assert daemon._signal_history_failures == 5
+                    assert daemon.signal_service._signal_history_failures == 5
 
                     # One successful call should reset counter
                     mock_session_success = MagicMock()
@@ -2513,7 +2522,7 @@ def test_store_signal_history_resets_failure_counter_on_success(htf_mock_setting
                     mock_session_success.__exit__ = Mock(return_value=False)
                     mock_database.session.return_value = mock_session_success
 
-                    daemon._store_signal_history(
+                    daemon.signal_service.store_signal(
                         signal_result=signal_result,
                         current_price=Decimal("50000"),
                         htf_bias="bullish",
@@ -2522,7 +2531,7 @@ def test_store_signal_history_resets_failure_counter_on_success(htf_mock_setting
                         threshold=60,
                     )
 
-                    assert daemon._signal_history_failures == 0
+                    assert daemon.signal_service._signal_history_failures == 0
 
 
 def test_mark_signal_trade_executed_with_none_id(htf_mock_settings, mock_exchange_client, mock_database):
@@ -2536,7 +2545,7 @@ def test_mark_signal_trade_executed_with_none_id(htf_mock_settings, mock_exchang
                 mock_database.session.reset_mock()
 
                 # Should not raise or call database
-                daemon._mark_signal_trade_executed(None)
+                daemon.signal_service.mark_trade_executed(None)
 
                 # Verify no database session was requested
                 mock_database.session.assert_not_called()
@@ -2558,7 +2567,7 @@ def test_mark_signal_trade_executed_with_valid_id(htf_mock_settings, mock_exchan
             with patch('src.daemon.runner.TelegramNotifier'):
                 daemon = TradingDaemon(htf_mock_settings)
 
-                daemon._mark_signal_trade_executed(42)
+                daemon.signal_service.mark_trade_executed(42)
 
                 # Verify update was called with trade_executed=True
                 mock_query.update.assert_called_once_with({"trade_executed": True})
@@ -2576,7 +2585,7 @@ def test_dashboard_state_includes_htf_when_mtf_enabled(htf_mock_settings, mock_e
                 daemon = TradingDaemon(htf_mock_settings)
 
                 # Mock HTF methods to return known values
-                daemon._get_htf_bias = Mock(return_value=("bullish", "bullish", "bullish"))
+                daemon.market_service.get_htf_bias = Mock(return_value=("bullish", "bullish", "bullish"))
 
                 # Run one trading iteration
                 daemon._trading_iteration()
@@ -3737,15 +3746,19 @@ def test_cramer_mode_initializes_in_paper_trading(mock_settings):
         with patch('src.daemon.runner.Database', return_value=mock_database):
             with patch('src.daemon.runner.TelegramNotifier'):
                 with patch('src.daemon.runner.PaperTradingClient') as mock_paper_client:
-                    daemon = TradingDaemon(mock_settings)
+                    with patch('src.daemon.cramer_service.PaperTradingClient') as mock_cramer_paper_client:
+                        daemon = TradingDaemon(mock_settings)
 
-                    # PaperTradingClient should be called twice:
-                    # Once for normal bot, once for Cramer Mode
-                    assert mock_paper_client.call_count == 2, \
-                        "Should create two PaperTradingClient instances (normal + Cramer)"
+                        # PaperTradingClient should be called once for normal bot
+                        assert mock_paper_client.call_count == 1, \
+                            "Should create one PaperTradingClient for normal bot"
 
-                    assert daemon.cramer_client is not None, \
-                        "Cramer client should be initialized"
+                        # CramerService creates its own PaperTradingClient
+                        assert mock_cramer_paper_client.call_count == 1, \
+                            "Should create one PaperTradingClient for Cramer Mode"
+
+                        assert daemon.cramer_service.is_enabled, \
+                            "Cramer service should be enabled"
 
 
 def test_cramer_mode_trailing_stop_uses_inverted_bot_mode(mock_settings):
@@ -3765,17 +3778,18 @@ def test_cramer_mode_trailing_stop_uses_inverted_bot_mode(mock_settings):
         with patch('src.daemon.runner.Database', return_value=mock_database):
             with patch('src.daemon.runner.TelegramNotifier'):
                 with patch('src.daemon.runner.PaperTradingClient'):
-                    daemon = TradingDaemon(mock_settings)
+                    with patch('src.daemon.cramer_service.PaperTradingClient'):
+                        daemon = TradingDaemon(mock_settings)
 
-                    # Check trailing stop for Cramer Mode
-                    result = daemon._check_trailing_stop(Decimal("50000"), bot_mode="inverted")
+                        # Check trailing stop for Cramer Mode
+                        result = daemon._check_trailing_stop(Decimal("50000"), bot_mode="inverted")
 
-                    # Verify database was called with correct bot_mode
-                    mock_database.get_active_trailing_stop.assert_called_with(
-                        symbol=mock_settings.trading_pair,
-                        is_paper=True,
-                        bot_mode="inverted",
-                    )
+                        # Verify database was called with correct bot_mode
+                        mock_database.get_active_trailing_stop.assert_called_with(
+                            symbol=mock_settings.trading_pair,
+                            is_paper=True,
+                            bot_mode="inverted",
+                        )
 
 
 def test_cramer_mode_balance_restoration_from_database(mock_settings):
@@ -3798,18 +3812,21 @@ def test_cramer_mode_balance_restoration_from_database(mock_settings):
         with patch('src.daemon.runner.Database', return_value=mock_database):
             with patch('src.daemon.runner.TelegramNotifier'):
                 with patch('src.daemon.runner.PaperTradingClient') as mock_paper_client:
-                    TradingDaemon(mock_settings)
+                    with patch('src.daemon.cramer_service.PaperTradingClient') as mock_cramer_paper_client:
+                        TradingDaemon(mock_settings)
 
-                    # Second call should use restored Cramer Mode balance
-                    calls = mock_paper_client.call_args_list
-                    assert len(calls) == 2, "Should create two PaperTradingClient instances"
+                        # Normal bot should create one PaperTradingClient
+                        assert mock_paper_client.call_count == 1, "Normal bot should create PaperTradingClient"
 
-                    # Cramer Mode should be initialized with restored balance
-                    cramer_call = calls[1]
-                    assert cramer_call.kwargs['initial_quote'] == 8000.0, \
-                        "Cramer Mode should use restored quote balance"
-                    assert cramer_call.kwargs['initial_base'] == 0.5, \
-                        "Cramer Mode should use restored base balance"
+                        # CramerService should create its own PaperTradingClient
+                        assert mock_cramer_paper_client.call_count == 1, "CramerService should create PaperTradingClient"
+
+                        # Cramer Mode should be initialized with restored balance
+                        cramer_call = mock_cramer_paper_client.call_args
+                        assert cramer_call.kwargs['initial_quote'] == 8000.0, \
+                            "Cramer Mode should use restored quote balance"
+                        assert cramer_call.kwargs['initial_base'] == 0.5, \
+                            "Cramer Mode should use restored base balance"
 
 
 def test_cramer_mode_copies_normal_balance_on_first_enable(mock_settings):
@@ -3834,14 +3851,17 @@ def test_cramer_mode_copies_normal_balance_on_first_enable(mock_settings):
         with patch('src.daemon.runner.Database', return_value=mock_database):
             with patch('src.daemon.runner.TelegramNotifier'):
                 with patch('src.daemon.runner.PaperTradingClient') as mock_paper_client:
-                    # First instance is normal client, set it up to return balances
-                    mock_paper_client.return_value = mock_normal_client
+                    with patch('src.daemon.cramer_service.PaperTradingClient') as mock_cramer_paper_client:
+                        # First instance is normal client, set it up to return balances
+                        mock_paper_client.return_value = mock_normal_client
 
-                    TradingDaemon(mock_settings)
+                        TradingDaemon(mock_settings)
 
-                    # Second call (Cramer Mode) should copy from normal bot's balance
-                    calls = mock_paper_client.call_args_list
-                    assert len(calls) == 2, "Should create two PaperTradingClient instances"
+                        # Normal bot should create one PaperTradingClient
+                        assert mock_paper_client.call_count == 1, "Normal bot should create PaperTradingClient"
+
+                        # CramerService should create its own PaperTradingClient
+                        assert mock_cramer_paper_client.call_count == 1, "CramerService should create PaperTradingClient"
 
 
 def test_cramer_mode_warns_when_normal_has_position(mock_settings):
@@ -3938,11 +3958,12 @@ class TestVetoCooldown:
         from datetime import datetime, timezone
 
         daemon = daemon_with_cooldown
-        daemon.settings.candle_interval = "ONE_HOUR"
+        # AI service uses the config, update it
+        daemon.ai_service.config.candle_interval = "ONE_HOUR"
 
         # 14:35:00 should map to 14:00:00 start
         timestamp = datetime(2025, 1, 15, 14, 35, 0, tzinfo=timezone.utc)
-        candle_start = daemon._get_candle_start(timestamp)
+        candle_start = daemon.ai_service._get_candle_start(timestamp)
 
         assert candle_start.hour == 14
         assert candle_start.minute == 0
@@ -3953,11 +3974,12 @@ class TestVetoCooldown:
         from datetime import datetime, timezone
 
         daemon = daemon_with_cooldown
-        daemon.settings.candle_interval = "FIFTEEN_MINUTE"
+        # AI service uses the config, update it
+        daemon.ai_service.config.candle_interval = "FIFTEEN_MINUTE"
 
         # 14:37:00 should map to 14:30:00 start
         timestamp = datetime(2025, 1, 15, 14, 37, 0, tzinfo=timezone.utc)
-        candle_start = daemon._get_candle_start(timestamp)
+        candle_start = daemon.ai_service._get_candle_start(timestamp)
 
         assert candle_start.hour == 14
         assert candle_start.minute == 30
@@ -3967,7 +3989,7 @@ class TestVetoCooldown:
         """Should not skip if no prior veto recorded."""
         daemon = daemon_with_cooldown
 
-        should_skip, reason = daemon._should_skip_review_after_veto("buy")
+        should_skip, reason = daemon.ai_service.should_skip_review_after_veto("buy")
 
         assert should_skip is False
         assert reason is None
@@ -3980,11 +4002,11 @@ class TestVetoCooldown:
         now = datetime.now(timezone.utc)
 
         # Record a veto
-        daemon._last_veto_timestamp = now
-        daemon._last_veto_direction = "buy"
+        daemon.ai_service._last_veto_timestamp = now
+        daemon.ai_service._last_veto_direction = "buy"
 
         # Same direction within same candle
-        should_skip, reason = daemon._should_skip_review_after_veto("buy")
+        should_skip, reason = daemon.ai_service.should_skip_review_after_veto("buy")
 
         assert should_skip is True
         assert "veto_cooldown" in reason
@@ -3997,11 +4019,11 @@ class TestVetoCooldown:
         now = datetime.now(timezone.utc)
 
         # Record a veto for buy
-        daemon._last_veto_timestamp = now
-        daemon._last_veto_direction = "buy"
+        daemon.ai_service._last_veto_timestamp = now
+        daemon.ai_service._last_veto_direction = "buy"
 
         # Different direction - should allow review
-        should_skip, reason = daemon._should_skip_review_after_veto("sell")
+        should_skip, reason = daemon.ai_service.should_skip_review_after_veto("sell")
 
         assert should_skip is False
         assert reason is None
@@ -4011,33 +4033,33 @@ class TestVetoCooldown:
         from datetime import datetime, timezone, timedelta
 
         daemon = daemon_with_cooldown
-        daemon.settings.candle_interval = "ONE_HOUR"
+        daemon.ai_service.config.candle_interval = "ONE_HOUR"
 
         # Veto was 2 hours ago (definitely different candle)
         old_time = datetime.now(timezone.utc) - timedelta(hours=2)
-        daemon._last_veto_timestamp = old_time
-        daemon._last_veto_direction = "buy"
+        daemon.ai_service._last_veto_timestamp = old_time
+        daemon.ai_service._last_veto_direction = "buy"
 
-        should_skip, reason = daemon._should_skip_review_after_veto("buy")
+        should_skip, reason = daemon.ai_service.should_skip_review_after_veto("buy")
 
         assert should_skip is False
         # Cooldown state should be reset
-        assert daemon._last_veto_timestamp is None
-        assert daemon._last_veto_direction is None
+        assert daemon.ai_service._last_veto_timestamp is None
+        assert daemon.ai_service._last_veto_direction is None
 
     def test_skip_review_disabled_by_config(self, daemon_with_cooldown):
         """Should NOT skip if cooldown is disabled in settings."""
         from datetime import datetime, timezone
 
         daemon = daemon_with_cooldown
-        daemon.settings.ai_review_rejection_cooldown = False
+        daemon.ai_service.config.ai_review_rejection_cooldown = False
 
         # Record a veto
-        daemon._last_veto_timestamp = datetime.now(timezone.utc)
-        daemon._last_veto_direction = "buy"
+        daemon.ai_service._last_veto_timestamp = datetime.now(timezone.utc)
+        daemon.ai_service._last_veto_direction = "buy"
 
         # With cooldown disabled, should not skip
-        should_skip, reason = daemon._should_skip_review_after_veto("buy")
+        should_skip, reason = daemon.ai_service.should_skip_review_after_veto("buy")
 
         assert should_skip is False
         assert reason is None
@@ -4056,10 +4078,10 @@ class TestVetoCooldown:
             "close": [50000.0]
         })
 
-        daemon._record_veto_timestamp(candles)
+        daemon.ai_service.record_veto(candles, "buy")
 
         # Should match candle time, not current wall-clock time
-        assert daemon._last_veto_timestamp == candle_time
+        assert daemon.ai_service._last_veto_timestamp == candle_time
 
     def test_trade_blocked_during_veto_cooldown(self, daemon_with_cooldown):
         """
@@ -4080,15 +4102,15 @@ class TestVetoCooldown:
 
         # Set up veto state - simulating a recent SKIP veto for a buy signal
         now = datetime.now(timezone.utc)
-        daemon._last_veto_timestamp = now
-        daemon._last_veto_direction = "buy"
+        daemon.ai_service._last_veto_timestamp = now
+        daemon.ai_service._last_veto_direction = "buy"
 
         # Create a mock for the position sizer's calculate_size method
         # If trade proceeds past veto cooldown, this would be called
         daemon.position_sizer.calculate_size = MagicMock()
 
         # Directly test the veto cooldown check returns skip=True
-        should_skip, reason = daemon._should_skip_review_after_veto("buy")
+        should_skip, reason = daemon.ai_service.should_skip_review_after_veto("buy")
 
         # Verify veto cooldown activates correctly
         assert should_skip is True
@@ -4127,13 +4149,13 @@ class TestSentimentFailureTracking:
     def test_counter_increments_on_exception(self, daemon_with_sentiment):
         """Test that failure counter increments when sentiment fetch raises exception."""
         # Verify initial state
-        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+        assert daemon_with_sentiment.ai_service._sentiment_fetch_failures == 0
 
         # Record a failure (increments counter)
-        daemon_with_sentiment._record_sentiment_failure()
+        daemon_with_sentiment.ai_service.record_sentiment_failure()
 
         # Counter should be at 1 (not at threshold yet)
-        assert daemon_with_sentiment._sentiment_fetch_failures == 1
+        assert daemon_with_sentiment.ai_service._sentiment_fetch_failures == 1
 
         # Verify no alert sent
         daemon_with_sentiment.notifier.notify_error.assert_not_called()
@@ -4141,11 +4163,11 @@ class TestSentimentFailureTracking:
     def test_counter_increments_on_none_return(self, daemon_with_sentiment):
         """Test that failure counter increments when sentiment fetch returns None."""
         # Record two failures
-        daemon_with_sentiment._record_sentiment_failure()
-        daemon_with_sentiment._record_sentiment_failure()
+        daemon_with_sentiment.ai_service.record_sentiment_failure()
+        daemon_with_sentiment.ai_service.record_sentiment_failure()
 
         # Counter should be at 2 (not at threshold yet)
-        assert daemon_with_sentiment._sentiment_fetch_failures == 2
+        assert daemon_with_sentiment.ai_service._sentiment_fetch_failures == 2
 
         # Verify no alert sent
         daemon_with_sentiment.notifier.notify_error.assert_not_called()
@@ -4153,14 +4175,14 @@ class TestSentimentFailureTracking:
     def test_counter_resets_on_success(self, daemon_with_sentiment):
         """Test that failure counter resets to 0 on successful fetch."""
         # Simulate previous failures
-        daemon_with_sentiment._sentiment_fetch_failures = 2
+        daemon_with_sentiment.ai_service._sentiment_fetch_failures = 2
 
         # Call the actual method to record success
-        daemon_with_sentiment._record_sentiment_success()
+        daemon_with_sentiment.ai_service.record_sentiment_success()
 
         # Verify counter reset and timestamp updated
-        assert daemon_with_sentiment._sentiment_fetch_failures == 0
-        assert daemon_with_sentiment._last_sentiment_fetch_success is not None
+        assert daemon_with_sentiment.ai_service._sentiment_fetch_failures == 0
+        assert daemon_with_sentiment.ai_service._last_sentiment_fetch_success is not None
 
     def test_alert_fires_once_at_threshold(self, daemon_with_sentiment):
         """Test that alert fires exactly once when threshold is reached."""
@@ -4168,7 +4190,7 @@ class TestSentimentFailureTracking:
 
         # Record failures up to threshold
         for _ in range(threshold):
-            daemon_with_sentiment._record_sentiment_failure()
+            daemon_with_sentiment.ai_service.record_sentiment_failure()
 
         # Alert should be sent once (when we hit the threshold)
         daemon_with_sentiment.notifier.notify_error.assert_called_once()
@@ -4185,7 +4207,7 @@ class TestSentimentFailureTracking:
 
         # Record failures past threshold
         for _ in range(threshold + 1):
-            daemon_with_sentiment._record_sentiment_failure()
+            daemon_with_sentiment.ai_service.record_sentiment_failure()
 
         # Alert should be called exactly once (at threshold), not again after
         assert daemon_with_sentiment.notifier.notify_error.call_count == 1
@@ -4195,11 +4217,11 @@ class TestSentimentFailureTracking:
         threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
 
         # Ensure no previous success
-        daemon_with_sentiment._last_sentiment_fetch_success = None
+        daemon_with_sentiment.ai_service._last_sentiment_fetch_success = None
 
         # Record failures up to threshold
         for _ in range(threshold):
-            daemon_with_sentiment._record_sentiment_failure()
+            daemon_with_sentiment.ai_service.record_sentiment_failure()
 
         # Verify alert message contains improved first-run message
         call_args = daemon_with_sentiment.notifier.notify_error.call_args
@@ -4211,11 +4233,11 @@ class TestSentimentFailureTracking:
         threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
 
         # Set previous success
-        daemon_with_sentiment._last_sentiment_fetch_success = datetime.now(timezone.utc)
+        daemon_with_sentiment.ai_service._last_sentiment_fetch_success = datetime.now(timezone.utc)
 
         # Record failures up to threshold
         for _ in range(threshold):
-            daemon_with_sentiment._record_sentiment_failure()
+            daemon_with_sentiment.ai_service.record_sentiment_failure()
 
         # Verify alert message contains time information
         call_args = daemon_with_sentiment.notifier.notify_error.call_args
@@ -4227,9 +4249,9 @@ class TestSentimentFailureTracking:
         threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
 
         # This should not raise an exception even if time calc fails
-        # The try-except in _record_sentiment_failure handles it
+        # The try-except in record_sentiment_failure handles it
         for _ in range(threshold):
-            daemon_with_sentiment._record_sentiment_failure()
+            daemon_with_sentiment.ai_service.record_sentiment_failure()
 
         # Alert should still be sent
         daemon_with_sentiment.notifier.notify_error.assert_called_once()
@@ -4239,10 +4261,10 @@ class TestSentimentFailureTracking:
         threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
 
         # Simulate alert state (at exactly threshold)
-        daemon_with_sentiment._sentiment_fetch_failures = threshold
+        daemon_with_sentiment.ai_service._sentiment_fetch_failures = threshold
 
         # Trigger recovery
-        daemon_with_sentiment._record_sentiment_success()
+        daemon_with_sentiment.ai_service.record_sentiment_success()
 
         # Verify recovery notification sent
         daemon_with_sentiment.notifier.notify_info.assert_called_once()
@@ -4251,17 +4273,17 @@ class TestSentimentFailureTracking:
         assert "Sentiment API Recovery" == call_args[0][1]
 
         # Verify counter was reset
-        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+        assert daemon_with_sentiment.ai_service._sentiment_fetch_failures == 0
 
     def test_recovery_notification_after_alert_plus_failures(self, daemon_with_sentiment):
         """Test recovery notification is sent when API recovers after threshold+N failures."""
         threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
 
         # Simulate alert state (threshold + 5 failures)
-        daemon_with_sentiment._sentiment_fetch_failures = threshold + 5
+        daemon_with_sentiment.ai_service._sentiment_fetch_failures = threshold + 5
 
         # Trigger recovery
-        daemon_with_sentiment._record_sentiment_success()
+        daemon_with_sentiment.ai_service.record_sentiment_success()
 
         # Verify recovery notification sent even with extra failures
         daemon_with_sentiment.notifier.notify_info.assert_called_once()
@@ -4269,37 +4291,37 @@ class TestSentimentFailureTracking:
         assert "recovered" in call_args[0][0].lower()
 
         # Verify counter was reset
-        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+        assert daemon_with_sentiment.ai_service._sentiment_fetch_failures == 0
 
     def test_no_recovery_notification_when_not_in_alert(self, daemon_with_sentiment):
         """Test recovery notification is NOT sent on normal success (not in alert state)."""
         threshold = daemon_with_sentiment.settings.sentiment_failure_alert_threshold
 
         # Simulate normal operation (below threshold)
-        daemon_with_sentiment._sentiment_fetch_failures = threshold - 1
+        daemon_with_sentiment.ai_service._sentiment_fetch_failures = threshold - 1
 
         # Trigger success
-        daemon_with_sentiment._record_sentiment_success()
+        daemon_with_sentiment.ai_service.record_sentiment_success()
 
         # Verify NO recovery notification sent
         daemon_with_sentiment.notifier.notify_info.assert_not_called()
 
         # Verify counter was still reset
-        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+        assert daemon_with_sentiment.ai_service._sentiment_fetch_failures == 0
 
     def test_no_recovery_notification_on_first_success(self, daemon_with_sentiment):
         """Test recovery notification is NOT sent when starting fresh (0 failures)."""
         # Initial state (no failures)
-        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+        assert daemon_with_sentiment.ai_service._sentiment_fetch_failures == 0
 
         # Trigger success
-        daemon_with_sentiment._record_sentiment_success()
+        daemon_with_sentiment.ai_service.record_sentiment_success()
 
         # Verify NO recovery notification sent
         daemon_with_sentiment.notifier.notify_info.assert_not_called()
 
         # Verify counter remains at 0
-        assert daemon_with_sentiment._sentiment_fetch_failures == 0
+        assert daemon_with_sentiment.ai_service._sentiment_fetch_failures == 0
 
 
 # ============================================================================
