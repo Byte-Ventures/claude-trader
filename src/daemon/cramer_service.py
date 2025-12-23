@@ -21,7 +21,7 @@ from typing import Callable, Optional, TYPE_CHECKING
 import structlog
 
 from src.api.paper_client import PaperTradingClient
-from src.safety.trade_cooldown import TradeCooldown
+from src.safety.trade_cooldown import TradeCooldown, TradeCooldownConfig
 from src.state.database import Database, BotMode
 
 if TYPE_CHECKING:
@@ -170,9 +170,14 @@ class CramerService:
 
         # Initialize cooldown if enabled
         if self.config.enable_cooldown:
+            cooldown_config = TradeCooldownConfig(
+                buy_cooldown_minutes=int(self.config.cooldown_period_hours * 60),
+                sell_cooldown_minutes=int(self.config.cooldown_period_hours * 60),
+                buy_price_change_percent=self.config.cooldown_min_price_move,
+                sell_price_change_percent=self.config.cooldown_min_price_move,
+            )
             self.trade_cooldown = TradeCooldown(
-                cooldown_period_hours=self.config.cooldown_period_hours,
-                min_price_move_percent=self.config.cooldown_min_price_move,
+                config=cooldown_config,
                 db=self.db,
                 symbol=self.config.trading_pair,
                 is_paper=True,
