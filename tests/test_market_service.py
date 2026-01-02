@@ -59,8 +59,9 @@ def mock_exchange_client():
 def mock_signal_scorer():
     """Mock signal scorer with required attributes."""
     scorer = Mock()
-    # Set required period attributes (used for minimum candle validation)
-    scorer.ema_slow_period = 26
+    # Set required period attributes matching production defaults
+    # Only ema_slow_period is used for HTF validation (get_trend only uses EMA)
+    scorer.ema_slow_period = 21
     scorer.bollinger_period = 20
     scorer.macd_slow = 26
     # Default trend return
