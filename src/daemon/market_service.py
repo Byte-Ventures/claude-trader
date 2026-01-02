@@ -195,11 +195,8 @@ class MarketService:
             )
 
             # Validate candles before processing - need enough data for trend calculation
-            min_required = max(
-                self.signal_scorer.ema_slow_period,
-                self.signal_scorer.bollinger_period,
-                self.signal_scorer.macd_slow,
-            )
+            # get_trend() only uses EMA crossover, so only ema_slow_period is required
+            min_required = self.signal_scorer.ema_slow_period
             if candles is None or candles.empty or len(candles) < min_required:
                 logger.warning(
                     "htf_insufficient_data",
