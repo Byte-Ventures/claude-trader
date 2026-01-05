@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 This file is automatically updated by semantic-release.
 
+## v1.47.0 (2026-01-05)
+
+See [GitHub Release](https://github.com/Byte-Ventures/claude-trader/releases/tag/v1.47.0) for details.
 ## v1.46.0 (2026-01-05)
 
 See [GitHub Release](https://github.com/Byte-Ventures/claude-trader/releases/tag/v1.46.0) for details.
