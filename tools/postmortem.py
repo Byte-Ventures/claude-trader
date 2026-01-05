@@ -201,8 +201,11 @@ def fetch_trades_with_context(
     Signal correlation: Find signal_history where trade_executed=True
     within 120 seconds before trade.executed_at (accounts for order placement latency).
     """
-    # Build trade query
-    query = session.query(Trade).filter(Trade.is_paper == is_paper)
+    # Build trade query (exclude Cramer/inverted trades - only analyze normal bot)
+    query = session.query(Trade).filter(
+        Trade.is_paper == is_paper,
+        Trade.bot_mode == "normal",
+    )
 
     if trade_ids:
         query = query.filter(Trade.id.in_(trade_ids))
@@ -606,17 +609,20 @@ def invoke_claude(prompt: str, source_root: Path, verbose: bool = False) -> str:
 
     Uses --allowed-tools to permit database queries and file reads without prompts.
     Uses --add-dir to grant access to the source/data directory.
+    Pipes prompt through stdin to avoid OS argument length limits.
     """
     if verbose:
         print(f"[INFO] Sending {len(prompt)} chars to Claude...")
         print("[INFO] Claude will have tool access - may take longer...")
 
+    # Pipe prompt through stdin to avoid "Argument list too long" errors
     result = subprocess.run(
         [
-            "claude", "-p", prompt,
+            "claude", "-p", "-",
             "--allowed-tools", "Bash(sqlite3:*),Read,Grep,Glob",
             "--add-dir", str(source_root),
         ],
+        input=prompt,
         capture_output=True,
         text=True,
         timeout=900,  # 15 minute timeout (tools take longer)
