@@ -199,7 +199,7 @@ class Settings(BaseSettings):
 
     # Strategy Parameters - Signal
     signal_threshold: int = Field(
-        default=60,
+        default=65,  # Increased from 60 - higher threshold reduces low-conviction trades
         ge=40,
         le=100,
         description="Minimum score to trigger a trade (out of 100)"
