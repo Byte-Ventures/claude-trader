@@ -389,3 +389,37 @@ class TestEdgeCases:
         valid_adx = result.adx.dropna()
         if len(valid_adx) > 0:
             assert valid_adx.iloc[-1] < 5, "ADX should be very low with no price movement"
+
+
+class TestADXSettingsValidation:
+    """Tests for ADX settings validation."""
+
+    def test_adx_threshold_validation_rejects_invalid(self, monkeypatch):
+        """Verify that weak >= strong threshold raises ValidationError."""
+        import os
+        from pydantic import ValidationError
+
+        # Set environment variables for invalid thresholds
+        monkeypatch.setenv("ADX_WEAK_THRESHOLD", "30")
+        monkeypatch.setenv("ADX_STRONG_THRESHOLD", "25")
+
+        # Import Settings fresh to pick up env vars
+        from config.settings import Settings
+        with pytest.raises(ValidationError) as exc_info:
+            Settings()
+
+        assert "adx_weak_threshold" in str(exc_info.value)
+        assert "must be less than" in str(exc_info.value)
+
+    def test_adx_threshold_validation_accepts_valid(self, monkeypatch):
+        """Verify that weak < strong threshold is accepted."""
+        # Set valid thresholds
+        monkeypatch.setenv("ADX_WEAK_THRESHOLD", "18")
+        monkeypatch.setenv("ADX_STRONG_THRESHOLD", "28")
+        monkeypatch.setenv("TRADING_MODE", "paper")  # Required field
+
+        from config.settings import Settings
+        settings = Settings()
+
+        assert settings.adx_weak_threshold == 18.0
+        assert settings.adx_strong_threshold == 28.0

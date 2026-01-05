@@ -243,6 +243,16 @@ class Settings(BaseSettings):
         description="ADX above this = confirmed trend, full signal confidence"
     )
 
+    @model_validator(mode="after")
+    def validate_adx_thresholds(self) -> "Settings":
+        """Ensure ADX weak threshold is less than strong threshold."""
+        if self.adx_weak_threshold >= self.adx_strong_threshold:
+            raise ValueError(
+                f"adx_weak_threshold ({self.adx_weak_threshold}) must be less than "
+                f"adx_strong_threshold ({self.adx_strong_threshold})"
+            )
+        return self
+
     # MACD Dynamic Scaling - Interval Multipliers
     macd_interval_multipliers: Optional[dict[str, float]] = Field(
         default=None,

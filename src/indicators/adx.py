@@ -40,7 +40,7 @@ Integration:
 """
 
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -49,9 +49,14 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 # ADX threshold constants
+# Note: weak/strong thresholds are configurable via settings (adx_weak_threshold, adx_strong_threshold).
+# The 40.0 boost threshold is intentionally fixed - it represents a well-established institutional
+# benchmark for "very strong trend" where a small signal boost (1.1x) is warranted. Making this
+# configurable would add complexity without meaningful benefit, as ADX > 40 is universally
+# recognized as indicating strong directional movement.
 ADX_WEAK_TREND = 20.0  # Below this = ranging/choppy
 ADX_MODERATE_TREND = 25.0  # Above this = confirmed trend
-ADX_STRONG_TREND = 40.0  # Above this = strong trend
+ADX_STRONG_TREND = 40.0  # Above this = strong trend (1.1x boost, fixed)
 ADX_EXTREME_TREND = 75.0  # Above this = potentially exhausting
 
 
