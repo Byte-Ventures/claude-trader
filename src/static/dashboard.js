@@ -545,7 +545,6 @@ function updateDashboard(state) {
     }
 
     // Update ADX (trend strength)
-    const indicators = state.indicators;
     if (indicators && indicators.adx !== null && indicators.adx !== undefined) {
         const adx = indicators.adx;
         const trendStrength = indicators.adx_trend_strength || 'unknown';
