@@ -44,7 +44,7 @@ class RegimeConfig:
     sentiment_enabled: bool = True
     volatility_enabled: bool = True
     trend_enabled: bool = True
-    adjustment_scale: float = 1.0  # 0.0 = no adjustment, 1.0 = normal, 2.0 = aggressive
+    adjustment_scale: float = 0.5  # 0.0 = no adjustment, 0.5 = moderate, 1.0 = normal, 2.0 = aggressive
 
 
 class MarketRegime:
