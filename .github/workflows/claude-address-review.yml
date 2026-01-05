@@ -168,14 +168,19 @@ jobs:
             const success = '${{ job.status }}' === 'success';
             const beforeSha = '${{ steps.before.outputs.sha }}';
             const afterSha = '${{ steps.after.outputs.sha }}';
-            const noChanges = beforeSha === afterSha;
+            const hasChanges = beforeSha !== afterSha;
             const workflowUrl = '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}';
+
+            // Only post comment if: (1) job failed, or (2) changes were pushed
+            // Skip commenting when no changes to avoid triggering workflow loops
+            if (success && !hasChanges) {
+              console.log('No changes pushed - skipping comment to avoid workflow loops');
+              return;
+            }
 
             let body;
             if (!success) {
               body = `Failed to address review feedback.\n\n[Check logs](${workflowUrl})`;
-            } else if (noChanges) {
-              body = `✅ **No changes required**\n\nAll review feedback has been addressed or no actionable items were found.\n\n[Workflow run](${workflowUrl})`;
             } else {
               body = `Review feedback addressed. Please re-review.\n\n[Workflow run](${workflowUrl})`;
             }
