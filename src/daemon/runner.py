@@ -2127,6 +2127,16 @@ class TradingDaemon:
                     volatility=self._last_volatility,
                 )
 
+    def _update_daily_stats(self, current_price: Decimal) -> None:
+        """Update daily stats with current portfolio value after trades."""
+        portfolio_value = self.position_service.get_portfolio_value()
+        self.db.update_daily_stats(
+            ending_balance=portfolio_value,
+            ending_price=current_price,
+            is_paper=self.settings.is_paper_trading,
+            bot_mode=BotMode.NORMAL,
+        )
+
     def _execute_buy(
         self,
         candles,
@@ -2267,6 +2277,7 @@ class TradingDaemon:
                 spot_rate=current_price,
             )
             self.db.increment_daily_trade_count(is_paper=is_paper, bot_mode=BotMode.NORMAL)
+            self._update_daily_stats(current_price)
 
             # Update trade cooldown
             if self.trade_cooldown:
@@ -2517,6 +2528,7 @@ class TradingDaemon:
                 spot_rate=current_price,
             )
             self.db.increment_daily_trade_count(is_paper=is_paper, bot_mode=BotMode.NORMAL)
+            self._update_daily_stats(current_price)
 
             # Update loss limiter with actual PnL
             self.loss_limiter.record_trade(
