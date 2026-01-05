@@ -185,6 +185,29 @@ main {
     color: var(--text-secondary);
 }
 
+.signal-sub {
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.signal-separator {
+    color: var(--border-color);
+}
+
+#adx-value.adx-weak {
+    color: var(--accent-red);
+}
+
+#adx-value.adx-emerging {
+    color: var(--accent-yellow);
+}
+
+#adx-value.adx-strong {
+    color: var(--accent-green);
+}
+
 .status-green {
     color: var(--accent-green);
 }

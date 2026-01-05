@@ -544,40 +544,24 @@ function updateDashboard(state) {
         document.getElementById('weight-profile-confidence').textContent = '--';
     }
 
-    // Update ADX (trend strength)
+    // Update ADX (trend strength) - now inline with signal threshold
+    const adxEl = document.getElementById('adx-value');
     if (indicators && indicators.adx !== null && indicators.adx !== undefined) {
         const adx = indicators.adx;
-        const trendStrength = indicators.adx_trend_strength || 'unknown';
+        adxEl.textContent = adx.toFixed(0);
 
-        // Color code based on trend strength
-        const adxEl = document.getElementById('adx-value');
-        adxEl.textContent = adx.toFixed(1);
-
-        // Remove all status classes first
-        adxEl.classList.remove('status-green', 'status-yellow', 'status-red');
-
-        // Add appropriate class based on ADX value
+        // Color code based on ADX value
+        adxEl.classList.remove('adx-weak', 'adx-emerging', 'adx-strong');
         if (adx < 20) {
-            adxEl.classList.add('status-red');  // Weak trend - unreliable signals
+            adxEl.classList.add('adx-weak');  // Weak trend - unreliable signals
         } else if (adx < 25) {
-            adxEl.classList.add('status-yellow');  // Emerging trend
+            adxEl.classList.add('adx-emerging');  // Emerging trend
         } else {
-            adxEl.classList.add('status-green');  // Confirmed trend
+            adxEl.classList.add('adx-strong');  // Confirmed trend
         }
-
-        const strengthEmoji = {
-            'weak': '😴',
-            'emerging': '👀',
-            'moderate': '📊',
-            'strong': '💪',
-            'extreme': '🔥',
-            'unknown': '❓'
-        };
-        const emoji = strengthEmoji[trendStrength] || '❓';
-        document.getElementById('adx-trend-strength').textContent = `${emoji} ${trendStrength}`;
     } else {
-        document.getElementById('adx-value').textContent = '--';
-        document.getElementById('adx-trend-strength').textContent = '--';
+        adxEl.textContent = '--';
+        adxEl.classList.remove('adx-weak', 'adx-emerging', 'adx-strong');
     }
 
     // Update HTF bias
