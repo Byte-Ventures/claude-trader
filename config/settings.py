@@ -199,7 +199,7 @@ class Settings(BaseSettings):
 
     # Strategy Parameters - Signal
     signal_threshold: int = Field(
-        default=60,
+        default=65,  # Increased from 60 - higher threshold reduces low-conviction trades
         ge=40,
         le=100,
         description="Minimum score to trigger a trade (out of 100)"
@@ -443,10 +443,10 @@ class Settings(BaseSettings):
         description="Minimum minutes between buy trades (0 = disabled)"
     )
     sell_cooldown_minutes: int = Field(
-        default=0,
+        default=5,
         ge=0,
         le=60,
-        description="Minimum minutes between sell trades (0 = disabled for safety)"
+        description="Minimum minutes between sell trades (5 = prevent rapid-fire selling, 0 = disabled for emergency exits)"
     )
     buy_price_change_percent: float = Field(
         default=1.0,
@@ -643,10 +643,10 @@ class Settings(BaseSettings):
         description="Use trend direction for regime detection"
     )
     regime_adjustment_scale: float = Field(
-        default=1.0,
+        default=0.5,  # Changed from 1.0 - moderate adjustments prevent over-aggressive threshold changes
         ge=0.0,
         le=2.0,
-        description="Regime adjustment intensity (0=off, 1=normal, 2=aggressive)"
+        description="Regime adjustment intensity (0=off, 0.5=moderate, 1=normal, 2=aggressive)"
     )
     regime_flap_protection: bool = Field(
         default=True,
