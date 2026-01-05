@@ -44,6 +44,10 @@ const STALE_WARNING_THROTTLE_MS = 60000;  // Throttle stale candle warnings to 1
 const BASE_RECONNECT_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 30000;
 const MAX_SEEN_NOTIFICATIONS = 100;  // Prevent memory leak from unbounded Set
+const PERFORMANCE_REFRESH_MS = 300000;  // Refresh performance chart every 5 minutes
+
+/** Interval handle for periodic performance data refresh */
+let performanceRefreshInterval = null;
 
 /**
  * Convert candle interval string to seconds.
@@ -462,6 +466,9 @@ function connectWebSocket() {
             loadInitialData();
         }
         reconnectAttempts = 0;
+
+        // Start periodic refresh of performance data
+        startPerformanceRefresh();
     };
 
     ws.onmessage = (event) => {
@@ -484,6 +491,9 @@ function connectWebSocket() {
             clearTimeout(pendingCandleUpdate);
             pendingCandleUpdate = null;
         }
+
+        // Stop periodic performance refresh while disconnected
+        stopPerformanceRefresh();
 
         // Attempt to reconnect with exponential backoff and jitter
         if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
@@ -933,6 +943,54 @@ function toggleNotification(el) {
         messageEl.textContent = el.dataset.full;
         hintEl.textContent = 'Click to collapse';
         el.classList.add('expanded');
+    }
+}
+
+/**
+ * Refresh performance data from API.
+ *
+ * Called periodically to update portfolio/BTC hold/Cramer lines on the
+ * performance chart. Daily stats change throughout the day as trades execute
+ * and prices update, so periodic refresh ensures the chart stays current.
+ */
+async function refreshPerformanceData() {
+    try {
+        const response = await fetch('/api/performance?days=30');
+        if (response.ok) {
+            const performance = await response.json();
+            updatePerformanceChart(performance);
+        }
+    } catch (error) {
+        console.error('Failed to refresh performance data:', error);
+    }
+}
+
+/**
+ * Start periodic refresh of performance data.
+ *
+ * Sets up an interval to refresh the performance chart every 5 minutes.
+ * This ensures portfolio, BTC hold, and Cramer lines stay updated as
+ * daily stats change from trades and price movements.
+ */
+function startPerformanceRefresh() {
+    // Clear any existing interval
+    if (performanceRefreshInterval) {
+        clearInterval(performanceRefreshInterval);
+    }
+    // Start new interval
+    performanceRefreshInterval = setInterval(refreshPerformanceData, PERFORMANCE_REFRESH_MS);
+}
+
+/**
+ * Stop periodic refresh of performance data.
+ *
+ * Called when WebSocket disconnects to avoid unnecessary API calls
+ * while the connection is down.
+ */
+function stopPerformanceRefresh() {
+    if (performanceRefreshInterval) {
+        clearInterval(performanceRefreshInterval);
+        performanceRefreshInterval = null;
     }
 }
 
