@@ -643,10 +643,10 @@ class Settings(BaseSettings):
         description="Use trend direction for regime detection"
     )
     regime_adjustment_scale: float = Field(
-        default=1.0,
+        default=0.5,  # Changed from 1.0 - moderate adjustments prevent over-aggressive threshold changes
         ge=0.0,
         le=2.0,
-        description="Regime adjustment intensity (0=off, 1=normal, 2=aggressive)"
+        description="Regime adjustment intensity (0=off, 0.5=moderate, 1=normal, 2=aggressive)"
     )
     regime_flap_protection: bool = Field(
         default=True,
