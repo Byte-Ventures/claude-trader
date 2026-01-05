@@ -34,8 +34,10 @@ from src.ai.sentiment import FearGreedResult
 
 @pytest.fixture
 def regime():
-    """Market regime with default configuration."""
-    return MarketRegime()
+    """Market regime with scale=1.0 for testing modifier calculations."""
+    # Use explicit scale=1.0 to test modifier math without halving
+    config = RegimeConfig(adjustment_scale=1.0)
+    return MarketRegime(config=config)
 
 
 @pytest.fixture
@@ -125,7 +127,7 @@ def test_default_initialization():
     assert regime.config.sentiment_enabled is True
     assert regime.config.volatility_enabled is True
     assert regime.config.trend_enabled is True
-    assert regime.config.adjustment_scale == 1.0
+    assert regime.config.adjustment_scale == 0.5  # Changed from 1.0 - moderate adjustments
 
 
 def test_custom_configuration(custom_config):
@@ -1276,7 +1278,9 @@ class TestCustomModifiers:
             "extreme_greed_neutral_sell": {"threshold_mult": 1.0, "position_mult": 1.0},
         }
 
-        regime = MarketRegime(custom_modifiers=custom)
+        # Use explicit scale=1.0 to test modifier math
+        config = RegimeConfig(adjustment_scale=1.0)
+        regime = MarketRegime(config=config, custom_modifiers=custom)
 
         # Calculate with extreme fear in bearish trend
         result = regime.calculate(
@@ -1286,11 +1290,12 @@ class TestCustomModifiers:
             signal_action="buy",
         )
 
-        # With threshold_mult=1.0, the full -10 discount should apply
+        # With threshold_mult=1.0 and scale=1.0, the full -10 discount should apply
         assert result.components["sentiment"]["threshold_adj"] == -10
 
-        # Compare to default regime which should nullify the discount
-        default_regime = MarketRegime()
+        # Compare to default regime with scale=1.0 which should nullify the discount
+        default_config = RegimeConfig(adjustment_scale=1.0)
+        default_regime = MarketRegime(config=default_config)
         default_result = default_regime.calculate(
             sentiment=FearGreedResult(value=15, classification="Extreme Fear", timestamp=None),
             volatility="normal",
