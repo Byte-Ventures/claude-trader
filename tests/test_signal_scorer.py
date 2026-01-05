@@ -270,12 +270,12 @@ def test_breakdown_contains_all_components(scorer, sample_df):
     assert "trend_filter" in result.breakdown
 
 
-def test_components_has_all_seven_keys(scorer, sample_df):
-    """Test components dict always has exactly 7 expected keys with integer values."""
+def test_components_has_all_eight_keys(scorer, sample_df):
+    """Test components dict always has exactly 8 expected keys with integer values."""
     result = scorer.calculate_score(sample_df)
 
-    # Verify exactly 7 components exist
-    expected_keys = {"rsi", "macd", "bollinger", "ema", "volume", "trend_filter", "htf_bias"}
+    # Verify exactly 8 components exist (includes VWAP since v1.46)
+    expected_keys = {"rsi", "macd", "bollinger", "ema", "volume", "trend_filter", "htf_bias", "vwap"}
     assert set(result.components.keys()) == expected_keys, \
         f"Expected {expected_keys}, got {set(result.components.keys())}"
 

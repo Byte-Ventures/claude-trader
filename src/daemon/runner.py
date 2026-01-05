@@ -84,6 +84,7 @@ import structlog
 from config.settings import Settings, TradingMode, VetoAction, AIFailureMode, request_reload, reload_pending, reload_settings
 from src.api.exchange_factory import create_exchange_client, get_exchange_name
 from src.api.exchange_protocol import ExchangeClient
+from src.api.kraken_data_client import KrakenDataClient
 from src.api.paper_client import PaperTradingClient
 from src.notifications.telegram import TelegramNotifier
 from src.safety.circuit_breaker import CircuitBreaker, CircuitBreakerConfig, BreakerLevel
@@ -389,6 +390,8 @@ class TradingDaemon:
             extreme_rsi_upper=settings.extreme_rsi_upper,
             trend_filter_penalty=settings.trend_filter_penalty,
             macd_interval_multipliers=settings.macd_interval_multipliers,
+            vwap_weight=settings.vwap_weight if settings.kraken_enrichment_enabled else 0,
+            vwap_threshold_percent=settings.vwap_threshold_percent,
         )
 
         self.position_sizer = PositionSizer(
@@ -423,6 +426,18 @@ class TradingDaemon:
                 self._last_regime = last_regime
                 logger.info("regime_restored_from_db", regime=last_regime)
             logger.info("market_regime_initialized", scale=settings.regime_adjustment_scale)
+
+        # Initialize Kraken data enrichment client (optional, for VWAP/trade count)
+        self.enrichment_client: Optional[KrakenDataClient] = None
+        if settings.kraken_enrichment_enabled:
+            self.enrichment_client = KrakenDataClient(
+                cache_ttl_seconds=settings.kraken_enrichment_cache_seconds,
+            )
+            logger.info(
+                "kraken_enrichment_client_initialized",
+                cache_ttl=settings.kraken_enrichment_cache_seconds,
+                vwap_weight=settings.vwap_weight,
+            )
 
         # Initialize AI weight profile selector (optional, requires OpenRouter key)
         self.weight_profile_selector: Optional[WeightProfileSelector] = None
@@ -1309,13 +1324,30 @@ class TradingDaemon:
                 # Record failure atomically (increments counter and checks threshold)
                 self.ai_service.record_sentiment_failure(context="trading")
 
-        # Calculate signal with HTF context and sentiment
+        # Fetch VWAP enrichment data from Kraken (if enabled)
+        # Fail-open: returns None on errors, signal scorer handles gracefully
+        enrichment_df = None
+        if self.enrichment_client:
+            enrichment_df = self.enrichment_client.get_enrichment_data(
+                self.settings.trading_pair,
+                self.settings.candle_interval,
+                limit=self.settings.candle_limit,
+            )
+            if enrichment_df is not None and not enrichment_df.empty:
+                logger.debug(
+                    "enrichment_data_fetched",
+                    vwap=float(enrichment_df["vwap"].iloc[-1]) if "vwap" in enrichment_df.columns else None,
+                    trade_count=int(enrichment_df["trade_count"].iloc[-1]) if "trade_count" in enrichment_df.columns else None,
+                )
+
+        # Calculate signal with HTF context, sentiment, and enrichment data
         signal_result = self.signal_scorer.calculate_score(
             candles, current_price,
             htf_bias=htf_bias,
             htf_daily=daily_trend,
             htf_4h=four_hour_trend,
             sentiment_category=sentiment_category,
+            enrichment_data=enrichment_df,
         )
 
         # Log indicator values for debugging
