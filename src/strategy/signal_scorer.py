@@ -668,6 +668,7 @@ class SignalScorer:
             # For sell signals, we want responsive exits at overbought levels, not reduced penalties.
             # Calculate preliminary score to determine signal direction before adjustment.
             preliminary_score = rsi_score + macd_score + bb_score + ema_score
+            # preliminary_score == 0 (neutral) gets no reduction, which is correct behavior
             if preliminary_score > 0:  # Only for buy signals
                 if rsi_score < 0:
                     rsi_score = int(rsi_score * (1 - reduction))
@@ -679,6 +680,7 @@ class SignalScorer:
                 ema_gap_percent=round(ema_gap_percent, 3),
                 trend_strength=round(trend_strength, 3),
                 penalty_reduction=round(reduction, 3),
+                penalty_applied=preliminary_score > 0,
                 rsi_original=original_rsi,
                 rsi_adjusted=rsi_score,
                 bb_original=original_bb,

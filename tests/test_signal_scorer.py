@@ -1741,6 +1741,8 @@ def test_trend_strength_calculation_directly():
     """
     # Create momentum data that triggers momentum mode but results in SELL signal
     # (RSI overbought, overall negative score)
+    # Seeds 123/456 chosen empirically to reliably produce sell/buy signals respectively.
+    # Any seeds that produce the expected signal conditions would work.
     np.random.seed(123)
     length = 50
     prices = []
