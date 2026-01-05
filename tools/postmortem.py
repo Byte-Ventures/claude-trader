@@ -201,8 +201,11 @@ def fetch_trades_with_context(
     Signal correlation: Find signal_history where trade_executed=True
     within 120 seconds before trade.executed_at (accounts for order placement latency).
     """
-    # Build trade query
-    query = session.query(Trade).filter(Trade.is_paper == is_paper)
+    # Build trade query (exclude Cramer/inverted trades - only analyze normal bot)
+    query = session.query(Trade).filter(
+        Trade.is_paper == is_paper,
+        Trade.bot_mode == "normal",
+    )
 
     if trade_ids:
         query = query.filter(Trade.id.in_(trade_ids))
