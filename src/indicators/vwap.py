@@ -112,6 +112,11 @@ def get_vwap_signal_graduated(
     # Linear interpolation from threshold to full signal
     if abs(deviation_percent) >= full_deviation:
         signal_magnitude = 1.0
+    elif full_deviation <= threshold_percent:
+        # Guard against division by zero when threshold >= full_deviation
+        # (e.g., vwap_threshold_percent=1.0 with _FULL_SIGNAL_DEVIATION_PERCENT=1.0)
+        # If we're past the threshold, just use full signal strength
+        signal_magnitude = 1.0
     else:
         # Scale linearly: at threshold = 0.5, at full_deviation = 1.0
         # signal = 0.5 + 0.5 * (deviation - threshold) / (full - threshold)

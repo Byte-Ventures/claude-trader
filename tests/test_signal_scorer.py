@@ -3024,3 +3024,140 @@ class TestHTFNullSafety:
         assert result.breakdown["_htf_trend"] == "bullish"
         assert result.breakdown["_htf_daily"] == "unknown"  # None -> "unknown"
         assert result.breakdown["_htf_4h"] == "neutral"
+
+
+
+# ============================================================================
+# VWAP Enrichment Integration Tests
+# ============================================================================
+
+class TestVWAPEnrichmentIntegration:
+    """Test VWAP signal integration with enrichment data from Kraken API."""
+
+    def test_calculate_score_with_vwap_enrichment_bearish(self):
+        """Test VWAP component is negative when price > VWAP (bearish mean-reversion)."""
+        scorer = SignalScorer(vwap_weight=10, vwap_threshold_percent=0.5)
+
+        # Create test candles
+        candles = pd.DataFrame({
+            "time": pd.date_range("2024-01-01", periods=200, freq="h"),
+            "open": [50000.0] * 200,
+            "high": [50100.0] * 200,
+            "low": [49900.0] * 200,
+            "close": [50000.0] * 200,
+            "volume": [100.0] * 200,
+        })
+
+        # Create enrichment data with VWAP below current price
+        # Price at 50500, VWAP at 50000 = 1% above VWAP -> bearish signal
+        enrichment_df = pd.DataFrame({
+            "timestamp": [candles["time"].iloc[-1]],
+            "vwap": [Decimal("50000.0")],
+            "trade_count": [100],
+        })
+
+        result = scorer.calculate_score(
+            candles,
+            Decimal("50500"),  # 1% above VWAP
+            enrichment_data=enrichment_df,
+        )
+
+        # VWAP component should be negative (bearish - expect price to revert down)
+        assert result.components["vwap"] < 0, \
+            f"Expected negative VWAP component when price > VWAP, got {result.components['vwap']}"
+
+    def test_calculate_score_with_vwap_enrichment_bullish(self):
+        """Test VWAP component is positive when price < VWAP (bullish mean-reversion)."""
+        scorer = SignalScorer(vwap_weight=10, vwap_threshold_percent=0.5)
+
+        # Create test candles
+        candles = pd.DataFrame({
+            "time": pd.date_range("2024-01-01", periods=200, freq="h"),
+            "open": [50000.0] * 200,
+            "high": [50100.0] * 200,
+            "low": [49900.0] * 200,
+            "close": [50000.0] * 200,
+            "volume": [100.0] * 200,
+        })
+
+        # Create enrichment data with VWAP above current price
+        # Price at 49500, VWAP at 50000 = 1% below VWAP -> bullish signal
+        enrichment_df = pd.DataFrame({
+            "timestamp": [candles["time"].iloc[-1]],
+            "vwap": [Decimal("50000.0")],
+            "trade_count": [100],
+        })
+
+        result = scorer.calculate_score(
+            candles,
+            Decimal("49500"),  # 1% below VWAP
+            enrichment_data=enrichment_df,
+        )
+
+        # VWAP component should be positive (bullish - expect price to revert up)
+        assert result.components["vwap"] > 0, \
+            f"Expected positive VWAP component when price < VWAP, got {result.components['vwap']}"
+
+    def test_calculate_score_without_vwap_enrichment(self):
+        """Test VWAP component is 0 when enrichment_data is None."""
+        scorer = SignalScorer(vwap_weight=10, vwap_threshold_percent=0.5)
+
+        # Create test candles
+        candles = pd.DataFrame({
+            "time": pd.date_range("2024-01-01", periods=200, freq="h"),
+            "open": [50000.0] * 200,
+            "high": [50100.0] * 200,
+            "low": [49900.0] * 200,
+            "close": [50000.0] * 200,
+            "volume": [100.0] * 200,
+        })
+
+        result = scorer.calculate_score(
+            candles,
+            Decimal("50000"),
+            enrichment_data=None,  # No enrichment data
+        )
+
+        # VWAP component should be 0 when no enrichment data
+        assert result.components["vwap"] == 0, \
+            f"Expected VWAP component to be 0 without enrichment data, got {result.components['vwap']}"
+
+    def test_vwap_weight_scales_signal(self):
+        """Test VWAP weight correctly scales the signal contribution."""
+        # Create test candles
+        candles = pd.DataFrame({
+            "time": pd.date_range("2024-01-01", periods=200, freq="h"),
+            "open": [50000.0] * 200,
+            "high": [50100.0] * 200,
+            "low": [49900.0] * 200,
+            "close": [50000.0] * 200,
+            "volume": [100.0] * 200,
+        })
+
+        # Create enrichment data with strong deviation (1% above VWAP)
+        enrichment_df = pd.DataFrame({
+            "timestamp": [candles["time"].iloc[-1]],
+            "vwap": [Decimal("50000.0")],
+            "trade_count": [100],
+        })
+
+        # Test with weight=10
+        scorer_10 = SignalScorer(vwap_weight=10, vwap_threshold_percent=0.5)
+        result_10 = scorer_10.calculate_score(
+            candles,
+            Decimal("50500"),  # 1% above VWAP = full signal
+            enrichment_data=enrichment_df,
+        )
+
+        # Test with weight=20
+        scorer_20 = SignalScorer(vwap_weight=20, vwap_threshold_percent=0.5)
+        result_20 = scorer_20.calculate_score(
+            candles,
+            Decimal("50500"),
+            enrichment_data=enrichment_df,
+        )
+
+        # Higher weight should give larger absolute VWAP component
+        assert abs(result_20.components["vwap"]) > abs(result_10.components["vwap"]), \
+            f"Expected weight=20 ({result_20.components['vwap']}) > weight=10 ({result_10.components['vwap']})"
+
