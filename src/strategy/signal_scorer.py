@@ -20,6 +20,7 @@ from src.indicators.macd import calculate_macd, get_macd_signal_graduated, VALID
 from src.indicators.bollinger import calculate_bollinger_bands, get_bollinger_signal_graduated
 from src.indicators.ema import calculate_ema_crossover, get_ema_signal_graduated, get_ema_trend
 from src.indicators.atr import calculate_atr, get_volatility_level
+from src.indicators.vwap import get_vwap_signal_graduated, calculate_price_vs_vwap_percent
 
 logger = structlog.get_logger(__name__)
 
@@ -101,6 +102,10 @@ class IndicatorValues:
     ema_slow: Optional[float] = None
     atr: Optional[float] = None
     volatility: str = "normal"
+    # VWAP enrichment data (from Kraken public API)
+    vwap: Optional[float] = None
+    price_vs_vwap_pct: Optional[float] = None
+    trade_count: Optional[int] = None
 
 
 @dataclass
@@ -187,6 +192,8 @@ class SignalScorer:
         extreme_rsi_upper: int = 75,
         trend_filter_penalty: int = 20,
         macd_interval_multipliers: Optional[dict[str, float]] = None,
+        vwap_weight: int = 0,
+        vwap_threshold_percent: float = 0.5,
     ):
         """
         Initialize signal scorer.
@@ -268,6 +275,10 @@ class SignalScorer:
 
         # MACD dynamic scaling parameters
         self.macd_interval_multipliers = macd_interval_multipliers
+
+        # VWAP enrichment parameters
+        self.vwap_weight = vwap_weight
+        self.vwap_threshold_percent = vwap_threshold_percent
 
     def get_min_candles(self) -> int:
         """
@@ -505,11 +516,12 @@ class SignalScorer:
         htf_daily: Optional[str] = None,
         htf_4h: Optional[str] = None,
         sentiment_category: Optional[SentimentCategory] = None,
+        enrichment_data: Optional[pd.DataFrame] = None,
     ) -> SignalResult:
         """
         Calculate composite signal score from OHLCV data.
 
-        Combines multiple technical indicators (RSI, MACD, Bollinger, EMA, Volume) into
+        Combines multiple technical indicators (RSI, MACD, Bollinger, EMA, Volume, VWAP) into
         a unified signal. When momentum mode is active, overbought penalties are reduced
         proportionally to trend strength (EMA gap) to enable riding strong trends while
         maintaining responsiveness during weakening trends.
@@ -521,6 +533,9 @@ class SignalScorer:
             htf_daily: Daily timeframe trend (for AI context)
             htf_4h: 4-hour timeframe trend (for AI context)
             sentiment_category: Fear & Greed category ("extreme_fear", "fear", etc.)
+            enrichment_data: Optional DataFrame with VWAP/trade count from Kraken enrichment.
+                           Expected columns: timestamp, vwap, trade_count.
+                           Uses latest row's VWAP for signal calculation.
 
         Returns:
             SignalResult with score, action, and breakdown
@@ -561,6 +576,20 @@ class SignalScorer:
         ema_result = calculate_ema_crossover(close, self.ema_fast, self.ema_slow_period)
         atr_result = calculate_atr(high, low, close, self.atr_period)
 
+        # Extract VWAP enrichment data (from Kraken public API)
+        vwap_value: Optional[float] = None
+        trade_count_value: Optional[int] = None
+        if enrichment_data is not None and not enrichment_data.empty:
+            # Use the latest row's VWAP (most recent candle)
+            if "vwap" in enrichment_data.columns:
+                latest_vwap = enrichment_data["vwap"].iloc[-1]
+                if not pd.isna(latest_vwap):
+                    vwap_value = float(latest_vwap)
+            if "trade_count" in enrichment_data.columns:
+                latest_count = enrichment_data["trade_count"].iloc[-1]
+                if not pd.isna(latest_count):
+                    trade_count_value = int(latest_count)
+
         # Store current indicator values
         indicators = IndicatorValues(
             rsi=rsi.iloc[-1] if not pd.isna(rsi.iloc[-1]) else None,
@@ -574,6 +603,9 @@ class SignalScorer:
             ema_slow=ema_result.ema_slow.iloc[-1] if not pd.isna(ema_result.ema_slow.iloc[-1]) else None,
             atr=atr_result.atr.iloc[-1] if not pd.isna(atr_result.atr.iloc[-1]) else None,
             volatility=get_volatility_level(atr_result),
+            vwap=vwap_value,
+            price_vs_vwap_pct=calculate_price_vs_vwap_percent(price, vwap_value),
+            trade_count=trade_count_value,
         )
 
         # Calculate individual scores
@@ -697,6 +729,27 @@ class SignalScorer:
         components["ema"] = ema_score
         total_score += ema_score
 
+        # VWAP component (graduated: returns -1.0 to +1.0, mean-reversion signal)
+        # Only calculate if VWAP is available from enrichment data and weight > 0
+        # VWAP is a contrarian signal: price above VWAP = bearish, below = bullish
+        vwap_score = 0
+        if self.vwap_weight > 0 and indicators.vwap is not None:
+            vwap_signal = get_vwap_signal_graduated(
+                price, indicators.vwap, self.vwap_threshold_percent
+            )
+            vwap_score = int(vwap_signal * self.vwap_weight)
+            logger.debug(
+                "vwap_signal_calculated",
+                price=round(price, 2),
+                vwap=round(indicators.vwap, 2),
+                deviation_pct=round(indicators.price_vs_vwap_pct or 0, 3),
+                signal=round(vwap_signal, 3),
+                score=vwap_score,
+                weight=self.vwap_weight,
+            )
+        components["vwap"] = vwap_score
+        total_score += vwap_score
+
         # Store raw indicator values for signal history
         metadata["_rsi_value"] = indicators.rsi
         metadata["_macd_histogram"] = indicators.macd_histogram
@@ -710,6 +763,10 @@ class SignalScorer:
             metadata["_ema_gap_percent"] = ((float(indicators.ema_fast) - float(indicators.ema_slow)) / float(indicators.ema_slow)) * 100
         else:
             metadata["_ema_gap_percent"] = None
+        # VWAP enrichment data
+        metadata["_vwap"] = indicators.vwap
+        metadata["_price_vs_vwap_pct"] = indicators.price_vs_vwap_pct
+        metadata["_trade_count"] = indicators.trade_count
 
         # Volume confirmation (boost on high volume, penalty on low volume)
         # Includes whale activity detection for extreme volume spikes

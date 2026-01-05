@@ -212,6 +212,12 @@ def mock_settings():
     # MACD Dynamic Scaling
     settings.macd_interval_multipliers = None  # Use default hardcoded multipliers
 
+    # Kraken Data Enrichment (VWAP)
+    settings.kraken_enrichment_enabled = False
+    settings.kraken_enrichment_cache_seconds = 60
+    settings.vwap_weight = 10
+    settings.vwap_threshold_percent = 0.5
+
     return settings
 
 

@@ -191,6 +191,33 @@ class Settings(BaseSettings):
     # Strategy Parameters - ATR
     atr_period: int = Field(default=14, ge=2, le=50)
 
+    # Kraken Data Enrichment (VWAP + Trade Count)
+    # Fetches supplementary data from Kraken public API regardless of trading exchange
+    kraken_enrichment_enabled: bool = Field(
+        default=False,
+        description="Enable VWAP/trade count enrichment from Kraken public API"
+    )
+    kraken_enrichment_cache_seconds: int = Field(
+        default=60,
+        ge=10,
+        le=600,
+        description="Cache duration for Kraken enrichment data (seconds)"
+    )
+
+    # Strategy Parameters - VWAP
+    vwap_weight: int = Field(
+        default=10,
+        ge=0,
+        le=30,
+        description="Weight for VWAP signal in overall score (0 = disabled)"
+    )
+    vwap_threshold_percent: float = Field(
+        default=0.5,
+        ge=0.1,
+        le=2.0,
+        description="Minimum price deviation from VWAP for non-zero signal (%)"
+    )
+
     # MACD Dynamic Scaling - Interval Multipliers
     macd_interval_multipliers: Optional[dict[str, float]] = Field(
         default=None,
