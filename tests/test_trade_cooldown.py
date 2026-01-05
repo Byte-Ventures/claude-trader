@@ -501,6 +501,11 @@ def test_sell_cooldown_default_is_5_minutes():
     assert TradeCooldownConfig().sell_cooldown_minutes == 5
 
 
+def test_sell_cooldown_default_value():
+    """Verify the default sell cooldown is 5 minutes."""
+    assert TradeCooldownConfig().sell_cooldown_minutes == 5
+
+
 def test_invalid_price_zero_blocked(cooldown):
     """Zero price should be blocked."""
     can_execute, reason = cooldown.can_execute("buy", Decimal("0"))
