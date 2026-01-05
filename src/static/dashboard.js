@@ -544,6 +544,26 @@ function updateDashboard(state) {
         document.getElementById('weight-profile-confidence').textContent = '--';
     }
 
+    // Update ADX (trend strength) - now inline with signal threshold
+    const adxEl = document.getElementById('adx-value');
+    if (indicators && indicators.adx !== null && indicators.adx !== undefined) {
+        const adx = indicators.adx;
+        adxEl.textContent = adx.toFixed(0);
+
+        // Color code based on ADX value
+        adxEl.classList.remove('adx-weak', 'adx-emerging', 'adx-strong');
+        if (adx < 20) {
+            adxEl.classList.add('adx-weak');  // Weak trend - unreliable signals
+        } else if (adx < 25) {
+            adxEl.classList.add('adx-emerging');  // Emerging trend
+        } else {
+            adxEl.classList.add('adx-strong');  // Confirmed trend
+        }
+    } else {
+        adxEl.textContent = '--';
+        adxEl.classList.remove('adx-weak', 'adx-emerging', 'adx-strong');
+    }
+
     // Update HTF bias
     const htfBiasCard = document.getElementById('htf-bias-card');
     const htfBias = state.htf_bias;

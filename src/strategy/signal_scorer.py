@@ -21,6 +21,11 @@ from src.indicators.bollinger import calculate_bollinger_bands, get_bollinger_si
 from src.indicators.ema import calculate_ema_crossover, get_ema_signal_graduated, get_ema_trend
 from src.indicators.atr import calculate_atr, get_volatility_level
 from src.indicators.vwap import get_vwap_signal_graduated, calculate_price_vs_vwap_percent
+from src.indicators.adx import (
+    calculate_adx,
+    get_adx_confidence_multiplier,
+    classify_trend_strength,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -106,6 +111,10 @@ class IndicatorValues:
     vwap: Optional[float] = None
     price_vs_vwap_pct: Optional[float] = None
     trade_count: Optional[int] = None
+    # ADX (trend strength)
+    adx: Optional[float] = None
+    plus_di: Optional[float] = None
+    minus_di: Optional[float] = None
 
 
 @dataclass
@@ -194,6 +203,10 @@ class SignalScorer:
         macd_interval_multipliers: Optional[dict[str, float]] = None,
         vwap_weight: int = 0,
         vwap_threshold_percent: float = 0.5,
+        adx_enabled: bool = True,
+        adx_period: int = 14,
+        adx_weak_threshold: float = 20.0,
+        adx_strong_threshold: float = 25.0,
     ):
         """
         Initialize signal scorer.
@@ -279,6 +292,12 @@ class SignalScorer:
         # VWAP enrichment parameters
         self.vwap_weight = vwap_weight
         self.vwap_threshold_percent = vwap_threshold_percent
+
+        # ADX (trend strength) parameters
+        self.adx_enabled = adx_enabled
+        self.adx_period = adx_period
+        self.adx_weak_threshold = adx_weak_threshold
+        self.adx_strong_threshold = adx_strong_threshold
 
     def get_min_candles(self) -> int:
         """
@@ -576,6 +595,18 @@ class SignalScorer:
         ema_result = calculate_ema_crossover(close, self.ema_fast, self.ema_slow_period)
         atr_result = calculate_atr(high, low, close, self.atr_period)
 
+        # Calculate ADX (trend strength) if enabled
+        adx_result = None
+        adx_value: Optional[float] = None
+        plus_di_value: Optional[float] = None
+        minus_di_value: Optional[float] = None
+        if self.adx_enabled:
+            adx_result = calculate_adx(high, low, close, self.adx_period)
+            if not adx_result.adx.empty and not pd.isna(adx_result.adx.iloc[-1]):
+                adx_value = float(adx_result.adx.iloc[-1])
+                plus_di_value = float(adx_result.plus_di.iloc[-1]) if not pd.isna(adx_result.plus_di.iloc[-1]) else None
+                minus_di_value = float(adx_result.minus_di.iloc[-1]) if not pd.isna(adx_result.minus_di.iloc[-1]) else None
+
         # Extract VWAP enrichment data (from Kraken public API)
         vwap_value: Optional[float] = None
         trade_count_value: Optional[int] = None
@@ -606,6 +637,9 @@ class SignalScorer:
             vwap=vwap_value,
             price_vs_vwap_pct=calculate_price_vs_vwap_percent(price, vwap_value),
             trade_count=trade_count_value,
+            adx=adx_value,
+            plus_di=plus_di_value,
+            minus_di=minus_di_value,
         )
 
         # Calculate individual scores
@@ -1131,6 +1165,30 @@ class SignalScorer:
         metadata["_htf_trend"] = htf_bias if htf_bias is not None else "unknown"
         metadata["_htf_daily"] = htf_daily if htf_daily is not None else "unknown"
         metadata["_htf_4h"] = htf_4h if htf_4h is not None else "unknown"
+
+        # Apply ADX trend strength confidence multiplier
+        # Reduces signal strength during choppy/ranging markets where momentum signals are unreliable
+        adx_multiplier = 1.0
+        if self.adx_enabled and adx_value is not None:
+            adx_multiplier = get_adx_confidence_multiplier(
+                adx_value,
+                weak_threshold=self.adx_weak_threshold,
+                strong_threshold=self.adx_strong_threshold,
+            )
+            if adx_multiplier != 1.0:
+                score_before_adx = total_score
+                total_score = int(total_score * adx_multiplier)
+                logger.info(
+                    "adx_confidence_applied",
+                    adx=round(adx_value, 2),
+                    trend_strength=classify_trend_strength(adx_value),
+                    multiplier=adx_multiplier,
+                    score_before=score_before_adx,
+                    score_after=total_score,
+                )
+        metadata["_adx"] = round(adx_value, 2) if adx_value is not None else None
+        metadata["_adx_multiplier"] = adx_multiplier
+        metadata["_adx_trend_strength"] = classify_trend_strength(adx_value)
 
         # Clamp score to -100 to +100
         total_score = max(-100, min(100, total_score))

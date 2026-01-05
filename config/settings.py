@@ -218,6 +218,41 @@ class Settings(BaseSettings):
         description="Minimum price deviation from VWAP for non-zero signal (%)"
     )
 
+    # Strategy Parameters - ADX (Trend Strength Filter)
+    # ADX measures trend strength (not direction) to filter out choppy market signals
+    adx_enabled: bool = Field(
+        default=True,
+        description="Enable ADX-based signal confidence adjustment"
+    )
+    adx_period: int = Field(
+        default=14,
+        ge=5,
+        le=50,
+        description="ADX calculation period (Wilder's default: 14)"
+    )
+    adx_weak_threshold: float = Field(
+        default=20.0,
+        ge=10.0,
+        le=40.0,
+        description="ADX below this = weak trend, signals reduced by 50%"
+    )
+    adx_strong_threshold: float = Field(
+        default=25.0,
+        ge=15.0,
+        le=50.0,
+        description="ADX above this = confirmed trend, full signal confidence"
+    )
+
+    @model_validator(mode="after")
+    def validate_adx_thresholds(self) -> "Settings":
+        """Ensure ADX weak threshold is less than strong threshold."""
+        if self.adx_weak_threshold >= self.adx_strong_threshold:
+            raise ValueError(
+                f"adx_weak_threshold ({self.adx_weak_threshold}) must be less than "
+                f"adx_strong_threshold ({self.adx_strong_threshold})"
+            )
+        return self
+
     # MACD Dynamic Scaling - Interval Multipliers
     macd_interval_multipliers: Optional[dict[str, float]] = Field(
         default=None,

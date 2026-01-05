@@ -24,6 +24,9 @@ class IndicatorValues(BaseModel):
     vwap: Optional[float] = None
     price_vs_vwap_pct: Optional[float] = None
     trade_count: Optional[int] = None
+    # ADX (trend strength)
+    adx: Optional[float] = None
+    adx_trend_strength: Optional[str] = None
 
 
 class SignalInfo(BaseModel):

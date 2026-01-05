@@ -218,6 +218,12 @@ def mock_settings():
     settings.vwap_weight = 10
     settings.vwap_threshold_percent = 0.5
 
+    # ADX (Trend Strength)
+    settings.adx_enabled = True
+    settings.adx_period = 14
+    settings.adx_weak_threshold = 20.0
+    settings.adx_strong_threshold = 25.0
+
     return settings
 
 
