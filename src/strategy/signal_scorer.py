@@ -663,10 +663,16 @@ class SignalScorer:
             # - Moderate trend (0.5): reduction=0.25, keep 75% → -25 becomes -18
             # - Weak trend (0.1): reduction=0.05, keep 95% → -25 becomes -23
             # - No trend (0.0): reduction=0.0, keep 100% → -25 stays -25
-            if rsi_score < 0:
-                rsi_score = int(rsi_score * (1 - reduction))
-            if bb_score < 0:
-                bb_score = int(bb_score * (1 - reduction))
+            #
+            # IMPORTANT: Only apply penalty reduction for buy signals (positive total_score).
+            # For sell signals, we want responsive exits at overbought levels, not reduced penalties.
+            # Calculate preliminary score to determine signal direction before adjustment.
+            preliminary_score = rsi_score + macd_score + bb_score + ema_score
+            if preliminary_score > 0:  # Only for buy signals
+                if rsi_score < 0:
+                    rsi_score = int(rsi_score * (1 - reduction))
+                if bb_score < 0:
+                    bb_score = int(bb_score * (1 - reduction))
             logger.info(
                 "momentum_mode_active",
                 reason=momentum_reason,
