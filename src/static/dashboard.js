@@ -544,6 +544,43 @@ function updateDashboard(state) {
         document.getElementById('weight-profile-confidence').textContent = '--';
     }
 
+    // Update ADX (trend strength)
+    const indicators = state.indicators;
+    if (indicators && indicators.adx !== null && indicators.adx !== undefined) {
+        const adx = indicators.adx;
+        const trendStrength = indicators.adx_trend_strength || 'unknown';
+
+        // Color code based on trend strength
+        const adxEl = document.getElementById('adx-value');
+        adxEl.textContent = adx.toFixed(1);
+
+        // Remove all status classes first
+        adxEl.classList.remove('status-green', 'status-yellow', 'status-red');
+
+        // Add appropriate class based on ADX value
+        if (adx < 20) {
+            adxEl.classList.add('status-red');  // Weak trend - unreliable signals
+        } else if (adx < 25) {
+            adxEl.classList.add('status-yellow');  // Emerging trend
+        } else {
+            adxEl.classList.add('status-green');  // Confirmed trend
+        }
+
+        const strengthEmoji = {
+            'weak': '😴',
+            'emerging': '👀',
+            'moderate': '📊',
+            'strong': '💪',
+            'extreme': '🔥',
+            'unknown': '❓'
+        };
+        const emoji = strengthEmoji[trendStrength] || '❓';
+        document.getElementById('adx-trend-strength').textContent = `${emoji} ${trendStrength}`;
+    } else {
+        document.getElementById('adx-value').textContent = '--';
+        document.getElementById('adx-trend-strength').textContent = '--';
+    }
+
     // Update HTF bias
     const htfBiasCard = document.getElementById('htf-bias-card');
     const htfBias = state.htf_bias;

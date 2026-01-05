@@ -392,6 +392,10 @@ class TradingDaemon:
             macd_interval_multipliers=settings.macd_interval_multipliers,
             vwap_weight=settings.vwap_weight if settings.kraken_enrichment_enabled else 0,
             vwap_threshold_percent=settings.vwap_threshold_percent,
+            adx_enabled=settings.adx_enabled,
+            adx_period=settings.adx_period,
+            adx_weak_threshold=settings.adx_weak_threshold,
+            adx_strong_threshold=settings.adx_strong_threshold,
         )
 
         self.position_sizer = PositionSizer(
@@ -1686,6 +1690,9 @@ class TradingDaemon:
                 "vwap": float(ind.vwap) if ind.vwap else None,
                 "price_vs_vwap_pct": round(ind.price_vs_vwap_pct, 3) if ind.price_vs_vwap_pct else None,
                 "trade_count": ind.trade_count,
+                # ADX (trend strength)
+                "adx": round(ind.adx, 2) if ind.adx else None,
+                "adx_trend_strength": signal_result.metadata.get("_adx_trend_strength") if signal_result else None,
             },
             "portfolio": {
                 "quote_balance": str(quote_balance),
