@@ -2129,13 +2129,16 @@ class TradingDaemon:
 
     def _update_daily_stats(self, current_price: Decimal) -> None:
         """Update daily stats with current portfolio value after trades."""
-        portfolio_value = self.position_service.get_portfolio_value()
-        self.db.update_daily_stats(
-            ending_balance=portfolio_value,
-            ending_price=current_price,
-            is_paper=self.settings.is_paper_trading,
-            bot_mode=BotMode.NORMAL,
-        )
+        try:
+            portfolio_value = self.position_service.get_portfolio_value()
+            self.db.update_daily_stats(
+                ending_balance=portfolio_value,
+                ending_price=current_price,
+                is_paper=self.settings.is_paper_trading,
+                bot_mode=BotMode.NORMAL,
+            )
+        except Exception as e:
+            logger.warning("daily_stats_update_failed", error=str(e))
 
     def _execute_buy(
         self,
