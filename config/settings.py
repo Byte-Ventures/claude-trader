@@ -443,10 +443,10 @@ class Settings(BaseSettings):
         description="Minimum minutes between buy trades (0 = disabled)"
     )
     sell_cooldown_minutes: int = Field(
-        default=0,
+        default=5,
         ge=0,
         le=60,
-        description="Minimum minutes between sell trades (0 = disabled for safety)"
+        description="Minimum minutes between sell trades (5 = prevent rapid-fire selling, 0 = disabled for emergency exits)"
     )
     buy_price_change_percent: float = Field(
         default=1.0,
