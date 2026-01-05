@@ -616,6 +616,7 @@ function updateDashboard(state) {
     updateBreakdownBar('breakdown-bollinger', breakdown.bollinger || 0);
     updateBreakdownBar('breakdown-ema', breakdown.ema || 0);
     updateBreakdownBar('breakdown-volume', breakdown.volume || 0);
+    updateBreakdownBar('breakdown-vwap', breakdown.vwap || 0);
 
     // Update chart with new price (if we have valid data)
     //

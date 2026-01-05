@@ -20,6 +20,10 @@ class IndicatorValues(BaseModel):
     ema_slow: Optional[float] = None
     atr: Optional[float] = None
     volatility: str = "normal"
+    # VWAP enrichment data (from Kraken public API)
+    vwap: Optional[float] = None
+    price_vs_vwap_pct: Optional[float] = None
+    trade_count: Optional[int] = None
 
 
 class SignalInfo(BaseModel):

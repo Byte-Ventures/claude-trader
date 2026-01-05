@@ -1682,6 +1682,10 @@ class TradingDaemon:
                 "ema_slow": float(ind.ema_slow) if ind.ema_slow else None,
                 "atr": float(ind.atr) if ind.atr else None,
                 "volatility": ind.volatility,
+                # VWAP enrichment data
+                "vwap": float(ind.vwap) if ind.vwap else None,
+                "price_vs_vwap_pct": round(ind.price_vs_vwap_pct, 3) if ind.price_vs_vwap_pct else None,
+                "trade_count": ind.trade_count,
             },
             "portfolio": {
                 "quote_balance": str(quote_balance),
