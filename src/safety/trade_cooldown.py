@@ -35,7 +35,7 @@ class TradeCooldownConfig:
 
     # Time-based cooldown (minutes, 0 = disabled)
     buy_cooldown_minutes: int = 15
-    sell_cooldown_minutes: int = 0  # Disabled by default (safety: allow quick exits)
+    sell_cooldown_minutes: int = 5  # Prevent rapid-fire selling (0 = disabled for emergency exits)
 
     # Price-based cooldown (percent change required, 0 = disabled)
     buy_price_change_percent: float = 1.0  # Price must drop 1% to buy again

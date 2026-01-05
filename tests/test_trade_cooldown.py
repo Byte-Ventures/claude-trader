@@ -72,7 +72,7 @@ def test_default_config():
     """Test default configuration values."""
     config = TradeCooldownConfig()
     assert config.buy_cooldown_minutes == 15
-    assert config.sell_cooldown_minutes == 0  # Disabled for safety
+    assert config.sell_cooldown_minutes == 5  # Prevent rapid-fire selling
     assert config.buy_price_change_percent == 1.0
     assert config.sell_price_change_percent == 0.0
 
@@ -95,7 +95,7 @@ def test_initialization_default():
     """Test cooldown initializes with default config."""
     cooldown = TradeCooldown()
     assert cooldown.config.buy_cooldown_minutes == 15
-    assert cooldown.config.sell_cooldown_minutes == 0
+    assert cooldown.config.sell_cooldown_minutes == 5
     assert cooldown._last_buy_time is None
     assert cooldown._last_buy_price is None
     assert cooldown._cache_initialized is False
@@ -479,13 +479,26 @@ def test_naive_datetime_handled():
     assert isinstance(can_execute, bool)
 
 
-def test_sell_cooldown_disabled_by_default(cooldown):
-    """Sell cooldown should be disabled by default for safety."""
+def test_sell_cooldown_default_is_5_minutes():
+    """Sell cooldown should be 5 minutes by default to prevent rapid-fire selling.
+
+    Note: With default price change = 0%, trades are allowed if EITHER condition passes.
+    To test time-only cooldown blocking, we need a price change requirement too.
+    """
+    config = TradeCooldownConfig(
+        sell_cooldown_minutes=5,  # Default
+        sell_price_change_percent=1.0,  # Need this to test time cooldown blocking
+    )
+    cooldown = TradeCooldown(config=config)
     cooldown.record_trade("sell", Decimal("100000"))
 
-    # Should be allowed immediately (sell cooldown = 0)
+    # Should be blocked (time not elapsed AND price not risen)
     can_execute, reason = cooldown.can_execute("sell", Decimal("100000"))
-    assert can_execute is True
+    assert can_execute is False
+    assert "wait" in reason
+
+    # Verify default is 5 minutes
+    assert TradeCooldownConfig().sell_cooldown_minutes == 5
 
 
 def test_invalid_price_zero_blocked(cooldown):
