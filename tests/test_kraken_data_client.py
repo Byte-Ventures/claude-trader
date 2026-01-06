@@ -190,6 +190,39 @@ class TestKrakenDataClient:
 
         assert len(self.client._cache) == 0
 
+    @patch("requests.Session.get")
+    def test_zero_trade_count_preserved(self, mock_get):
+        """Test that zero trade count is preserved (not treated as None).
+
+        Regression test: 'if candle[7]' falsely treated 0 as None.
+        """
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "result": {
+                "XXBTZUSD": [
+                    # Trade count is 0 - should be preserved, not converted to None/NaN
+                    [1704067200, "42000", "42100", "41900", "42050", "42025.5", "100", 0],
+                    # Trade count is None - should become None
+                    [1704067260, "42050", "42150", "41950", "42100", "42075.5", "50", None],
+                    # Normal trade count
+                    [1704067320, "42100", "42200", "42000", "42150", "42125.5", "75", 25],
+                ]
+            }
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        result = self.client._fetch_ohlc_data("BTC-USD", "ONE_HOUR", 100)
+
+        assert result is not None
+        assert len(result) == 3
+        # Zero should be preserved as 0.0 (float due to NaN in column), not NaN
+        assert result["trade_count"].iloc[0] == 0
+        # None should become NaN
+        assert pd.isna(result["trade_count"].iloc[1])
+        # Normal value should work
+        assert result["trade_count"].iloc[2] == 25
+
 
 class TestEnrichmentCache:
     """Tests for EnrichmentCache dataclass."""
