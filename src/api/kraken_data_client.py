@@ -215,7 +215,8 @@ class KrakenDataClient:
             rows.append({
                 "timestamp": datetime.fromtimestamp(candle[0], tz=timezone.utc),
                 "vwap": Decimal(str(candle[5])) if candle[5] else None,
-                "trade_count": int(candle[7]) if candle[7] else None,
+                # Use 'is not None' to preserve 0 as valid trade count
+                "trade_count": int(candle[7]) if candle[7] is not None else None,
             })
 
         return pd.DataFrame(rows)

@@ -1338,10 +1338,13 @@ class TradingDaemon:
                 limit=self.settings.candle_limit,
             )
             if enrichment_df is not None and not enrichment_df.empty:
+                # Safely extract values, guarding against NaN
+                vwap_val = enrichment_df["vwap"].iloc[-1] if "vwap" in enrichment_df.columns else None
+                trade_count_val = enrichment_df["trade_count"].iloc[-1] if "trade_count" in enrichment_df.columns else None
                 logger.debug(
                     "enrichment_data_fetched",
-                    vwap=float(enrichment_df["vwap"].iloc[-1]) if "vwap" in enrichment_df.columns else None,
-                    trade_count=int(enrichment_df["trade_count"].iloc[-1]) if "trade_count" in enrichment_df.columns else None,
+                    vwap=float(vwap_val) if vwap_val is not None and pd.notna(vwap_val) else None,
+                    trade_count=int(trade_count_val) if trade_count_val is not None and pd.notna(trade_count_val) else None,
                 )
 
         # Calculate signal with HTF context, sentiment, and enrichment data
