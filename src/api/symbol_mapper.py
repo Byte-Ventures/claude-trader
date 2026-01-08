@@ -189,20 +189,33 @@ def parse_trading_pair(symbol: str) -> Tuple[str, str]:
 
 
 # Granularity mapping between our format and Kraken's
+# Kraken only supports: 1, 5, 15, 30, 60, 240, 1440, 10080 minute intervals
+# Unsupported intervals are mapped to nearest supported interval
 KRAKEN_GRANULARITY_MAP = {
     "ONE_MINUTE": 1,
     "FIVE_MINUTE": 5,
     "FIFTEEN_MINUTE": 15,
     "THIRTY_MINUTE": 30,
     "ONE_HOUR": 60,
-    "TWO_HOUR": 120,
+    "TWO_HOUR": 60,       # Kraken doesn't support 120, use 60 (1 hour)
     "FOUR_HOUR": 240,
-    "SIX_HOUR": 360,
+    "SIX_HOUR": 240,      # Kraken doesn't support 360, use 240 (4 hour)
     "ONE_DAY": 1440,
     "ONE_WEEK": 10080,
 }
 
-KRAKEN_GRANULARITY_REVERSE = {v: k for k, v in KRAKEN_GRANULARITY_MAP.items()}
+# Reverse map uses canonical intervals only (not fallbacks)
+# When Kraken returns 60, we interpret as ONE_HOUR (not TWO_HOUR which is a fallback)
+KRAKEN_GRANULARITY_REVERSE = {
+    1: "ONE_MINUTE",
+    5: "FIVE_MINUTE",
+    15: "FIFTEEN_MINUTE",
+    30: "THIRTY_MINUTE",
+    60: "ONE_HOUR",
+    240: "FOUR_HOUR",
+    1440: "ONE_DAY",
+    10080: "ONE_WEEK",
+}
 
 
 def to_kraken_granularity(granularity: str) -> int:
