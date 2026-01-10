@@ -1044,6 +1044,15 @@ class SignalScorer:
             total_score += trend_adjustment
         components["trend_filter"] = trend_adjustment
 
+        # Detect short-term indicator consensus (RSI and Bollinger agree on direction)
+        # When both indicators unanimously signal overbought/oversold, cap HTF adjustment
+        # to prevent HTF from completely overriding timely exit/entry signals.
+        # Thresholds: RSI ±15 (60% of max 25), BB ±20 (100% of max 20)
+        short_term_consensus = (
+            (rsi_score <= -15 and bb_score <= -20) or  # Both bearish/overbought
+            (rsi_score >= 15 and bb_score >= 20)       # Both bullish/oversold
+        )
+
         # HTF (Higher Timeframe) bias modifier
         # Purpose: Reduce false signals by aligning trades with the macro trend
         # - Daily + 4-hour trends must agree for strong bias, otherwise neutral
@@ -1101,6 +1110,18 @@ class SignalScorer:
             if sentiment_category == "extreme_fear" and htf_daily == "bearish" and total_score > 0:
                 # Buying into bearish daily trend during extreme fear - apply FULL penalty
                 htf_adjustment = -self.mtf_counter_penalty
+                # Cap adjustment if short-term indicators show consensus
+                if short_term_consensus and abs(htf_adjustment) > 10:
+                    original_htf_adjustment = htf_adjustment
+                    htf_adjustment = max(-10, min(10, htf_adjustment))
+                    logger.info(
+                        "htf_adjustment_capped",
+                        reason="short_term_consensus",
+                        original=original_htf_adjustment,
+                        capped=htf_adjustment,
+                        rsi_score=rsi_score,
+                        bb_score=bb_score,
+                    )
                 extreme_fear_override_applied = True
                 score_before = total_score
                 total_score += htf_adjustment
@@ -1118,6 +1139,18 @@ class SignalScorer:
                 # Selling into bullish daily trend during extreme fear - apply FULL penalty
                 # to weaken sell signal more aggressively (prevent panic selling)
                 htf_adjustment = self.mtf_counter_penalty
+                # Cap adjustment if short-term indicators show consensus
+                if short_term_consensus and abs(htf_adjustment) > 10:
+                    original_htf_adjustment = htf_adjustment
+                    htf_adjustment = max(-10, min(10, htf_adjustment))
+                    logger.info(
+                        "htf_adjustment_capped",
+                        reason="short_term_consensus",
+                        original=original_htf_adjustment,
+                        capped=htf_adjustment,
+                        rsi_score=rsi_score,
+                        bb_score=bb_score,
+                    )
                 extreme_fear_override_applied = True
                 score_before = total_score
                 total_score += htf_adjustment
@@ -1137,6 +1170,22 @@ class SignalScorer:
             elif total_score < 0 and htf_daily == "bullish":
                 # Selling into bullish daily trend - weaken sell signal
                 htf_adjustment = half_penalty
+
+        # Cap HTF adjustment when short-term indicators show consensus
+        # When RSI and Bollinger both signal overbought/oversold, cap adjustment to ±10
+        # to allow timely exits/entries while preserving some HTF influence.
+        # This prevents HTF from completely overriding unanimous short-term signals.
+        if short_term_consensus and abs(htf_adjustment) > 10:
+            original_htf_adjustment = htf_adjustment
+            htf_adjustment = max(-10, min(10, htf_adjustment))
+            logger.info(
+                "htf_adjustment_capped",
+                reason="short_term_consensus",
+                original=original_htf_adjustment,
+                capped=htf_adjustment,
+                rsi_score=rsi_score,
+                bb_score=bb_score,
+            )
 
         # Apply adjustment and log only if NOT already handled by extreme fear override
         if htf_adjustment != 0 and not extreme_fear_override_applied:
