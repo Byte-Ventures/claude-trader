@@ -3139,80 +3139,82 @@ class TestShortTermConsensusHTFCapping:
 
     def test_bearish_consensus_detection(self):
         """Test bearish consensus: RSI <= -15 AND BB <= -20."""
-        scorer = SignalScorer()
-        # Bearish consensus should be True when RSI <= -15 and BB <= -20
-        # This is verified implicitly through the capping behavior
-        # when we have HTF counter-trend adjustment
+        # This tests that when RSI and BB both show overbought conditions,
+        # the HTF adjustment is capped. We use mocked indicator scores to
+        # ensure consistent test behavior regardless of indicator implementation.
 
-        # Create strongly overbought data that will produce:
-        # - Strong sell signal (negative total_score)
-        # - RSI score <= -15 (overbought)
-        # - BB score <= -20 (above upper band)
-        np.random.seed(999)
-        length = 200
-        prices = []
-        current = 40000.0
-        # Create massive uptrend to trigger overbought
-        for i in range(length):
-            current = current * 1.005  # 0.5% growth each candle
-            prices.append(current)
+        # Create test data with mocked indicator functions
+        scorer = SignalScorer()
+        length = 50
+        prices = [50000.0] * length
 
         df = pd.DataFrame({
-            'open': [p * 0.999 for p in prices],
-            'high': [p * 1.002 for p in prices],
-            'low': [p * 0.998 for p in prices],
+            'open': prices,
+            'high': [p * 1.001 for p in prices],
+            'low': [p * 0.999 for p in prices],
             'close': prices,
             'volume': [10000.0] * length,
         })
 
-        result = scorer.calculate_score(df, htf_bias="bullish")
+        # Mock indicator functions to return specific scores for consensus
+        with patch('src.strategy.signal_scorer.get_rsi_signal_graduated', return_value=-1.0):  # -25 score
+            with patch('src.strategy.signal_scorer.get_bollinger_signal_graduated', return_value=-1.0):  # -20 score
+                with patch('src.strategy.signal_scorer.get_macd_signal_graduated', return_value=-0.5):  # -12 score
+                    with patch('src.strategy.signal_scorer.get_ema_signal_graduated', return_value=-0.5):  # -7 score
+                        result = scorer.calculate_score(df, htf_bias="bullish")
 
-        # When we have bearish signal + bullish HTF,
-        # HTF adjustment should be +20 (counter-trend penalty)
-        # but capped to +10 if consensus exists
-        if result.score < 0:  # Bearish signal
-            rsi = result.breakdown.get("rsi", 0)
-            bb = result.breakdown.get("bollinger", 0)
-            htf = result.breakdown.get("htf_bias", 0)
+        # Verify components
+        rsi = result.breakdown.get("rsi", 0)
+        bb = result.breakdown.get("bollinger", 0)
+        htf = result.breakdown.get("htf_bias", 0)
 
-            # If RSI and BB indicate consensus, HTF should be capped
-            if rsi <= -15 and bb <= -20:
-                assert htf <= 10, f"HTF should be capped to 10, got {htf}"
+        # Verify we got bearish signal with consensus indicators
+        assert result.score < 0, f"Expected bearish signal, got {result.score}"
+        assert rsi <= -15, f"RSI score should indicate overbought (<= -15), got {rsi}"
+        assert bb <= -20, f"BB score should indicate overbought (<= -20), got {bb}"
+
+        # When we have bearish signal + bullish HTF + consensus,
+        # HTF adjustment should be capped to +10 (from +20)
+        assert htf <= 10, f"HTF should be capped to 10 due to consensus, got {htf}"
 
     def test_bullish_consensus_detection(self):
         """Test bullish consensus: RSI >= 15 AND BB >= 20."""
+        # This tests that when RSI and BB both show oversold conditions,
+        # the HTF adjustment is capped. We use mocked indicator scores to
+        # ensure consistent test behavior regardless of indicator implementation.
+
         scorer = SignalScorer()
-        # Create strongly oversold data
-        np.random.seed(888)
-        length = 200
-        prices = []
-        current = 60000.0
-        # Create massive downtrend to trigger oversold
-        for i in range(length):
-            current = current * 0.995  # 0.5% decline each candle
-            prices.append(current)
+        length = 50
+        prices = [50000.0] * length
 
         df = pd.DataFrame({
-            'open': [p * 1.001 for p in prices],
-            'high': [p * 1.002 for p in prices],
-            'low': [p * 0.998 for p in prices],
+            'open': prices,
+            'high': [p * 1.001 for p in prices],
+            'low': [p * 0.999 for p in prices],
             'close': prices,
             'volume': [10000.0] * length,
         })
 
-        result = scorer.calculate_score(df, htf_bias="bearish")
+        # Mock indicator functions to return specific scores for bullish consensus
+        with patch('src.strategy.signal_scorer.get_rsi_signal_graduated', return_value=1.0):  # +25 score
+            with patch('src.strategy.signal_scorer.get_bollinger_signal_graduated', return_value=1.0):  # +20 score
+                with patch('src.strategy.signal_scorer.get_macd_signal_graduated', return_value=0.5):  # +12 score
+                    with patch('src.strategy.signal_scorer.get_ema_signal_graduated', return_value=0.5):  # +7 score
+                        result = scorer.calculate_score(df, htf_bias="bearish")
 
-        # When we have bullish signal + bearish HTF,
-        # HTF adjustment should be -20 (counter-trend penalty)
-        # but capped to -10 if consensus exists
-        if result.score > 0:  # Bullish signal
-            rsi = result.breakdown.get("rsi", 0)
-            bb = result.breakdown.get("bollinger", 0)
-            htf = result.breakdown.get("htf_bias", 0)
+        # Verify components
+        rsi = result.breakdown.get("rsi", 0)
+        bb = result.breakdown.get("bollinger", 0)
+        htf = result.breakdown.get("htf_bias", 0)
 
-            # If RSI and BB indicate consensus, HTF should be capped
-            if rsi >= 15 and bb >= 20:
-                assert htf >= -10, f"HTF should be capped to -10, got {htf}"
+        # Verify we got bullish signal with consensus indicators
+        assert result.score > 0, f"Expected bullish signal, got {result.score}"
+        assert rsi >= 15, f"RSI score should indicate oversold (>= 15), got {rsi}"
+        assert bb >= 20, f"BB score should indicate oversold (>= 20), got {bb}"
+
+        # When we have bullish signal + bearish HTF + consensus,
+        # HTF adjustment should be capped to -10 (from -20)
+        assert htf >= -10, f"HTF should be capped to -10 due to consensus, got {htf}"
 
     def test_no_consensus_single_indicator(self):
         """Test no capping when only one indicator meets threshold."""

@@ -1202,9 +1202,11 @@ class SignalScorer:
         # When RSI and Bollinger both signal overbought/oversold, cap adjustment to ±10
         # to allow timely exits/entries while preserving some HTF influence.
         # This prevents HTF from completely overriding unanimous short-term signals.
-        htf_adjustment, _ = _cap_htf_adjustment_for_consensus(
-            htf_adjustment, short_term_consensus, rsi_score, bb_score
-        )
+        # Skip if extreme_fear_override_applied - already capped in that path.
+        if not extreme_fear_override_applied:
+            htf_adjustment, _ = _cap_htf_adjustment_for_consensus(
+                htf_adjustment, short_term_consensus, rsi_score, bb_score
+            )
 
         # Apply adjustment and log only if NOT already handled by extreme fear override
         if htf_adjustment != 0 and not extreme_fear_override_applied:
