@@ -3137,6 +3137,17 @@ class TestShortTermConsensusHTFCapping:
         assert result == 5
         assert was_capped is True
 
+    def test_helper_zero_adjustment(self):
+        """Test zero HTF adjustment is not modified."""
+        result, was_capped = _cap_htf_adjustment_for_consensus(
+            htf_adjustment=0,
+            short_term_consensus=True,
+            rsi_score=20,
+            bb_score=20,
+        )
+        assert result == 0
+        assert was_capped is False
+
     def test_bearish_consensus_detection(self):
         """Test bearish consensus: RSI <= -15 AND BB <= -20."""
         # This tests that when RSI and BB both show overbought conditions,
@@ -3229,44 +3240,52 @@ class TestShortTermConsensusHTFCapping:
         assert was_capped is False
 
     def test_extreme_fear_path_with_consensus(self):
-        """Test HTF capping in extreme fear override path."""
-        scorer = SignalScorer(mtf_counter_penalty=20)
+        """Test HTF capping in extreme fear override path.
 
-        # Create data that produces a positive (buy) signal
-        np.random.seed(777)
-        length = 200
-        prices = []
-        current = 50000.0
-        for i in range(length):
-            current = current * 0.995  # Downtrend for oversold RSI
-            prices.append(current)
+        Uses mocks to guarantee bullish consensus conditions are met,
+        ensuring assertions always run.
+        """
+        scorer = SignalScorer(mtf_counter_penalty=20)
+        length = 50
+        prices = [50000.0] * length
 
         df = pd.DataFrame({
-            'open': [p * 1.001 for p in prices],
-            'high': [p * 1.002 for p in prices],
-            'low': [p * 0.998 for p in prices],
+            'open': prices,
+            'high': [p * 1.001 for p in prices],
+            'low': [p * 0.999 for p in prices],
             'close': prices,
             'volume': [10000.0] * length,
         })
 
-        # With extreme_fear + bearish daily + positive score:
-        # Full penalty of -20 should be capped to -10 if consensus exists
-        result = scorer.calculate_score(
-            df,
-            htf_bias="neutral",
-            htf_daily="bearish",
-            htf_4h="bullish",
-            sentiment_category="extreme_fear",
-        )
+        # Mock indicator functions to return bullish consensus scores
+        # RSI +25 (>= 15 threshold), BB +20 (>= 20 threshold)
+        with patch('src.strategy.signal_scorer.get_rsi_signal_graduated', return_value=1.0):  # +25 score
+            with patch('src.strategy.signal_scorer.get_bollinger_signal_graduated', return_value=1.0):  # +20 score
+                with patch('src.strategy.signal_scorer.get_macd_signal_graduated', return_value=0.5):  # +12 score
+                    with patch('src.strategy.signal_scorer.get_ema_signal_graduated', return_value=0.5):  # +7 score
+                        # With extreme_fear + bearish daily + positive score + consensus:
+                        # Full penalty of -20 should be capped to -10
+                        result = scorer.calculate_score(
+                            df,
+                            htf_bias="neutral",
+                            htf_daily="bearish",
+                            htf_4h="bullish",
+                            sentiment_category="extreme_fear",
+                        )
 
-        if result.score > 0:
-            rsi = result.breakdown.get("rsi", 0)
-            bb = result.breakdown.get("bollinger", 0)
-            htf = result.breakdown.get("htf_bias", 0)
+        # Verify components
+        rsi = result.breakdown.get("rsi", 0)
+        bb = result.breakdown.get("bollinger", 0)
+        htf = result.breakdown.get("htf_bias", 0)
 
-            # In extreme fear path with consensus, cap should be applied
-            if rsi >= 15 and bb >= 20:
-                assert htf >= -10, f"HTF should be capped to -10 in extreme fear, got {htf}"
+        # Verify we got bullish signal with consensus indicators
+        assert result.score > 0, f"Expected bullish signal, got {result.score}"
+        assert rsi >= 15, f"RSI score should meet consensus threshold (>= 15), got {rsi}"
+        assert bb >= 20, f"BB score should meet consensus threshold (>= 20), got {bb}"
+
+        # In extreme fear path with consensus, HTF penalty should be capped
+        # Original penalty would be -20, but capped to -10 due to consensus
+        assert htf >= -10, f"HTF should be capped to -10 in extreme fear with consensus, got {htf}"
 
 
 # ============================================================================
