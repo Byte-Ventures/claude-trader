@@ -763,6 +763,39 @@ class SignalScorer:
         components["ema"] = ema_score
         total_score += ema_score
 
+        # RSI/MACD divergence detection
+        # When momentum (MACD) contradicts mean-reversion (RSI), apply a 30% score penalty
+        # This catches cases where RSI is bullish but MACD is bearish (or vice versa)
+        #
+        # Threshold rationale (asymmetric: RSI=20 vs MACD=2):
+        # - Both indicators have equal weight (25 by default), producing max scores of ±25
+        # - RSI threshold 20 = 80% of max weight: requires strong RSI signal (near oversold/overbought)
+        # - MACD threshold 2 = 8% of max weight: MACD is slower-moving, so even small contrary
+        #   signals indicate momentum divergence. MACD histogram changes gradually, so a small
+        #   negative score during RSI bullish recovery indicates the trend hasn't confirmed.
+        # - This 10:1 ratio was calibrated to catch the trade #237 scenario (RSI +24, MACD -3)
+        #   where RSI showed oversold recovery but MACD remained bearish, indicating false signal.
+        rsi_macd_divergence = (
+            (rsi_score >= 20 and macd_score <= -2) or  # RSI bullish, MACD bearish
+            (rsi_score <= -20 and macd_score >= 2)      # RSI bearish, MACD bullish
+        )
+
+        if rsi_macd_divergence:
+            metadata["_indicator_divergence"] = 1
+            divergence_penalty = 0.3  # 30% score reduction
+            original_score = total_score
+            total_score = int(total_score * (1 - divergence_penalty))
+            logger.info(
+                "indicator_divergence_penalty",
+                rsi_score=rsi_score,
+                macd_score=macd_score,
+                original_score=original_score,
+                adjusted_score=total_score,
+                penalty_percent=divergence_penalty * 100,
+            )
+        else:
+            metadata["_indicator_divergence"] = 0
+
         # VWAP component (graduated: returns -1.0 to +1.0, mean-reversion signal)
         # Only calculate if VWAP is available from enrichment data and weight > 0
         # VWAP is a contrarian signal: price above VWAP = bearish, below = bullish
