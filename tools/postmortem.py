@@ -599,7 +599,8 @@ Your response MUST include ALL of the following sections with substantive conten
    - Identify patterns that preceded losses
    - Propose specific new filters or conditions
 
-5. **Specific Recommendations** (minimum 5 actionable items)
+5. **Numbered Recommendations** (minimum 5 actionable items, NUMBERED 1-5+)
+   - Format as: "**Recommendation 1:** [title]" etc.
    - Each recommendation must include specific values/code changes
    - Reference actual config parameter names from settings.py
 
@@ -619,9 +620,44 @@ or examine the source code to understand why specific decisions were made.
 - Log files: `{source_root}/logs/trading.log` contains detailed bot activity including regime calculations, indicator values, and trade decisions. Use grep/read to search for specific trade timestamps.
 - Source code is at `{source_root}/src/` - key files: `strategy/signal_scorer.py`, `strategy/regime.py`, `daemon/runner.py`.
 
-## Final Output
+## Required Output Format
 
-After completing all 5 sections above, end with a "Top 3 Priority Recommendations" summary.
+**CRITICAL: Your response text must contain the COMPLETE analysis. Do NOT just summarize what you found via tool calls.**
+
+When you use tools (Read, Bash, Grep), you gather information. But your final response MUST contain the full detailed analysis - not a summary of "what I found". The user cannot see your tool calls, only your final response text.
+
+You MUST output ALL sections in this EXACT order. Do NOT skip ahead to the summary.
+
+**Section 1: Indicator Performance Analysis** (output this first)
+- Write 3-5 paragraphs analyzing each indicator's contribution
+- Include specific numbers from the trade data
+
+**Section 2: Threshold Analysis** (output second)
+- Write 2-3 paragraphs evaluating threshold effectiveness
+- Include specific threshold values and recommendations
+
+**Section 3: Adjustment Effectiveness** (output third)
+- Write 2-3 paragraphs analyzing each adjustment type
+- Reference specific adjustment values from the trades
+
+**Section 4: Missing Safeguards** (output fourth)
+- Write 2-3 paragraphs identifying patterns that preceded losses
+- Propose specific new filters with concrete values
+
+**Section 5: Numbered Recommendations** (output fifth)
+Format each as:
+```
+**Recommendation 1: [Title]**
+[2-3 sentences explaining the recommendation with specific values]
+```
+
+**Section 6: Top 3 Priority Recommendations** (output LAST)
+- This section must be SELF-CONTAINED
+- Do NOT just say "Recommendation 2" - restate the full recommendation
+- Format: "Priority 1: [Full recommendation title and description]"
+- Include specific config values, code changes, and reasoning for each
+
+**REMEMBER: Your response text IS the deliverable. Write everything out in full.**
 
 ---
 
@@ -642,18 +678,23 @@ def invoke_claude(prompt: str, source_root: Path, verbose: bool = False) -> str:
 
     Uses --allowed-tools to permit database queries and file reads without prompts.
     Uses --add-dir to grant access to the source/data directory.
+    Uses --output-format json to ensure complete response capture.
     Pipes prompt through stdin to avoid OS argument length limits.
     """
+    import json as json_module
+
     if verbose:
         print(f"[INFO] Sending {len(prompt)} chars to Claude...")
         print("[INFO] Claude will have tool access - may take longer...")
 
     # Pipe prompt through stdin to avoid "Argument list too long" errors
+    # Use JSON output format to ensure complete response capture (text mode can truncate)
     result = subprocess.run(
         [
             "claude", "-p", "-",
             "--allowed-tools", "Bash(sqlite3:*),Read,Grep,Glob",
             "--add-dir", str(source_root),
+            "--output-format", "json",
         ],
         input=prompt,
         capture_output=True,
@@ -664,7 +705,26 @@ def invoke_claude(prompt: str, source_root: Path, verbose: bool = False) -> str:
     if result.returncode != 0:
         raise RuntimeError(f"Claude CLI failed: {result.stderr}")
 
-    return result.stdout
+    # Parse JSON response and extract the result text
+    try:
+        response = json_module.loads(result.stdout)
+        if verbose:
+            # Show response metadata for debugging
+            print(f"[DEBUG] JSON keys: {list(response.keys())}")
+            if "usage" in response:
+                usage = response["usage"]
+                print(f"[DEBUG] Tokens - input: {usage.get('input_tokens')}, output: {usage.get('output_tokens')}")
+            result_text = response.get("result", "")
+            print(f"[DEBUG] Result length: {len(result_text)} chars")
+        # The JSON format includes 'result' field with the actual response text
+        return response.get("result", result.stdout)
+    except json_module.JSONDecodeError as e:
+        # Fallback to raw output if JSON parsing fails
+        if verbose:
+            print(f"[WARNING] Could not parse JSON response: {e}")
+            print(f"[DEBUG] Raw stdout length: {len(result.stdout)} chars")
+            print(f"[DEBUG] First 500 chars: {result.stdout[:500]}")
+        return result.stdout
 
 
 def get_discussion_ids(verbose: bool = False) -> tuple[str, str]:
