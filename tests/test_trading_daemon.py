@@ -81,6 +81,7 @@ def mock_settings():
     settings.hourly_analysis_enabled = False
     settings.ai_recommendation_ttl_minutes = 20
     settings.signal_history_retention_days = 90
+    # Explicit threshold values for test reproducibility (not production defaults)
     settings.veto_reduce_threshold = 0.65
     settings.veto_skip_threshold = 0.80
     settings.position_reduction = 0.5
@@ -894,6 +895,7 @@ def test_ai_failure_mode_open_does_not_skip_trade(mock_settings, mock_exchange_c
     mock_settings.reviewer_model_2 = "test/model2"
     mock_settings.reviewer_model_3 = "test/model3"
     mock_settings.judge_model = "test/judge"
+    # Explicit threshold values for test reproducibility (not production defaults)
     mock_settings.veto_reduce_threshold = 0.65
     mock_settings.veto_skip_threshold = 0.80
     mock_settings.position_reduction = 0.5
@@ -980,6 +982,7 @@ def test_ai_failure_mode_safe_skips_trade(mock_settings, mock_exchange_client, m
     mock_settings.reviewer_model_2 = "test/model2"
     mock_settings.reviewer_model_3 = "test/model3"
     mock_settings.judge_model = "test/judge"
+    # Explicit threshold values for test reproducibility (not production defaults)
     mock_settings.veto_reduce_threshold = 0.65
     mock_settings.veto_skip_threshold = 0.80
     mock_settings.position_reduction = 0.5
@@ -1093,6 +1096,7 @@ def test_ai_failure_mode_sell_proceeds_on_failure(mock_settings, mock_exchange_c
     mock_settings.reviewer_model_2 = "test/model2"
     mock_settings.reviewer_model_3 = "test/model3"
     mock_settings.judge_model = "test/judge"
+    # Explicit threshold values for test reproducibility (not production defaults)
     mock_settings.veto_reduce_threshold = 0.65
     mock_settings.veto_skip_threshold = 0.80
     mock_settings.position_reduction = 0.5
@@ -1179,6 +1183,7 @@ def test_ai_failure_mode_sell_safe_skips_trade(mock_settings, mock_exchange_clie
     mock_settings.reviewer_model_2 = "test/model2"
     mock_settings.reviewer_model_3 = "test/model3"
     mock_settings.judge_model = "test/judge"
+    # Explicit threshold values for test reproducibility (not production defaults)
     mock_settings.veto_reduce_threshold = 0.65
     mock_settings.veto_skip_threshold = 0.80
     mock_settings.position_reduction = 0.5
@@ -1267,6 +1272,7 @@ def test_ai_failure_notification_cooldown(mock_settings, mock_exchange_client, m
     mock_settings.reviewer_model_2 = "test/model2"
     mock_settings.reviewer_model_3 = "test/model3"
     mock_settings.judge_model = "test/judge"
+    # Explicit threshold values for test reproducibility (not production defaults)
     mock_settings.veto_reduce_threshold = 0.65
     mock_settings.veto_skip_threshold = 0.80
     mock_settings.position_reduction = 0.5
@@ -1358,24 +1364,29 @@ def test_ai_failure_notification_cooldown(mock_settings, mock_exchange_client, m
 
 @pytest.fixture
 def veto_reviewer():
-    """Create TradeReviewer instance for tiered veto tests."""
+    """Create TradeReviewer instance for tiered veto tests.
+
+    Uses explicit threshold values (not production defaults) to ensure test
+    reproducibility regardless of config changes. Tests verify the threshold
+    logic itself, not the specific default values.
+    """
     from src.ai.trade_reviewer import TradeReviewer
     return TradeReviewer(
         api_key="test_key",
         db=Mock(),
         reviewer_models=["test/model1", "test/model2", "test/model3"],
         judge_model="test/judge",
-        veto_reduce_threshold=0.65,
-        veto_skip_threshold=0.80,
+        veto_reduce_threshold=0.65,  # Explicit test value, not production default
+        veto_skip_threshold=0.80,    # Explicit test value, not production default
     )
 
 
 def test_tiered_veto_below_reduce_threshold_proceeds(veto_reviewer):
     """
-    Confidence 60% (< 65% reduce threshold) should proceed with trade.
+    Confidence below reduce threshold should proceed with trade.
 
-    When judge disapproves but confidence is below VETO_REDUCE_THRESHOLD,
-    the trade proceeds (info-only logging, no veto action).
+    When judge disapproves but confidence is below the fixture's reduce
+    threshold, the trade proceeds (info-only logging, no veto action).
     """
     # Call the actual implementation method
     veto_action = veto_reviewer._determine_veto_action(approved=False, confidence=0.60)
@@ -1384,10 +1395,10 @@ def test_tiered_veto_below_reduce_threshold_proceeds(veto_reviewer):
 
 def test_tiered_veto_reduce_threshold_reduces(veto_reviewer):
     """
-    Confidence 70% (65-79% range) should reduce position size.
+    Confidence in reduce range should reduce position size.
 
-    When judge disapproves with confidence >= VETO_REDUCE_THRESHOLD but
-    < VETO_SKIP_THRESHOLD, the trade executes with reduced position.
+    When judge disapproves with confidence >= reduce threshold but
+    < skip threshold, the trade executes with reduced position.
     """
     veto_action = veto_reviewer._determine_veto_action(approved=False, confidence=0.70)
     assert veto_action == "reduce", f"Expected 'reduce' for 70% confidence, got {veto_action}"
@@ -1395,9 +1406,9 @@ def test_tiered_veto_reduce_threshold_reduces(veto_reviewer):
 
 def test_tiered_veto_skip_threshold_skips(veto_reviewer):
     """
-    Confidence 85% (>= 80% skip threshold) should skip trade entirely.
+    Confidence at or above skip threshold should skip trade entirely.
 
-    When judge disapproves with confidence >= VETO_SKIP_THRESHOLD,
+    When judge disapproves with confidence >= skip threshold,
     the trade is cancelled completely.
     """
     veto_action = veto_reviewer._determine_veto_action(approved=False, confidence=0.85)
@@ -1415,13 +1426,13 @@ def test_tiered_veto_approved_trade_no_action(veto_reviewer):
 
 
 def test_tiered_veto_boundary_at_reduce_threshold(veto_reviewer):
-    """Exactly at reduce threshold (65%) should trigger reduce."""
+    """Exactly at reduce threshold should trigger reduce."""
     veto_action = veto_reviewer._determine_veto_action(approved=False, confidence=0.65)
     assert veto_action == "reduce", f"Expected 'reduce' at exact threshold, got {veto_action}"
 
 
 def test_tiered_veto_boundary_at_skip_threshold(veto_reviewer):
-    """Exactly at skip threshold (80%) should trigger skip."""
+    """Exactly at skip threshold should trigger skip."""
     veto_action = veto_reviewer._determine_veto_action(approved=False, confidence=0.80)
     assert veto_action == "skip", f"Expected 'skip' at exact threshold, got {veto_action}"
 
