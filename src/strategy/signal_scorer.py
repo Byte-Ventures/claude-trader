@@ -1060,9 +1060,9 @@ class SignalScorer:
             # Strong HTF bias (daily + 4H agree): apply full adjustment
             if total_score > 0:  # Bullish signal (potential buy)
                 if htf_bias == "bullish":
-                    htf_adjustment = self.mtf_aligned_boost  # +20: stronger buy signal
+                    htf_adjustment = self.mtf_aligned_boost  # Strengthen buy signal
                 elif htf_bias == "bearish":
-                    htf_adjustment = -self.mtf_counter_penalty  # -20: weaker buy signal
+                    htf_adjustment = -self.mtf_counter_penalty  # Weaken buy signal
             elif total_score < 0:  # Bearish signal (potential sell)
                 if htf_bias == "bearish":
                     # Aligned: make more negative to strengthen sell signal
