@@ -47,6 +47,49 @@ _RECOMMENDED_THRESHOLDS = {
 }
 _DEFAULT_THRESHOLD = 60
 
+# Cap for HTF adjustment when short-term indicators show consensus.
+# When RSI and Bollinger unanimously signal overbought/oversold,
+# limit HTF influence to allow timely exits/entries.
+SHORT_TERM_CONSENSUS_HTF_CAP = 10
+
+
+def _cap_htf_adjustment_for_consensus(
+    htf_adjustment: int,
+    short_term_consensus: bool,
+    rsi_score: int,
+    bb_score: int,
+    cap: int = SHORT_TERM_CONSENSUS_HTF_CAP,
+) -> tuple[int, bool]:
+    """
+    Cap HTF adjustment when short-term indicators show consensus.
+
+    When RSI and Bollinger both signal overbought/oversold conditions,
+    limit the HTF adjustment to prevent the higher timeframe from
+    completely overriding timely exit/entry signals.
+
+    Args:
+        htf_adjustment: The original HTF adjustment value.
+        short_term_consensus: Whether RSI and BB show unanimous signal.
+        rsi_score: The RSI indicator score for logging.
+        bb_score: The Bollinger indicator score for logging.
+        cap: Maximum absolute value for capped adjustment (default: 10).
+
+    Returns:
+        Tuple of (capped_adjustment, was_capped).
+    """
+    if short_term_consensus and abs(htf_adjustment) > cap:
+        capped = max(-cap, min(cap, htf_adjustment))
+        logger.info(
+            "htf_adjustment_capped",
+            reason="short_term_consensus",
+            original=htf_adjustment,
+            capped=capped,
+            rsi_score=rsi_score,
+            bb_score=bb_score,
+        )
+        return capped, True
+    return htf_adjustment, False
+
 
 def get_recommended_threshold(candle_interval: Optional[str] = None) -> int:
     """
@@ -1111,17 +1154,9 @@ class SignalScorer:
                 # Buying into bearish daily trend during extreme fear - apply FULL penalty
                 htf_adjustment = -self.mtf_counter_penalty
                 # Cap adjustment if short-term indicators show consensus
-                if short_term_consensus and abs(htf_adjustment) > 10:
-                    original_htf_adjustment = htf_adjustment
-                    htf_adjustment = max(-10, min(10, htf_adjustment))
-                    logger.info(
-                        "htf_adjustment_capped",
-                        reason="short_term_consensus",
-                        original=original_htf_adjustment,
-                        capped=htf_adjustment,
-                        rsi_score=rsi_score,
-                        bb_score=bb_score,
-                    )
+                htf_adjustment, _ = _cap_htf_adjustment_for_consensus(
+                    htf_adjustment, short_term_consensus, rsi_score, bb_score
+                )
                 extreme_fear_override_applied = True
                 score_before = total_score
                 total_score += htf_adjustment
@@ -1140,17 +1175,9 @@ class SignalScorer:
                 # to weaken sell signal more aggressively (prevent panic selling)
                 htf_adjustment = self.mtf_counter_penalty
                 # Cap adjustment if short-term indicators show consensus
-                if short_term_consensus and abs(htf_adjustment) > 10:
-                    original_htf_adjustment = htf_adjustment
-                    htf_adjustment = max(-10, min(10, htf_adjustment))
-                    logger.info(
-                        "htf_adjustment_capped",
-                        reason="short_term_consensus",
-                        original=original_htf_adjustment,
-                        capped=htf_adjustment,
-                        rsi_score=rsi_score,
-                        bb_score=bb_score,
-                    )
+                htf_adjustment, _ = _cap_htf_adjustment_for_consensus(
+                    htf_adjustment, short_term_consensus, rsi_score, bb_score
+                )
                 extreme_fear_override_applied = True
                 score_before = total_score
                 total_score += htf_adjustment
@@ -1175,17 +1202,9 @@ class SignalScorer:
         # When RSI and Bollinger both signal overbought/oversold, cap adjustment to ±10
         # to allow timely exits/entries while preserving some HTF influence.
         # This prevents HTF from completely overriding unanimous short-term signals.
-        if short_term_consensus and abs(htf_adjustment) > 10:
-            original_htf_adjustment = htf_adjustment
-            htf_adjustment = max(-10, min(10, htf_adjustment))
-            logger.info(
-                "htf_adjustment_capped",
-                reason="short_term_consensus",
-                original=original_htf_adjustment,
-                capped=htf_adjustment,
-                rsi_score=rsi_score,
-                bb_score=bb_score,
-            )
+        htf_adjustment, _ = _cap_htf_adjustment_for_consensus(
+            htf_adjustment, short_term_consensus, rsi_score, bb_score
+        )
 
         # Apply adjustment and log only if NOT already handled by extreme fear override
         if htf_adjustment != 0 and not extreme_fear_override_applied:
