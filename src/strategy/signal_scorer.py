@@ -766,6 +766,15 @@ class SignalScorer:
         # RSI/MACD divergence detection
         # When momentum (MACD) contradicts mean-reversion (RSI), apply a 30% score penalty
         # This catches cases where RSI is bullish but MACD is bearish (or vice versa)
+        #
+        # Threshold rationale (asymmetric: RSI=20 vs MACD=2):
+        # - Both indicators have equal weight (25 by default), producing max scores of ±25
+        # - RSI threshold 20 = 80% of max weight: requires strong RSI signal (near oversold/overbought)
+        # - MACD threshold 2 = 8% of max weight: MACD is slower-moving, so even small contrary
+        #   signals indicate momentum divergence. MACD histogram changes gradually, so a small
+        #   negative score during RSI bullish recovery indicates the trend hasn't confirmed.
+        # - This 10:1 ratio was calibrated to catch the trade #237 scenario (RSI +24, MACD -3)
+        #   where RSI showed oversold recovery but MACD remained bearish, indicating false signal.
         rsi_macd_divergence = (
             (rsi_score >= 20 and macd_score <= -2) or  # RSI bullish, MACD bearish
             (rsi_score <= -20 and macd_score >= 2)      # RSI bearish, MACD bullish
