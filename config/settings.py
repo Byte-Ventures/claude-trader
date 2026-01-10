@@ -1261,8 +1261,8 @@ class Settings(BaseSettings):
                 elif old_action in ["delay", "info"]:
                     warnings.warn(
                         f"VETO_ACTION={old_action} is no longer supported in v1.31.0. "
-                        "The tiered veto system now uses VETO_REDUCE_THRESHOLD (default 0.65) "
-                        "and VETO_SKIP_THRESHOLD (default 0.80). Update your .env file.",
+                        "The tiered veto system now uses VETO_REDUCE_THRESHOLD (default 0.60) "
+                        "and VETO_SKIP_THRESHOLD (default 0.75). Update your .env file.",
                         DeprecationWarning,
                         stacklevel=2,
                     )
