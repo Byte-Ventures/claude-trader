@@ -438,12 +438,14 @@ def test_whale_activity_detection():
     """Test that extreme volume (3x+) triggers whale activity detection."""
     scorer = SignalScorer()
 
-    # Create data with 5x volume spike (whale activity)
+    # Create data with 5x volume spike (whale activity) and price movement for direction
+    # Price goes UP on last candle to create bullish whale direction
+    closes = [50000] * 99 + [50500]  # Last candle is 1% higher
     df = pd.DataFrame({
         'open': [50000] * 100,
         'high': [51000] * 100,
         'low': [49000] * 100,
-        'close': [50500] * 100,  # Slight uptrend for bullish signal
+        'close': closes,
         'volume': [10000] * 99 + [50000]  # 5x spike on last candle
     })
 
@@ -452,21 +454,24 @@ def test_whale_activity_detection():
     # Should have whale activity flag
     assert result.breakdown.get("_whale_activity") == 1
     assert result.breakdown.get("_volume_ratio") >= 3.0
-    # Volume boost should be present (30% of signal for whale vs 20% for normal high)
-    if result.score != 0:
-        assert result.breakdown.get("volume", 0) != 0
+    # Volume boost should be present only when whale direction matches signal direction
+    # With bullish whale and positive signal, boost should apply
+    assert result.breakdown.get("_whale_direction") == "bullish"
 
 
 def test_whale_boost_is_30_percent():
     """Test that whale activity applies 30% boost (vs 20% for normal high volume)."""
     scorer = SignalScorer()
 
-    # Create identical data twice - once with whale volume (5x), once with high volume (2x)
+    # Create data with price movement to establish bullish whale direction
+    # Price goes UP on last candle to create bullish direction
+    closes = [50000] * 99 + [50500]  # Last candle is 1% higher
+
     base_data = {
         'open': [50000] * 100,
         'high': [51000] * 100,
         'low': [49000] * 100,
-        'close': [50500] * 100,
+        'close': closes,
     }
 
     # Whale volume (5x)
@@ -477,7 +482,8 @@ def test_whale_boost_is_30_percent():
     df_high = pd.DataFrame({**base_data, 'volume': [10000] * 99 + [20000]})
     result_high = scorer.calculate_score(df_high)
 
-    # Both should have volume boosts if signal is directional
+    # Whale boost only applies when direction matches signal direction
+    # With bullish whale + bullish signal, boost should apply
     whale_boost = abs(result_whale.breakdown.get("volume", 0))
     high_boost = abs(result_high.breakdown.get("volume", 0))
 
@@ -528,6 +534,61 @@ def test_whale_direction_bearish():
 
     assert result.breakdown.get("_whale_activity") == 1
     assert result.breakdown.get("_whale_direction") == "bearish"
+
+
+def test_whale_direction_conflict_no_boost():
+    """Test that whale boost is NOT applied when direction conflicts with signal (Issue #340)."""
+    scorer = SignalScorer()
+
+    # Create data with BEARISH whale (price going down) but BULLISH signal indicators
+    # The RSI/other indicators will be bullish, but whale direction is bearish
+    # This simulates the issue from Trade #239 where bullish whale amplified bearish signal
+    closes = [50000] * 99 + [49500]  # Last candle is 1% LOWER = bearish whale
+
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': closes,
+        'volume': [10000] * 99 + [50000]  # 5x spike = whale activity
+    })
+
+    result = scorer.calculate_score(df)
+
+    # Should detect whale activity
+    assert result.breakdown.get("_whale_activity") == 1
+    assert result.breakdown.get("_whale_direction") == "bearish"
+
+    # Volume boost should be 0 because bearish whale doesn't match signal direction
+    # (signal could be bullish from other indicators, or neutral)
+    # The key is that bearish whale should NOT amplify a non-bearish signal
+    if result.score >= 0:  # If signal is bullish or neutral
+        assert result.breakdown.get("volume", 0) == 0, \
+            "Bearish whale should not boost bullish/neutral signal"
+
+
+def test_whale_direction_neutral_no_boost():
+    """Test that neutral whale direction (no price movement) does not boost signal."""
+    scorer = SignalScorer()
+
+    # Create data with whale volume but flat price (neutral direction)
+    df = pd.DataFrame({
+        'open': [50000] * 100,
+        'high': [51000] * 100,
+        'low': [49000] * 100,
+        'close': [50000] * 100,  # Flat price = no direction
+        'volume': [10000] * 99 + [50000]  # 5x spike = whale activity
+    })
+
+    result = scorer.calculate_score(df)
+
+    # Should detect whale activity but direction is neutral
+    assert result.breakdown.get("_whale_activity") == 1
+    assert result.breakdown.get("_whale_direction") == "neutral"
+
+    # No boost should be applied for neutral whale direction
+    assert result.breakdown.get("volume", 0) == 0, \
+        "Neutral whale direction should not boost signal"
 
 
 def test_configurable_whale_threshold():
