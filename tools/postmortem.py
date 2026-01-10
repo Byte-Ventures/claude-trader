@@ -578,6 +578,37 @@ Focus on patterns that lead to losing trades and missed opportunities.
 
 ## Important Instructions
 
+**CRITICAL: You MUST provide a COMPLETE, DETAILED analysis - not a summary.**
+
+Your response MUST include ALL of the following sections with substantive content:
+
+1. **Indicator Performance Analysis** (minimum 3-5 paragraphs)
+   - Analyze each indicator's contribution to winning/losing trades
+   - Calculate which indicators showed agreement vs disagreement
+   - Identify patterns in false signals
+
+2. **Threshold Analysis** (minimum 2-3 paragraphs)
+   - Evaluate current threshold effectiveness
+   - Suggest specific threshold adjustments with reasoning
+
+3. **Adjustment Effectiveness** (minimum 2-3 paragraphs)
+   - Analyze trend_filter_adj, htf_bias_adj, whale_activity_adj
+   - Identify which adjustments helped/hurt trade quality
+
+4. **Missing Safeguards** (minimum 2-3 paragraphs)
+   - Identify patterns that preceded losses
+   - Propose specific new filters or conditions
+
+5. **Specific Recommendations** (minimum 5 actionable items)
+   - Each recommendation must include specific values/code changes
+   - Reference actual config parameter names from settings.py
+
+**DO NOT provide a short summary.** This is a detailed post-mortem analysis for a financial trading system.
+If you complete analysis quickly, go deeper - query the database for more context, read the log files,
+or examine the source code to understand why specific decisions were made.
+
+## Tools Available
+
 - You have access to tools. If you need more data, you CAN read the database using sqlite3:
   ```bash
   sqlite3 {db_path} "SELECT * FROM signal_history WHERE is_paper={1 if is_paper else 0} ORDER BY timestamp DESC LIMIT 10"
@@ -587,8 +618,10 @@ Focus on patterns that lead to losing trades and missed opportunities.
 - All tables have `is_paper` column (1=paper, 0=live).
 - Log files: `{source_root}/logs/trading.log` contains detailed bot activity including regime calculations, indicator values, and trade decisions. Use grep/read to search for specific trade timestamps.
 - Source code is at `{source_root}/src/` - key files: `strategy/signal_scorer.py`, `strategy/regime.py`, `daemon/runner.py`.
-- Provide concrete, actionable recommendations.
-- End with a summary of your top 3 recommendations.
+
+## Final Output
+
+After completing all 5 sections above, end with a "Top 3 Priority Recommendations" summary.
 
 ---
 
