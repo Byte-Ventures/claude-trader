@@ -752,13 +752,13 @@ class Settings(BaseSettings):
         description="Cache duration for 4-hour candle data (minutes)"
     )
     mtf_aligned_boost: int = Field(
-        default=20,
+        default=15,
         ge=5,
         le=40,
         description="Score boost for trades aligned with HTF trend"
     )
     mtf_counter_penalty: int = Field(
-        default=20,
+        default=15,
         ge=5,
         le=40,
         description="Score penalty for trades against HTF trend"

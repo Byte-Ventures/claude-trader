@@ -379,8 +379,8 @@ Checks Daily + 4-hour trends before trading. Both must agree for strong bias. Du
 | `MTF_CANDLE_LIMIT` | `50` | Candles to fetch for HTF trend |
 | `MTF_DAILY_CACHE_MINUTES` | `60` | Cache duration for daily candles |
 | `MTF_4H_CACHE_MINUTES` | `30` | Cache duration for 4H candles |
-| `MTF_ALIGNED_BOOST` | `20` | Score boost when aligned with HTF trend |
-| `MTF_COUNTER_PENALTY` | `30` | Score penalty when against HTF trend (doubled during extreme fear when daily/4H disagree) |
+| `MTF_ALIGNED_BOOST` | `15` | Score boost when aligned with HTF trend |
+| `MTF_COUNTER_PENALTY` | `15` | Score penalty when against HTF trend (doubled during extreme fear when daily/4H disagree) |
 
 ### AI Weight Profile Selection
 
