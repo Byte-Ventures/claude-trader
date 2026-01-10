@@ -2037,9 +2037,9 @@ class TestHTFBiasModifier:
     - Both bearish → bearish bias
     - Mixed/neutral → neutral bias
 
-    Score modifiers:
-    - Aligned bullish trade (buy + bullish bias) → +mtf_aligned_boost (default +20)
-    - Counter-trend bullish trade (buy + bearish bias) → -mtf_counter_penalty (default -20)
+    Score modifiers (tests use explicit values, not defaults):
+    - Aligned bullish trade (buy + bullish bias) → +mtf_aligned_boost
+    - Counter-trend bullish trade (buy + bearish bias) → -mtf_counter_penalty
     - Aligned bearish trade (sell + bearish bias) → -mtf_aligned_boost (more negative)
     - Counter-trend bearish trade (sell + bullish bias) → +mtf_counter_penalty (less negative)
     """
