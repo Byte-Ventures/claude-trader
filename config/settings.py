@@ -511,7 +511,7 @@ class Settings(BaseSettings):
         description="Minimum minutes between sell trades (5 = prevent rapid-fire selling, 0 = disabled for emergency exits)"
     )
     buy_price_change_percent: float = Field(
-        default=1.0,
+        default=1.5,
         ge=0.0,
         le=10.0,
         description="Price must drop this % from last buy to buy again (0 = disabled)"
