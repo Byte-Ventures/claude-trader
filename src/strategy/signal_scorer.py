@@ -1228,6 +1228,9 @@ class SignalScorer:
             if agreeing_count < self.min_indicator_confluence:
                 original_action = action
                 action = "hold"
+                # Store filter application in metadata for analysis/dashboards
+                metadata["_confluence_filter_applied"] = True
+                metadata["_original_action"] = original_action
                 logger.info(
                     "confluence_filter_applied",
                     original_action=original_action,
