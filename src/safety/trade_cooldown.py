@@ -34,7 +34,7 @@ class TradeCooldownConfig:
     """Configuration for trade cooldowns."""
 
     # Time-based cooldown (minutes, 0 = disabled)
-    buy_cooldown_minutes: int = 15
+    buy_cooldown_minutes: int = 30
     sell_cooldown_minutes: int = 5  # Prevent rapid-fire selling (0 = disabled for emergency exits)
 
     # Price-based cooldown (percent change required, 0 = disabled)

@@ -71,7 +71,7 @@ def cooldown_no_price():
 def test_default_config():
     """Test default configuration values."""
     config = TradeCooldownConfig()
-    assert config.buy_cooldown_minutes == 15
+    assert config.buy_cooldown_minutes == 30
     assert config.sell_cooldown_minutes == 5  # Prevent rapid-fire selling
     assert config.buy_price_change_percent == 1.0
     assert config.sell_price_change_percent == 0.0
@@ -94,7 +94,7 @@ def test_custom_config():
 def test_initialization_default():
     """Test cooldown initializes with default config."""
     cooldown = TradeCooldown()
-    assert cooldown.config.buy_cooldown_minutes == 15
+    assert cooldown.config.buy_cooldown_minutes == 30
     assert cooldown.config.sell_cooldown_minutes == 5
     assert cooldown._last_buy_time is None
     assert cooldown._last_buy_price is None
