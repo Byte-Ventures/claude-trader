@@ -266,6 +266,12 @@ class Settings(BaseSettings):
         le=100,
         description="Minimum score to trigger a trade (out of 100)"
     )
+    min_indicator_confluence: int = Field(
+        default=2,
+        ge=1,
+        le=5,
+        description="Minimum number of indicators that must agree (non-zero same direction) for trade signal"
+    )
 
     # Crash Protection Parameters
     max_oversold_buys_24h: int = Field(

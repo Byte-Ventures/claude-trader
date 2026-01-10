@@ -3161,3 +3161,180 @@ class TestVWAPEnrichmentIntegration:
         assert abs(result_20.components["vwap"]) > abs(result_10.components["vwap"]), \
             f"Expected weight=20 ({result_20.components['vwap']}) > weight=10 ({result_10.components['vwap']})"
 
+
+class TestIndicatorConfluence:
+    """Tests for the minimum indicator confluence feature."""
+
+    def test_confluence_metadata_recorded(self, sample_ohlcv_data):
+        """Test that indicator confluence count is recorded in metadata."""
+        df = sample_ohlcv_data(length=200, base_price=50000.0, volatility=0.02)
+        scorer = SignalScorer(threshold=60, min_indicator_confluence=2)
+        result = scorer.calculate_score(df)
+
+        assert "_indicator_confluence" in result.metadata, \
+            "Expected _indicator_confluence in metadata"
+        assert isinstance(result.metadata["_indicator_confluence"], int), \
+            "Expected _indicator_confluence to be an integer"
+        assert 0 <= result.metadata["_indicator_confluence"] <= 5, \
+            f"Expected confluence count 0-5, got {result.metadata['_indicator_confluence']}"
+
+    def test_confluence_default_value(self):
+        """Test that min_indicator_confluence defaults to 2."""
+        scorer = SignalScorer()
+        assert scorer.min_indicator_confluence == 2
+
+    def test_confluence_custom_value(self):
+        """Test that min_indicator_confluence can be set to custom value."""
+        scorer = SignalScorer(min_indicator_confluence=3)
+        assert scorer.min_indicator_confluence == 3
+
+    def test_confluence_filter_buy_signal(self, sample_ohlcv_data):
+        """Test confluence filter downgrades buy with insufficient agreement."""
+        # Create data that would normally generate a buy signal
+        df = sample_ohlcv_data(length=200, base_price=50000.0, volatility=0.02)
+
+        # Use high confluence requirement that's unlikely to be met
+        scorer_strict = SignalScorer(threshold=60, min_indicator_confluence=5)
+        result = scorer_strict.calculate_score(df)
+
+        # If score exceeds threshold but confluence < 5, action should be hold
+        if result.score >= scorer_strict.threshold:
+            if result.metadata["_indicator_confluence"] < 5:
+                assert result.action == "hold", \
+                    f"Expected 'hold' when confluence ({result.metadata['_indicator_confluence']}) < 5"
+
+    def test_confluence_filter_sell_signal(self, sample_ohlcv_data):
+        """Test confluence filter downgrades sell with insufficient agreement."""
+        df = sample_ohlcv_data(length=200, base_price=50000.0, volatility=0.02)
+
+        # Use high confluence requirement
+        scorer_strict = SignalScorer(threshold=60, min_indicator_confluence=5)
+        result = scorer_strict.calculate_score(df)
+
+        # If score is negative enough for sell but confluence < 5, action should be hold
+        if result.score <= -scorer_strict.threshold:
+            if result.metadata["_indicator_confluence"] < 5:
+                assert result.action == "hold", \
+                    f"Expected 'hold' when confluence ({result.metadata['_indicator_confluence']}) < 5"
+
+    def test_confluence_count_buy_direction(self):
+        """Test confluence counts positive contributions for buy signals."""
+        # Create controlled data where we can predict indicator contributions
+        np.random.seed(42)
+        length = 200
+
+        # Create data with strong bullish indicators
+        prices = []
+        current = 40000.0
+        for i in range(length):
+            # Strong uptrend
+            change = np.random.uniform(0.001, 0.003) * current
+            current = current + change
+            prices.append(current)
+
+        data = {
+            'open': [p * 0.998 for p in prices],
+            'high': [p * 1.01 for p in prices],
+            'low': [p * 0.99 for p in prices],
+            'close': [p * 1.002 for p in prices],
+            'volume': [10000 + i * 100 for i in range(length)],  # Increasing volume
+        }
+        df = pd.DataFrame(data)
+
+        scorer = SignalScorer(threshold=40, min_indicator_confluence=2)
+        result = scorer.calculate_score(df)
+
+        if result.score > 0:
+            # Count positive contributions
+            core_indicators = ["rsi", "macd", "bollinger", "ema", "volume"]
+            positive_count = sum(1 for ind in core_indicators if result.components.get(ind, 0) > 0)
+            assert result.metadata["_indicator_confluence"] == positive_count, \
+                f"Expected confluence={positive_count}, got {result.metadata['_indicator_confluence']}"
+
+    def test_confluence_count_sell_direction(self):
+        """Test confluence counts negative contributions for sell signals."""
+        np.random.seed(43)
+        length = 200
+
+        # Create data with bearish indicators
+        prices = []
+        current = 60000.0
+        for i in range(length):
+            # Strong downtrend
+            change = -np.random.uniform(0.001, 0.003) * current
+            current = current + change
+            prices.append(current)
+
+        data = {
+            'open': [p * 1.002 for p in prices],
+            'high': [p * 1.01 for p in prices],
+            'low': [p * 0.99 for p in prices],
+            'close': [p * 0.998 for p in prices],
+            'volume': [10000 + i * 100 for i in range(length)],
+        }
+        df = pd.DataFrame(data)
+
+        scorer = SignalScorer(threshold=40, min_indicator_confluence=2)
+        result = scorer.calculate_score(df)
+
+        if result.score < 0:
+            # Count negative contributions
+            core_indicators = ["rsi", "macd", "bollinger", "ema", "volume"]
+            negative_count = sum(1 for ind in core_indicators if result.components.get(ind, 0) < 0)
+            assert result.metadata["_indicator_confluence"] == negative_count, \
+                f"Expected confluence={negative_count}, got {result.metadata['_indicator_confluence']}"
+
+    def test_confluence_allows_trade_when_met(self, sample_ohlcv_data):
+        """Test that trades are allowed when confluence requirement is met."""
+        df = sample_ohlcv_data(length=200, base_price=50000.0, volatility=0.02)
+
+        # Very low confluence requirement (1 indicator)
+        scorer = SignalScorer(threshold=60, min_indicator_confluence=1)
+        result = scorer.calculate_score(df)
+
+        # If score exceeds threshold and at least 1 indicator agrees
+        if abs(result.score) >= scorer.threshold and result.metadata["_indicator_confluence"] >= 1:
+            assert result.action in ["buy", "sell"], \
+                f"Expected 'buy' or 'sell' when confluence ({result.metadata['_indicator_confluence']}) >= 1"
+
+    def test_confluence_hold_still_records_count(self, sample_ohlcv_data):
+        """Test that hold actions still record the confluence count."""
+        df = sample_ohlcv_data(length=200, base_price=50000.0, volatility=0.01)
+
+        # Very high threshold to force hold
+        scorer = SignalScorer(threshold=95, min_indicator_confluence=2)
+        result = scorer.calculate_score(df)
+
+        if result.action == "hold":
+            assert "_indicator_confluence" in result.metadata, \
+                "Expected confluence recorded even for hold actions"
+
+    def test_confluence_config_validation(self):
+        """Test that min_indicator_confluence is validated in settings."""
+        # Test default value
+        settings = Settings(_env_file=None)
+        assert settings.min_indicator_confluence == 2
+
+    def test_confluence_config_range(self):
+        """Test that min_indicator_confluence is validated in range 1-5."""
+        # Valid values
+        for val in [1, 2, 3, 4, 5]:
+            scorer = SignalScorer(min_indicator_confluence=val)
+            assert scorer.min_indicator_confluence == val
+
+    def test_confluence_preserves_score(self, sample_ohlcv_data):
+        """Test that confluence filtering preserves the original score."""
+        df = sample_ohlcv_data(length=200, base_price=50000.0, volatility=0.02)
+
+        # Compare with and without confluence filter
+        scorer_no_filter = SignalScorer(threshold=60, min_indicator_confluence=1)
+        scorer_with_filter = SignalScorer(threshold=60, min_indicator_confluence=5)
+
+        result_no_filter = scorer_no_filter.calculate_score(df)
+        result_with_filter = scorer_with_filter.calculate_score(df)
+
+        # Score should be the same regardless of confluence filter
+        # (confluence only affects action, not score)
+        assert result_no_filter.score == result_with_filter.score, \
+            f"Expected same score: {result_no_filter.score} vs {result_with_filter.score}"
+
