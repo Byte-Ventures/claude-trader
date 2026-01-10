@@ -207,6 +207,7 @@ class SignalScorer:
         adx_period: int = 14,
         adx_weak_threshold: float = 20.0,
         adx_strong_threshold: float = 25.0,
+        min_indicator_confluence: int = 2,
     ):
         """
         Initialize signal scorer.
@@ -298,6 +299,9 @@ class SignalScorer:
         self.adx_period = adx_period
         self.adx_weak_threshold = adx_weak_threshold
         self.adx_strong_threshold = adx_strong_threshold
+
+        # Minimum indicator confluence
+        self.min_indicator_confluence = min_indicator_confluence
 
     def get_min_candles(self) -> int:
         """
@@ -1200,6 +1204,56 @@ class SignalScorer:
             action = "sell"
         else:
             action = "hold"
+
+        # Minimum indicator confluence check
+        # Count core indicators (RSI, MACD, Bollinger, EMA, Volume) that agree with signal direction
+        # This filters out weak signals where only 1-2 indicators agree
+        core_indicators = ["rsi", "macd", "bollinger", "ema", "volume"]
+        if action != "hold":
+            # For buy (positive score): count indicators with positive contribution
+            # For sell (negative score): count indicators with negative contribution
+            if action == "buy":
+                agreeing_count = sum(
+                    1 for ind in core_indicators
+                    if components.get(ind, 0) > 0
+                )
+            else:  # action == "sell"
+                agreeing_count = sum(
+                    1 for ind in core_indicators
+                    if components.get(ind, 0) < 0
+                )
+
+            metadata["_indicator_confluence"] = agreeing_count
+
+            if agreeing_count < self.min_indicator_confluence:
+                original_action = action
+                action = "hold"
+                # Store filter application in metadata for analysis/dashboards
+                metadata["_confluence_filter_applied"] = True
+                metadata["_original_action"] = original_action
+                logger.info(
+                    "confluence_filter_applied",
+                    original_action=original_action,
+                    score=total_score,
+                    agreeing_indicators=agreeing_count,
+                    min_required=self.min_indicator_confluence,
+                    components={ind: components.get(ind, 0) for ind in core_indicators},
+                )
+        else:
+            # For hold actions, still record confluence for analysis
+            if total_score > 0:
+                agreeing_count = sum(
+                    1 for ind in core_indicators
+                    if components.get(ind, 0) > 0
+                )
+            elif total_score < 0:
+                agreeing_count = sum(
+                    1 for ind in core_indicators
+                    if components.get(ind, 0) < 0
+                )
+            else:
+                agreeing_count = 0
+            metadata["_indicator_confluence"] = agreeing_count
 
         # Calculate confidence with confluence factor
         # Combines magnitude with how many indicators agree
