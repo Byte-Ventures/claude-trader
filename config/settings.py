@@ -571,15 +571,15 @@ class Settings(BaseSettings):
         description="Judge model for final decision synthesis"
     )
     # Tiered veto system: action depends on judge's confidence level
-    # When judge disapproves: <65% proceed, 65-79% reduce, >=80% skip
+    # When judge disapproves: <60% proceed, 60-74% reduce, >=75% skip
     veto_reduce_threshold: float = Field(
-        default=0.65,
+        default=0.60,
         ge=0.5,
         le=1.0,
         description="Judge confidence threshold to reduce position (lower tier)"
     )
     veto_skip_threshold: float = Field(
-        default=0.80,
+        default=0.75,
         ge=0.5,
         le=1.0,
         description="Judge confidence threshold to skip trade entirely (higher tier)"
