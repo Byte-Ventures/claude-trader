@@ -396,6 +396,8 @@ class TradingDaemon:
             adx_period=settings.adx_period,
             adx_weak_threshold=settings.adx_weak_threshold,
             adx_strong_threshold=settings.adx_strong_threshold,
+            require_macd_alignment=settings.require_macd_alignment,
+            macd_alignment_threshold=settings.macd_alignment_threshold,
         )
 
         self.position_sizer = PositionSizer(

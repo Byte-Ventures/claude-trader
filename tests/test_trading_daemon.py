@@ -224,6 +224,10 @@ def mock_settings():
     settings.adx_weak_threshold = 20.0
     settings.adx_strong_threshold = 25.0
 
+    # MACD Alignment (Momentum Confirmation for Buys)
+    settings.require_macd_alignment = False
+    settings.macd_alignment_threshold = -0.5
+
     return settings
 
 

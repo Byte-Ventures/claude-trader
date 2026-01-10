@@ -207,6 +207,8 @@ class SignalScorer:
         adx_period: int = 14,
         adx_weak_threshold: float = 20.0,
         adx_strong_threshold: float = 25.0,
+        require_macd_alignment: bool = False,
+        macd_alignment_threshold: float = -0.5,
     ):
         """
         Initialize signal scorer.
@@ -298,6 +300,10 @@ class SignalScorer:
         self.adx_period = adx_period
         self.adx_weak_threshold = adx_weak_threshold
         self.adx_strong_threshold = adx_strong_threshold
+
+        # MACD alignment parameters (momentum confirmation for buys)
+        self.require_macd_alignment = require_macd_alignment
+        self.macd_alignment_threshold = macd_alignment_threshold
 
     def get_min_candles(self) -> int:
         """
@@ -1200,6 +1206,42 @@ class SignalScorer:
             action = "sell"
         else:
             action = "hold"
+
+        # MACD Alignment Check for Buy Signals (Momentum Confirmation)
+        # When enabled, requires MACD histogram to be above threshold to confirm
+        # momentum is not declining before allowing buy trades.
+        # This prevents buying during "falling knife" scenarios where RSI/Bollinger
+        # indicate oversold but momentum is still strongly negative.
+        macd_alignment_blocked = False
+        if self.require_macd_alignment and action == "buy":
+            macd_histogram = indicators.macd_histogram
+            if macd_histogram is not None:
+                if macd_histogram < self.macd_alignment_threshold:
+                    # MACD histogram is below threshold - block the buy
+                    macd_alignment_blocked = True
+                    logger.info(
+                        "macd_alignment_blocked_buy",
+                        macd_histogram=round(macd_histogram, 2),
+                        threshold=self.macd_alignment_threshold,
+                        original_score=total_score,
+                        action="downgraded to hold",
+                    )
+                    action = "hold"
+                else:
+                    logger.debug(
+                        "macd_alignment_passed",
+                        macd_histogram=round(macd_histogram, 2),
+                        threshold=self.macd_alignment_threshold,
+                    )
+            else:
+                # No MACD data available - conservative: block buy
+                macd_alignment_blocked = True
+                logger.warning(
+                    "macd_alignment_no_data",
+                    action="downgraded to hold (no MACD data)",
+                )
+                action = "hold"
+        metadata["_macd_alignment_blocked"] = 1 if macd_alignment_blocked else 0
 
         # Calculate confidence with confluence factor
         # Combines magnitude with how many indicators agree
