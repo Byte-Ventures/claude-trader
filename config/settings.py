@@ -341,6 +341,21 @@ class Settings(BaseSettings):
         description="EMA gap percentage cap for trend strength normalization (5.0 = 5% gap is maximum strength)"
     )
 
+    # Mean-Reversion Confirmation (v1.48)
+    # When RSI and Bollinger both show oversold/overbought (mean-reversion setup),
+    # verify that momentum indicators (MACD, EMA) do not actively oppose the trade.
+    # This prevents buying into falling knives where momentum is still bearish.
+    require_momentum_confirmation: bool = Field(
+        default=True,
+        description="Require MACD or EMA to not oppose mean-reversion signals from RSI/Bollinger"
+    )
+    mean_reversion_confirmation_penalty: int = Field(
+        default=15,
+        ge=5,
+        le=30,
+        description="Score penalty when momentum indicators oppose mean-reversion signal"
+    )
+
     # Volume Analysis Parameters
     volume_sma_window: int = Field(
         default=20,
