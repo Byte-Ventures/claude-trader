@@ -224,6 +224,10 @@ def mock_settings():
     settings.adx_weak_threshold = 20.0
     settings.adx_strong_threshold = 25.0
 
+    # Mean-Reversion Confirmation (v1.48)
+    settings.require_momentum_confirmation = True
+    settings.mean_reversion_confirmation_penalty = 15
+
     return settings
 
 

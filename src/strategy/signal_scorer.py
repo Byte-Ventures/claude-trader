@@ -207,6 +207,8 @@ class SignalScorer:
         adx_period: int = 14,
         adx_weak_threshold: float = 20.0,
         adx_strong_threshold: float = 25.0,
+        require_momentum_confirmation: bool = True,
+        mean_reversion_confirmation_penalty: int = 15,
     ):
         """
         Initialize signal scorer.
@@ -298,6 +300,10 @@ class SignalScorer:
         self.adx_period = adx_period
         self.adx_weak_threshold = adx_weak_threshold
         self.adx_strong_threshold = adx_strong_threshold
+
+        # Mean-reversion confirmation parameters
+        self.require_momentum_confirmation = require_momentum_confirmation
+        self.mean_reversion_confirmation_penalty = mean_reversion_confirmation_penalty
 
     def get_min_candles(self) -> int:
         """
@@ -783,6 +789,64 @@ class SignalScorer:
             )
         components["vwap"] = vwap_score
         total_score += vwap_score
+
+        # Mean-reversion confirmation check
+        # When RSI and Bollinger both show oversold (buy) or overbought (sell) signals,
+        # verify that momentum indicators (MACD, EMA) don't actively oppose the trade.
+        # This prevents buying into falling knives or selling into rising trends.
+        mean_reversion_penalty = 0
+        if self.require_momentum_confirmation:
+            # Check for unconfirmed mean-reversion BUY setup
+            # RSI oversold (> +10) and Bollinger below lower band (> +10) indicate oversold mean-reversion
+            is_mean_reversion_buy = (
+                components["rsi"] > 10 and
+                components["bollinger"] > 10
+            )
+            # Momentum opposes if MACD or EMA is bearish (< -5)
+            momentum_opposes_buy = (
+                components["macd"] < -5 or
+                components["ema"] < -5
+            )
+
+            # Check for unconfirmed mean-reversion SELL setup
+            # RSI overbought (< -10) and Bollinger above upper band (< -10) indicate overbought mean-reversion
+            is_mean_reversion_sell = (
+                components["rsi"] < -10 and
+                components["bollinger"] < -10
+            )
+            # Momentum opposes if MACD or EMA is bullish (> +5)
+            momentum_opposes_sell = (
+                components["macd"] > 5 or
+                components["ema"] > 5
+            )
+
+            if is_mean_reversion_buy and momentum_opposes_buy:
+                mean_reversion_penalty = -self.mean_reversion_confirmation_penalty
+                total_score += mean_reversion_penalty
+                logger.debug(
+                    "mean_reversion_penalty_applied",
+                    direction="buy",
+                    rsi_score=components["rsi"],
+                    bb_score=components["bollinger"],
+                    macd_score=components["macd"],
+                    ema_score=components["ema"],
+                    penalty=self.mean_reversion_confirmation_penalty,
+                )
+            elif is_mean_reversion_sell and momentum_opposes_sell:
+                # For sell signals (negative scores), penalty makes score less negative
+                mean_reversion_penalty = self.mean_reversion_confirmation_penalty
+                total_score += mean_reversion_penalty
+                logger.debug(
+                    "mean_reversion_penalty_applied",
+                    direction="sell",
+                    rsi_score=components["rsi"],
+                    bb_score=components["bollinger"],
+                    macd_score=components["macd"],
+                    ema_score=components["ema"],
+                    penalty=self.mean_reversion_confirmation_penalty,
+                )
+
+        components["mean_reversion_filter"] = mean_reversion_penalty
 
         # Store raw indicator values for signal history
         metadata["_rsi_value"] = indicators.rsi
