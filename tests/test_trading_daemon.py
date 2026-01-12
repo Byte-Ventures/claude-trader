@@ -224,6 +224,9 @@ def mock_settings():
     settings.adx_weak_threshold = 20.0
     settings.adx_strong_threshold = 25.0
 
+    # EMA Trend Detection
+    settings.ema_trend_threshold_percent = 0.5
+
     return settings
 
 

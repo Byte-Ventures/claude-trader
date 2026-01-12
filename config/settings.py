@@ -178,6 +178,12 @@ class Settings(BaseSettings):
     # Strategy Parameters - EMA
     ema_fast: int = Field(default=9, ge=2, le=50)
     ema_slow: int = Field(default=21, ge=5, le=200)
+    ema_trend_threshold_percent: float = Field(
+        default=0.5,
+        ge=0.1,
+        le=2.0,
+        description="Minimum EMA gap percentage to classify as bullish/bearish trend (lower = more sensitive)"
+    )
 
     # Strategy Parameters - MACD
     macd_fast: int = Field(default=12, ge=2, le=50)
