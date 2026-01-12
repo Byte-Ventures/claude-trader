@@ -799,50 +799,50 @@ class SignalScorer:
             # Check for unconfirmed mean-reversion BUY setup
             # RSI oversold (> +10) and Bollinger below lower band (> +10) indicate oversold mean-reversion
             is_mean_reversion_buy = (
-                components.get("rsi", 0) > 10 and
-                components.get("bollinger", 0) > 10
+                components["rsi"] > 10 and
+                components["bollinger"] > 10
             )
             # Momentum opposes if MACD or EMA is bearish (< -5)
             momentum_opposes_buy = (
-                components.get("macd", 0) < -5 or
-                components.get("ema", 0) < -5
+                components["macd"] < -5 or
+                components["ema"] < -5
             )
 
             # Check for unconfirmed mean-reversion SELL setup
             # RSI overbought (< -10) and Bollinger above upper band (< -10) indicate overbought mean-reversion
             is_mean_reversion_sell = (
-                components.get("rsi", 0) < -10 and
-                components.get("bollinger", 0) < -10
+                components["rsi"] < -10 and
+                components["bollinger"] < -10
             )
             # Momentum opposes if MACD or EMA is bullish (> +5)
             momentum_opposes_sell = (
-                components.get("macd", 0) > 5 or
-                components.get("ema", 0) > 5
+                components["macd"] > 5 or
+                components["ema"] > 5
             )
 
             if is_mean_reversion_buy and momentum_opposes_buy:
                 mean_reversion_penalty = -self.mean_reversion_confirmation_penalty
                 total_score += mean_reversion_penalty
-                logger.info(
+                logger.debug(
                     "mean_reversion_penalty_applied",
                     direction="buy",
-                    rsi_score=components.get("rsi"),
-                    bb_score=components.get("bollinger"),
-                    macd_score=components.get("macd"),
-                    ema_score=components.get("ema"),
+                    rsi_score=components["rsi"],
+                    bb_score=components["bollinger"],
+                    macd_score=components["macd"],
+                    ema_score=components["ema"],
                     penalty=self.mean_reversion_confirmation_penalty,
                 )
             elif is_mean_reversion_sell and momentum_opposes_sell:
                 # For sell signals (negative scores), penalty makes score less negative
                 mean_reversion_penalty = self.mean_reversion_confirmation_penalty
                 total_score += mean_reversion_penalty
-                logger.info(
+                logger.debug(
                     "mean_reversion_penalty_applied",
                     direction="sell",
-                    rsi_score=components.get("rsi"),
-                    bb_score=components.get("bollinger"),
-                    macd_score=components.get("macd"),
-                    ema_score=components.get("ema"),
+                    rsi_score=components["rsi"],
+                    bb_score=components["bollinger"],
+                    macd_score=components["macd"],
+                    ema_score=components["ema"],
                     penalty=self.mean_reversion_confirmation_penalty,
                 )
 

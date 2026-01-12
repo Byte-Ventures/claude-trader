@@ -3468,3 +3468,182 @@ class TestMeanReversionConfirmation:
             "vwap", "trend_filter", "htf_bias", "mean_reversion_filter"
         }
         assert set(result.components.keys()) == expected_keys
+
+    @patch("src.strategy.signal_scorer.get_rsi_signal_graduated")
+    @patch("src.strategy.signal_scorer.get_bollinger_signal_graduated")
+    @patch("src.strategy.signal_scorer.get_macd_signal_graduated")
+    @patch("src.strategy.signal_scorer.get_ema_signal_graduated")
+    def test_mean_reversion_buy_penalty_mocked(
+        self, mock_ema, mock_macd, mock_bollinger, mock_rsi
+    ):
+        """Mock-based test to guarantee buy penalty is applied when conditions are met.
+
+        Forces exact component values to ensure the penalty logic is always exercised,
+        addressing the reliability concern with data-driven tests that may skip.
+
+        Note: Signal functions return -1.0 to +1.0, multiplied by weights to get component scores.
+        Default weights: RSI=25, Bollinger=20, MACD=25, EMA=15.
+        We use values that, when weighted, exceed the thresholds (RSI/BB > 10, MACD < -5).
+        """
+        # Force mean-reversion BUY conditions (component scores after weighting):
+        # RSI > +10 (oversold): 0.6 * 25 = 15
+        # Bollinger > +10: 0.6 * 20 = 12
+        # MACD < -5 (bearish momentum): -0.4 * 25 = -10
+        mock_rsi.return_value = 0.6  # Oversold signal (0.6 * 25 = 15)
+        mock_bollinger.return_value = 0.6  # Below lower band (0.6 * 20 = 12)
+        mock_macd.return_value = -0.4  # Bearish momentum (-0.4 * 25 = -10)
+        mock_ema.return_value = 0.0  # Neutral EMA
+
+        scorer = SignalScorer(
+            require_momentum_confirmation=True,
+            mean_reversion_confirmation_penalty=15,
+        )
+
+        # Create minimal valid dataframe
+        candles = pd.DataFrame({
+            "time": pd.date_range("2024-01-01", periods=200, freq="h"),
+            "open": [50000.0] * 200,
+            "high": [50100.0] * 200,
+            "low": [49900.0] * 200,
+            "close": [50000.0] * 200,
+            "volume": [100.0] * 200,
+        })
+
+        result = scorer.calculate_score(candles)
+
+        # Verify penalty was applied
+        assert result.components["mean_reversion_filter"] == -15
+        # Verify component scores are as expected (signal * weight)
+        assert result.components["rsi"] == 15  # 0.6 * 25
+        assert result.components["bollinger"] == 12  # 0.6 * 20
+        assert result.components["macd"] == -10  # -0.4 * 25
+
+    @patch("src.strategy.signal_scorer.get_rsi_signal_graduated")
+    @patch("src.strategy.signal_scorer.get_bollinger_signal_graduated")
+    @patch("src.strategy.signal_scorer.get_macd_signal_graduated")
+    @patch("src.strategy.signal_scorer.get_ema_signal_graduated")
+    def test_mean_reversion_sell_penalty_mocked(
+        self, mock_ema, mock_macd, mock_bollinger, mock_rsi
+    ):
+        """Mock-based test to guarantee sell penalty is applied when conditions are met.
+
+        Forces exact component values to ensure the penalty logic is always exercised,
+        addressing the reliability concern with data-driven tests that may skip.
+
+        Note: Signal functions return -1.0 to +1.0, multiplied by weights to get component scores.
+        Default weights: RSI=25, Bollinger=20, MACD=25, EMA=15.
+        We use values that, when weighted, exceed the thresholds (RSI/BB < -10, MACD > +5).
+        """
+        # Force mean-reversion SELL conditions (component scores after weighting):
+        # RSI < -10 (overbought): -0.6 * 25 = -15
+        # Bollinger < -10: -0.6 * 20 = -12
+        # MACD > +5 (bullish momentum): 0.4 * 25 = 10
+        mock_rsi.return_value = -0.6  # Overbought signal (-0.6 * 25 = -15)
+        mock_bollinger.return_value = -0.6  # Above upper band (-0.6 * 20 = -12)
+        mock_macd.return_value = 0.4  # Bullish momentum (0.4 * 25 = 10)
+        mock_ema.return_value = 0.0  # Neutral EMA
+
+        scorer = SignalScorer(
+            require_momentum_confirmation=True,
+            mean_reversion_confirmation_penalty=15,
+        )
+
+        # Create minimal valid dataframe
+        candles = pd.DataFrame({
+            "time": pd.date_range("2024-01-01", periods=200, freq="h"),
+            "open": [50000.0] * 200,
+            "high": [50100.0] * 200,
+            "low": [49900.0] * 200,
+            "close": [50000.0] * 200,
+            "volume": [100.0] * 200,
+        })
+
+        result = scorer.calculate_score(candles)
+
+        # Verify penalty was applied (positive to weaken negative sell signal)
+        assert result.components["mean_reversion_filter"] == 15
+        # Verify component scores are as expected (signal * weight)
+        assert result.components["rsi"] == -15  # -0.6 * 25
+        assert result.components["bollinger"] == -12  # -0.6 * 20
+        assert result.components["macd"] == 10  # 0.4 * 25
+
+    @patch("src.strategy.signal_scorer.get_rsi_signal_graduated")
+    @patch("src.strategy.signal_scorer.get_bollinger_signal_graduated")
+    @patch("src.strategy.signal_scorer.get_macd_signal_graduated")
+    @patch("src.strategy.signal_scorer.get_ema_signal_graduated")
+    def test_no_penalty_when_confirmation_disabled_mocked(
+        self, mock_ema, mock_macd, mock_bollinger, mock_rsi
+    ):
+        """Mock-based test verifying no penalty when feature is disabled.
+
+        Even with conditions that would trigger a penalty, disabling the feature
+        should result in no penalty being applied.
+        """
+        # Force conditions that would trigger penalty if enabled
+        # Using signal values (before weight multiplication)
+        mock_rsi.return_value = 0.6  # Would produce RSI score > 10
+        mock_bollinger.return_value = 0.6  # Would produce BB score > 10
+        mock_macd.return_value = -0.4  # Would produce MACD score < -5
+        mock_ema.return_value = 0.0
+
+        scorer = SignalScorer(
+            require_momentum_confirmation=False,  # Disabled
+            mean_reversion_confirmation_penalty=15,
+        )
+
+        candles = pd.DataFrame({
+            "time": pd.date_range("2024-01-01", periods=200, freq="h"),
+            "open": [50000.0] * 200,
+            "high": [50100.0] * 200,
+            "low": [49900.0] * 200,
+            "close": [50000.0] * 200,
+            "volume": [100.0] * 200,
+        })
+
+        result = scorer.calculate_score(candles)
+
+        # No penalty should be applied
+        assert result.components["mean_reversion_filter"] == 0
+
+    @patch("src.strategy.signal_scorer.get_rsi_signal_graduated")
+    @patch("src.strategy.signal_scorer.get_bollinger_signal_graduated")
+    @patch("src.strategy.signal_scorer.get_macd_signal_graduated")
+    @patch("src.strategy.signal_scorer.get_ema_signal_graduated")
+    def test_penalty_with_ema_opposing_not_macd_mocked(
+        self, mock_ema, mock_macd, mock_bollinger, mock_rsi
+    ):
+        """Mock-based test for EMA opposing when MACD is neutral.
+
+        Verifies the OR condition: penalty applies when EMA opposes even if MACD doesn't.
+
+        Note: Signal functions return -1.0 to +1.0, multiplied by weights to get component scores.
+        Default weights: RSI=25, Bollinger=20, MACD=25, EMA=15.
+        """
+        # Mean-reversion BUY with only EMA opposing (MACD neutral)
+        # RSI > +10: 0.6 * 25 = 15
+        # Bollinger > +10: 0.6 * 20 = 12
+        # MACD neutral: 0 * 25 = 0
+        # EMA < -5 (bearish, opposes buy): -0.4 * 15 = -6
+        mock_rsi.return_value = 0.6
+        mock_bollinger.return_value = 0.6
+        mock_macd.return_value = 0.0  # Neutral MACD
+        mock_ema.return_value = -0.4  # Bearish EMA (produces -6 when weighted)
+
+        scorer = SignalScorer(
+            require_momentum_confirmation=True,
+            mean_reversion_confirmation_penalty=15,
+        )
+
+        candles = pd.DataFrame({
+            "time": pd.date_range("2024-01-01", periods=200, freq="h"),
+            "open": [50000.0] * 200,
+            "high": [50100.0] * 200,
+            "low": [49900.0] * 200,
+            "close": [50000.0] * 200,
+            "volume": [100.0] * 200,
+        })
+
+        result = scorer.calculate_score(candles)
+
+        # Penalty should still be applied because EMA opposes (EMA score = -6 < -5)
+        assert result.components["mean_reversion_filter"] == -15
