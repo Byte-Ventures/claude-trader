@@ -3179,11 +3179,9 @@ class TestMinimumConfluenceThreshold:
         """Test buy trade is blocked when confluence is below threshold.
 
         Simulates a scenario where the score exceeds threshold but
-        less than 40% of indicators agree with the buy direction.
+        less than the required percentage of indicators agree with the buy direction.
+        Uses a strict 0.6 confluence threshold to ensure blocking occurs.
         """
-        # Create scorer with 0.4 confluence threshold
-        scorer = SignalScorer(threshold=50, min_confluence_factor=0.4)
-
         # Create test data with neutral conditions
         np.random.seed(42)
         length = 200
@@ -3204,29 +3202,34 @@ class TestMinimumConfluenceThreshold:
              patch("src.strategy.signal_scorer.get_ema_signal_graduated") as mock_ema, \
              patch("src.strategy.signal_scorer.get_ema_trend") as mock_trend:
 
-            # Strong RSI buy signal (25 points)
-            # Everything else neutral or zero
-            # This gives score > threshold but only 1/7 agreeing = 14.3% confluence
+            # Set up: RSI, MACD, BB positive; EMA neutral; trend neutral
+            # Raw score = 25+25+10 = 60, which exceeds threshold of 50
+            # Only 3 of 8 components positive (RSI, MACD, BB) = 37.5% confluence
             mock_rsi.return_value = 1.0  # Full bullish = 25 points with default weight
             mock_macd.return_value = 1.0  # Full bullish = 25 points
             mock_bb.return_value = 0.5   # Moderate bullish = 10 points
             mock_ema.return_value = 0.0  # Neutral = 0 points
             mock_trend.return_value = "neutral"
 
-            result = scorer.calculate_score(candles, Decimal("50000"))
-
-            # Score should exceed threshold (50+25+10=85, minus adjustments)
-            # But with only 3 of 7 components positive (RSI, MACD, BB), that's 43%
-            # This should pass the 0.4 threshold
-            # Let's use a higher confluence factor to test blocking
-            scorer_strict = SignalScorer(threshold=50, min_confluence_factor=0.6)
+            # Disable ADX to prevent score reduction from weak trend penalty
+            # With strict 60% confluence requirement, 37.5% agreement should be blocked
+            scorer_strict = SignalScorer(
+                threshold=50,
+                min_confluence_factor=0.6,
+                adx_enabled=False,
+            )
             result_strict = scorer_strict.calculate_score(candles, Decimal("50000"))
 
-            # With strict 60% confluence, it should be blocked since only ~43% agree
-            # Note: actual calculation depends on volume and other adjustments
-            # The key test is that confluence metadata is present
-            assert "_confluence_factor" in result.metadata or result.action == "hold", \
-                "Expected confluence data in metadata or hold action"
+            # Score should be 60 (exceeds threshold), but confluence is only ~37.5%
+            # This should result in blocking due to low confluence
+            assert result_strict.action == "hold", \
+                f"Expected hold due to low confluence, got {result_strict.action}"
+            assert "_blocked_by_confluence" in result_strict.metadata, \
+                "Expected trade to be blocked by confluence check"
+            assert result_strict.metadata["_blocked_by_confluence"] == 1
+            assert result_strict.metadata["_blocked_original_action"] == "buy"
+            assert result_strict.metadata["_confluence_factor"] < 0.6, \
+                f"Expected confluence < 0.6, got {result_strict.metadata['_confluence_factor']}"
 
     def test_trade_proceeds_sufficient_confluence(self):
         """Test trade proceeds when confluence meets threshold."""
