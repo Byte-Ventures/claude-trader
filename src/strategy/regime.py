@@ -334,6 +334,37 @@ class MarketRegime:
                 "position_mult": round(vol_position, 2),
             }
 
+        # Dual-extreme conditions override
+        # When both sentiment is extreme_fear AND volatility is extreme, be more cautious.
+        # The standard regime logic treats extreme fear as a contrarian opportunity
+        # (easier to buy with -10 threshold adjustment), but this is dangerous during
+        # extreme volatility. Override to increase threshold and cap position size.
+        sentiment_category = components.get("sentiment", {}).get("category")
+        volatility_level = volatility
+
+        if sentiment_category == "extreme_fear" and volatility_level == "extreme":
+            # Override: raise threshold and cap position during dual-extreme
+            if threshold_adj < 0:  # If currently making it easier to trade
+                original_threshold = threshold_adj
+                threshold_adj = max(0, threshold_adj + 10)  # At minimum, neutralize
+                logger.info(
+                    "dual_extreme_threshold_override",
+                    original=original_threshold,
+                    adjusted=threshold_adj,
+                    sentiment=sentiment_category,
+                    volatility=volatility_level,
+                )
+            # Cap position multiplier regardless of other factors
+            if position_mult > 0.6:
+                original_position = position_mult
+                position_mult = 0.6
+                logger.info(
+                    "dual_extreme_position_override",
+                    original=round(original_position, 3),
+                    adjusted=position_mult,
+                )
+            components["sentiment"]["dual_extreme_override"] = True
+
         # Trend component (direction-dependent)
         if self.config.trend_enabled:
             trend_adj = self.TREND_ADJUSTMENTS.get(
