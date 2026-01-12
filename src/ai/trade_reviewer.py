@@ -552,6 +552,10 @@ class TradeReviewer:
         """
         Check if judge reasoning identifies momentum confirmation concerns.
 
+        Uses two-tier matching:
+        1. Momentum-specific phrases (always trigger)
+        2. Generic confirmation phrases (only trigger if "momentum" appears nearby)
+
         Args:
             reasoning: Judge's reasoning text
 
@@ -559,17 +563,41 @@ class TradeReviewer:
             True if momentum concern phrases are found
         """
         reasoning_lower = reasoning.lower()
-        momentum_concern_phrases = [
+
+        # Tier 1: Phrases that explicitly mention momentum - always match
+        momentum_specific_phrases = [
             "momentum confirmation",
-            "lacking confirmation",
-            "no confirmation",
             "momentum currently lacking",
-            "lacks confirmation",
-            "confirmation is lacking",
-            "without confirmation",
-            "missing confirmation",
+            "momentum is lacking",
+            "momentum lacking",
+            "weak momentum",
+            "momentum divergence",
+            "momentum not confirmed",
+            "unconfirmed momentum",
+            "no momentum",
+            "lacks momentum",
+            "lacking momentum",
+            "without momentum",
+            "momentum weakness",
         ]
-        return any(phrase in reasoning_lower for phrase in momentum_concern_phrases)
+        if any(phrase in reasoning_lower for phrase in momentum_specific_phrases):
+            return True
+
+        # Tier 2: Generic confirmation phrases - only match if "momentum" appears
+        # in the same reasoning (within context)
+        if "momentum" in reasoning_lower:
+            generic_confirmation_phrases = [
+                "lacking confirmation",
+                "no confirmation",
+                "lacks confirmation",
+                "confirmation is lacking",
+                "without confirmation",
+                "missing confirmation",
+            ]
+            if any(phrase in reasoning_lower for phrase in generic_confirmation_phrases):
+                return True
+
+        return False
 
     def _determine_veto_action(
         self, approved: bool, confidence: float, reasoning: str = ""
@@ -614,6 +642,7 @@ class TradeReviewer:
                     "momentum_concern_detected",
                     confidence=confidence,
                     momentum_threshold=self.veto_skip_threshold_momentum,
+                    standard_threshold=self.veto_skip_threshold,
                     triggered_skip=False,
                 )
 

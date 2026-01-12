@@ -267,6 +267,7 @@ class TradingDaemon:
                 judge_model=settings.judge_model,
                 veto_reduce_threshold=settings.veto_reduce_threshold,
                 veto_skip_threshold=settings.veto_skip_threshold,
+                veto_skip_threshold_momentum=settings.veto_skip_threshold_momentum,
                 position_reduction=settings.position_reduction,
                 interesting_hold_margin=settings.interesting_hold_margin,
                 review_all=settings.ai_review_all,

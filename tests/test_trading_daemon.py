@@ -896,6 +896,7 @@ def test_ai_failure_mode_open_does_not_skip_trade(mock_settings, mock_exchange_c
     mock_settings.judge_model = "test/judge"
     mock_settings.veto_reduce_threshold = 0.65
     mock_settings.veto_skip_threshold = 0.80
+    mock_settings.veto_skip_threshold_momentum = 0.70
     mock_settings.position_reduction = 0.5
     mock_settings.interesting_hold_margin = 15
     mock_settings.ai_review_all = False
@@ -982,6 +983,7 @@ def test_ai_failure_mode_safe_skips_trade(mock_settings, mock_exchange_client, m
     mock_settings.judge_model = "test/judge"
     mock_settings.veto_reduce_threshold = 0.65
     mock_settings.veto_skip_threshold = 0.80
+    mock_settings.veto_skip_threshold_momentum = 0.70
     mock_settings.position_reduction = 0.5
     mock_settings.interesting_hold_margin = 15
     mock_settings.ai_review_all = False
@@ -1095,6 +1097,7 @@ def test_ai_failure_mode_sell_proceeds_on_failure(mock_settings, mock_exchange_c
     mock_settings.judge_model = "test/judge"
     mock_settings.veto_reduce_threshold = 0.65
     mock_settings.veto_skip_threshold = 0.80
+    mock_settings.veto_skip_threshold_momentum = 0.70
     mock_settings.position_reduction = 0.5
     mock_settings.interesting_hold_margin = 15
     mock_settings.ai_review_all = False
@@ -1181,6 +1184,7 @@ def test_ai_failure_mode_sell_safe_skips_trade(mock_settings, mock_exchange_clie
     mock_settings.judge_model = "test/judge"
     mock_settings.veto_reduce_threshold = 0.65
     mock_settings.veto_skip_threshold = 0.80
+    mock_settings.veto_skip_threshold_momentum = 0.70
     mock_settings.position_reduction = 0.5
     mock_settings.interesting_hold_margin = 15
     mock_settings.ai_review_all = False
@@ -1269,6 +1273,7 @@ def test_ai_failure_notification_cooldown(mock_settings, mock_exchange_client, m
     mock_settings.judge_model = "test/judge"
     mock_settings.veto_reduce_threshold = 0.65
     mock_settings.veto_skip_threshold = 0.80
+    mock_settings.veto_skip_threshold_momentum = 0.70
     mock_settings.position_reduction = 0.5
     mock_settings.interesting_hold_margin = 15
     mock_settings.ai_review_all = False

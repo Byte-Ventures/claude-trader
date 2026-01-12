@@ -283,14 +283,40 @@ class TestMomentumConcernVeto:
         assert reviewer._has_momentum_concern("The momentum confirmation appears to be missing")
         assert reviewer._has_momentum_concern("MOMENTUM CONFIRMATION is needed")  # case insensitive
 
-    def test_has_momentum_concern_detects_lacking_confirmation(self, mock_db, reviewer_models, judge_model):
-        """Test _has_momentum_concern detects variations of lacking confirmation."""
+    def test_has_momentum_concern_detects_lacking_confirmation_with_momentum(self, mock_db, reviewer_models, judge_model):
+        """Test _has_momentum_concern detects generic confirmation phrases when momentum is mentioned."""
         reviewer = self._create_reviewer(mock_db, reviewer_models, judge_model)
 
-        assert reviewer._has_momentum_concern("Signal is lacking confirmation from volume")
-        assert reviewer._has_momentum_concern("The trade lacks confirmation")
-        assert reviewer._has_momentum_concern("Trend is without confirmation")
-        assert reviewer._has_momentum_concern("Missing confirmation from MACD")
+        # Generic phrases WITH momentum context should trigger
+        assert reviewer._has_momentum_concern("Signal is lacking confirmation from volume, momentum is weak")
+        assert reviewer._has_momentum_concern("The momentum-based trade lacks confirmation")
+        assert reviewer._has_momentum_concern("Trend is without confirmation, momentum indicators unclear")
+        assert reviewer._has_momentum_concern("Missing confirmation from momentum signals")
+
+    def test_has_momentum_concern_ignores_generic_phrases_without_momentum(self, mock_db, reviewer_models, judge_model):
+        """Test _has_momentum_concern ignores generic confirmation phrases when momentum is NOT mentioned."""
+        reviewer = self._create_reviewer(mock_db, reviewer_models, judge_model)
+
+        # Generic phrases WITHOUT momentum context should NOT trigger
+        assert not reviewer._has_momentum_concern("RSI confirmation is lacking")
+        assert not reviewer._has_momentum_concern("Volume confirmation is lacking")
+        assert not reviewer._has_momentum_concern("Signal lacks confirmation from trend indicators")
+        assert not reviewer._has_momentum_concern("Missing confirmation from MACD")
+
+    def test_has_momentum_concern_detects_momentum_specific_phrases(self, mock_db, reviewer_models, judge_model):
+        """Test _has_momentum_concern detects momentum-specific phrases."""
+        reviewer = self._create_reviewer(mock_db, reviewer_models, judge_model)
+
+        # Momentum-specific phrases that should always match
+        assert reviewer._has_momentum_concern("weak momentum signals detected")
+        assert reviewer._has_momentum_concern("momentum divergence is concerning")
+        assert reviewer._has_momentum_concern("momentum not confirmed by volume")
+        assert reviewer._has_momentum_concern("unconfirmed momentum makes this risky")
+        assert reviewer._has_momentum_concern("there is no momentum in this move")
+        assert reviewer._has_momentum_concern("the trade lacks momentum")
+        assert reviewer._has_momentum_concern("lacking momentum indicators support")
+        assert reviewer._has_momentum_concern("proceeding without momentum is risky")
+        assert reviewer._has_momentum_concern("momentum weakness is evident")
 
     def test_has_momentum_concern_returns_false_for_normal_reasoning(self, mock_db, reviewer_models, judge_model):
         """Test _has_momentum_concern returns False for normal reasoning."""
