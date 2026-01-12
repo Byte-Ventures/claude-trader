@@ -318,6 +318,22 @@ class TestMomentumConcernVeto:
         assert reviewer._has_momentum_concern("proceeding without momentum is risky")
         assert reviewer._has_momentum_concern("momentum weakness is evident")
 
+    def test_has_momentum_concern_detects_no_momentum_confirmation(self, mock_db, reviewer_models, judge_model):
+        """Test _has_momentum_concern detects 'no momentum confirmation' phrase."""
+        reviewer = self._create_reviewer(mock_db, reviewer_models, judge_model)
+
+        # "no momentum confirmation" should match (PR #356 review feedback)
+        assert reviewer._has_momentum_concern("there is no momentum confirmation for this signal")
+        assert reviewer._has_momentum_concern("No momentum confirmation detected")
+
+    def test_has_momentum_concern_detects_momentum_not_aligned(self, mock_db, reviewer_models, judge_model):
+        """Test _has_momentum_concern detects 'momentum not aligned' phrase."""
+        reviewer = self._create_reviewer(mock_db, reviewer_models, judge_model)
+
+        # "momentum not aligned" should match (PR #356 review feedback)
+        assert reviewer._has_momentum_concern("momentum not aligned with trend")
+        assert reviewer._has_momentum_concern("the momentum is not aligned")
+
     def test_has_momentum_concern_returns_false_for_normal_reasoning(self, mock_db, reviewer_models, judge_model):
         """Test _has_momentum_concern returns False for normal reasoning."""
         reviewer = self._create_reviewer(mock_db, reviewer_models, judge_model)

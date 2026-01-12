@@ -575,6 +575,7 @@ class TradeReviewer:
             "momentum not confirmed",
             "unconfirmed momentum",
             "no momentum",
+            "no momentum confirmation",
             "lacks momentum",
             "lacking momentum",
             "without momentum",
@@ -587,6 +588,8 @@ class TradeReviewer:
             "waning momentum",
             "insufficient momentum",
             "momentum has not",
+            "momentum not aligned",
+            "momentum is not aligned",
         ]
         if any(phrase in reasoning_lower for phrase in momentum_specific_phrases):
             return True
