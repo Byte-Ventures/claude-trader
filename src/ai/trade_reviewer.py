@@ -608,6 +608,14 @@ class TradeReviewer:
                     standard_threshold=self.veto_skip_threshold,
                 )
                 return "skip"
+            else:
+                # Log detection even when not triggering skip (for threshold tuning)
+                logger.debug(
+                    "momentum_concern_detected",
+                    confidence=confidence,
+                    momentum_threshold=self.veto_skip_threshold_momentum,
+                    triggered_skip=False,
+                )
 
         if confidence >= self.veto_skip_threshold:
             return "skip"  # High confidence disapproval: cancel trade
