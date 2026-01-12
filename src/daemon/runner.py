@@ -396,6 +396,7 @@ class TradingDaemon:
             adx_period=settings.adx_period,
             adx_weak_threshold=settings.adx_weak_threshold,
             adx_strong_threshold=settings.adx_strong_threshold,
+            min_confluence_factor=settings.min_confluence_factor,
         )
 
         self.position_sizer = PositionSizer(

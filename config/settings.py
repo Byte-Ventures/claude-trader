@@ -267,6 +267,14 @@ class Settings(BaseSettings):
         description="Minimum score to trigger a trade (out of 100)"
     )
 
+    # Minimum Confluence Factor - requires multiple indicators to agree
+    min_confluence_factor: float = Field(
+        default=0.4,
+        ge=0.2,
+        le=0.8,
+        description="Minimum percentage of indicators that must agree for trade execution (0.4 = 40%)"
+    )
+
     # Crash Protection Parameters
     max_oversold_buys_24h: int = Field(
         default=2,

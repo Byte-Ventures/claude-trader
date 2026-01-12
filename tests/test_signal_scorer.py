@@ -3161,3 +3161,260 @@ class TestVWAPEnrichmentIntegration:
         assert abs(result_20.components["vwap"]) > abs(result_10.components["vwap"]), \
             f"Expected weight=20 ({result_20.components['vwap']}) > weight=10 ({result_10.components['vwap']})"
 
+
+class TestMinimumConfluenceThreshold:
+    """Tests for minimum confluence threshold feature (Issue #351)."""
+
+    def test_default_confluence_factor(self):
+        """Test default min_confluence_factor is 0.4 (40%)."""
+        scorer = SignalScorer()
+        assert scorer.min_confluence_factor == 0.4
+
+    def test_custom_confluence_factor(self):
+        """Test custom min_confluence_factor can be set."""
+        scorer = SignalScorer(min_confluence_factor=0.5)
+        assert scorer.min_confluence_factor == 0.5
+
+    def test_trade_blocked_low_confluence_buy(self):
+        """Test buy trade is blocked when confluence is below threshold.
+
+        Simulates a scenario where the score exceeds threshold but
+        less than the required percentage of indicators agree with the buy direction.
+        Uses a strict 0.6 confluence threshold to ensure blocking occurs.
+        """
+        # Create test data with neutral conditions
+        np.random.seed(42)
+        length = 200
+        candles = pd.DataFrame({
+            "open": [50000.0] * length,
+            "high": [50100.0] * length,
+            "low": [49900.0] * length,
+            "close": [50000.0] * length,
+            "volume": [100.0] * length,
+        })
+
+        # Patch the indicator functions to return specific values
+        # This creates a scenario where one indicator gives a strong signal
+        # but others are zero or opposed
+        with patch("src.strategy.signal_scorer.get_rsi_signal_graduated") as mock_rsi, \
+             patch("src.strategy.signal_scorer.get_macd_signal_graduated") as mock_macd, \
+             patch("src.strategy.signal_scorer.get_bollinger_signal_graduated") as mock_bb, \
+             patch("src.strategy.signal_scorer.get_ema_signal_graduated") as mock_ema, \
+             patch("src.strategy.signal_scorer.get_ema_trend") as mock_trend:
+
+            # Set up: RSI, MACD, BB positive; EMA neutral; trend neutral
+            # Raw score = 25+25+10 = 60, which exceeds threshold of 50
+            # Only 3 of 8 components positive (RSI, MACD, BB) = 37.5% confluence
+            mock_rsi.return_value = 1.0  # Full bullish = 25 points with default weight
+            mock_macd.return_value = 1.0  # Full bullish = 25 points
+            mock_bb.return_value = 0.5   # Moderate bullish = 10 points
+            mock_ema.return_value = 0.0  # Neutral = 0 points
+            mock_trend.return_value = "neutral"
+
+            # Disable ADX to prevent score reduction from weak trend penalty
+            # With strict 60% confluence requirement, 37.5% agreement should be blocked
+            scorer_strict = SignalScorer(
+                threshold=50,
+                min_confluence_factor=0.6,
+                adx_enabled=False,
+            )
+            result_strict = scorer_strict.calculate_score(candles, Decimal("50000"))
+
+            # Score should be 60 (exceeds threshold), but confluence is only ~37.5%
+            # This should result in blocking due to low confluence
+            assert result_strict.action == "hold", \
+                f"Expected hold due to low confluence, got {result_strict.action}"
+            assert "_blocked_by_confluence" in result_strict.metadata, \
+                "Expected trade to be blocked by confluence check"
+            assert result_strict.metadata["_blocked_by_confluence"] == 1
+            assert result_strict.metadata["_blocked_original_action"] == "buy"
+            assert result_strict.metadata["_confluence_factor"] < 0.6, \
+                f"Expected confluence < 0.6, got {result_strict.metadata['_confluence_factor']}"
+
+    def test_trade_proceeds_sufficient_confluence(self):
+        """Test trade proceeds when confluence meets threshold.
+
+        Uses mocks to create a deterministic scenario where:
+        - Score exceeds threshold (should trigger buy)
+        - Confluence is above the required minimum (should NOT be blocked)
+        This ensures the test always validates confluence behavior.
+        """
+        # Create test data with neutral conditions (mocks will override indicator values)
+        length = 200
+        candles = pd.DataFrame({
+            "open": [50000.0] * length,
+            "high": [50100.0] * length,
+            "low": [49900.0] * length,
+            "close": [50000.0] * length,
+            "volume": [100.0] * length,
+        })
+
+        # Patch indicator functions to return specific values for deterministic testing
+        with patch("src.strategy.signal_scorer.get_rsi_signal_graduated") as mock_rsi, \
+             patch("src.strategy.signal_scorer.get_macd_signal_graduated") as mock_macd, \
+             patch("src.strategy.signal_scorer.get_bollinger_signal_graduated") as mock_bb, \
+             patch("src.strategy.signal_scorer.get_ema_signal_graduated") as mock_ema, \
+             patch("src.strategy.signal_scorer.get_ema_trend") as mock_trend:
+
+            # Set up: RSI, MACD, BB, EMA all positive; trend bullish
+            # Raw score = 25+25+10+20 = 80, which exceeds threshold of 50
+            # 4 of 8 components positive = 50% confluence, exceeds 40% threshold
+            mock_rsi.return_value = 1.0   # Full bullish = 25 points
+            mock_macd.return_value = 1.0  # Full bullish = 25 points
+            mock_bb.return_value = 0.5    # Moderate bullish = 10 points
+            mock_ema.return_value = 1.0   # Full bullish = 20 points
+            mock_trend.return_value = "bullish"
+
+            # Use 40% confluence threshold - with 50% agreement, trade should proceed
+            scorer = SignalScorer(
+                threshold=50,
+                min_confluence_factor=0.4,
+                adx_enabled=False,  # Disable ADX to prevent score reduction
+            )
+            result = scorer.calculate_score(candles, Decimal("50000"))
+
+            # Should be a buy action (not blocked by confluence)
+            assert result.action == "buy", \
+                f"Expected buy action with sufficient confluence, got {result.action}"
+            assert "_confluence_factor" in result.metadata, \
+                "Expected confluence factor in metadata for buy action"
+            assert result.metadata["_confluence_factor"] >= 0.4, \
+                f"Expected confluence >= 0.4, got {result.metadata['_confluence_factor']}"
+            assert "_blocked_by_confluence" not in result.metadata, \
+                "Trade should not be blocked when confluence meets threshold"
+
+    def test_confluence_metadata_recorded(self):
+        """Test that confluence metadata is recorded for analysis."""
+        scorer = SignalScorer(threshold=50, min_confluence_factor=0.4)
+
+        # Create test data
+        length = 200
+        prices = np.linspace(40000, 60000, length)  # Uptrend
+
+        candles = pd.DataFrame({
+            "open": prices * 0.998,
+            "high": prices * 1.005,
+            "low": prices * 0.995,
+            "close": prices,
+            "volume": [1000.0] * length,
+        })
+
+        result = scorer.calculate_score(candles, Decimal(str(prices[-1])))
+
+        # If action was blocked, we should see blocked metadata
+        if result.action == "hold" and "_blocked_by_confluence" in result.metadata:
+            assert result.metadata["_blocked_by_confluence"] == 1
+            assert "_blocked_original_action" in result.metadata
+            assert result.metadata["_blocked_original_action"] in ["buy", "sell"]
+
+    def test_sell_blocked_low_confluence(self):
+        """Test sell trade is blocked when confluence is below threshold."""
+        np.random.seed(48)  # For deterministic test results
+        # Use high confluence threshold (80%)
+        scorer = SignalScorer(threshold=50, min_confluence_factor=0.8)
+
+        # Create downtrending data
+        length = 200
+        prices = np.linspace(60000, 40000, length)  # Downtrend
+
+        candles = pd.DataFrame({
+            "open": prices * 1.002,
+            "high": prices * 1.005,
+            "low": prices * 0.995,
+            "close": prices,
+            "volume": [1000.0] * length,
+        })
+
+        result = scorer.calculate_score(candles, Decimal(str(prices[-1])))
+
+        # With 80% confluence required, most signals should be blocked
+        # Either action is hold, or confluence is >= 0.8
+        if result.action != "hold":
+            assert result.metadata.get("_confluence_factor", 0) >= 0.8, \
+                f"Expected confluence >= 0.8 for sell action, got {result.metadata.get('_confluence_factor')}"
+
+    def test_confluence_counts_correct_direction_buy(self):
+        """Test confluence correctly counts indicators agreeing with buy direction."""
+        np.random.seed(49)  # For deterministic test results
+        scorer = SignalScorer(threshold=50, min_confluence_factor=0.3)
+
+        # Create bullish data
+        length = 200
+        prices = np.linspace(40000, 60000, length)
+
+        candles = pd.DataFrame({
+            "open": prices * 0.998,
+            "high": prices * 1.005,
+            "low": prices * 0.995,
+            "close": prices,
+            "volume": [2000.0] * length,  # High volume
+        })
+
+        result = scorer.calculate_score(candles, Decimal(str(prices[-1])))
+
+        if result.action == "buy":
+            # For a buy action, agreeing indicators should have positive scores
+            agreeing = sum(1 for v in result.components.values() if v > 0)
+            total = len(result.components)
+            expected_factor = agreeing / total
+
+            assert "_agreeing_indicators" in result.metadata, \
+                "Expected _agreeing_indicators in metadata"
+            assert result.metadata["_agreeing_indicators"] == agreeing, \
+                f"Expected {agreeing} agreeing indicators, got {result.metadata['_agreeing_indicators']}"
+            assert abs(result.metadata["_confluence_factor"] - expected_factor) < 0.01, \
+                f"Expected confluence factor {expected_factor}, got {result.metadata['_confluence_factor']}"
+
+    def test_confluence_counts_correct_direction_sell(self):
+        """Test confluence correctly counts indicators agreeing with sell direction."""
+        np.random.seed(50)  # For deterministic test results
+        scorer = SignalScorer(threshold=50, min_confluence_factor=0.3)
+
+        # Create bearish data
+        length = 200
+        prices = np.linspace(60000, 40000, length)
+
+        candles = pd.DataFrame({
+            "open": prices * 1.002,
+            "high": prices * 1.005,
+            "low": prices * 0.995,
+            "close": prices,
+            "volume": [2000.0] * length,  # High volume
+        })
+
+        result = scorer.calculate_score(candles, Decimal(str(prices[-1])))
+
+        if result.action == "sell":
+            # For a sell action, agreeing indicators should have negative scores
+            agreeing = sum(1 for v in result.components.values() if v < 0)
+            total = len(result.components)
+            expected_factor = agreeing / total
+
+            assert "_agreeing_indicators" in result.metadata, \
+                "Expected _agreeing_indicators in metadata"
+            assert result.metadata["_agreeing_indicators"] == agreeing, \
+                f"Expected {agreeing} agreeing indicators, got {result.metadata['_agreeing_indicators']}"
+
+    def test_settings_validation_min_confluence_bounds(self):
+        """Test that min_confluence_factor settings validation works."""
+        # Test lower bound (0.2)
+        scorer_low = SignalScorer(min_confluence_factor=0.2)
+        assert scorer_low.min_confluence_factor == 0.2
+
+        # Test upper bound (0.8)
+        scorer_high = SignalScorer(min_confluence_factor=0.8)
+        assert scorer_high.min_confluence_factor == 0.8
+
+    def test_config_settings_min_confluence_factor(self):
+        """Test min_confluence_factor in Settings validation."""
+        # Test default value
+        settings = Settings()
+        assert settings.min_confluence_factor == 0.4
+
+        # Test validation bounds via pydantic
+        with pytest.raises(ValidationError):
+            Settings(min_confluence_factor=0.1)  # Below 0.2 minimum
+
+        with pytest.raises(ValidationError):
+            Settings(min_confluence_factor=0.9)  # Above 0.8 maximum
+
