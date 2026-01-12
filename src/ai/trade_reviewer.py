@@ -582,6 +582,11 @@ class TradeReviewer:
             "momentum signal weak",
             "fading momentum",
             "momentum is fading",
+            "momentum stalling",
+            "momentum reversal",
+            "waning momentum",
+            "insufficient momentum",
+            "momentum has not",
         ]
         if any(phrase in reasoning_lower for phrase in momentum_specific_phrases):
             return True
@@ -641,7 +646,8 @@ class TradeReviewer:
                 return "skip"
             else:
                 # Log detection even when not triggering skip (for threshold tuning)
-                # Using info level for production visibility during threshold tuning
+                # Using info level for production visibility during threshold tuning.
+                # TODO: Change to logger.debug once momentum threshold is finalized.
                 logger.info(
                     "momentum_concern_detected_below_threshold",
                     confidence=confidence,
