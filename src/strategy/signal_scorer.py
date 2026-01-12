@@ -1243,16 +1243,18 @@ class SignalScorer:
                 )
 
             # Count agreeing indicators (non-zero contributions)
+            # Note: This differs from _confluence_factor in metadata (lines 1213-1217) which counts
+            # directionally-agreeing indicators. This counts ANY non-zero contribution for confidence.
             confluence_count = sum(
                 1 for score in components.values()
                 if score != 0
             )
             # Use actual component count for robustness (typically 7: rsi, macd, bollinger, ema, volume, trend_filter, htf_bias)
-            confluence_factor = confluence_count / len(components)
+            confidence_confluence = confluence_count / len(components)
 
             # Combine magnitude and confluence (equally weighted)
             magnitude_confidence = abs(total_score) / 100
-            confidence = (magnitude_confidence + confluence_factor) / 2
+            confidence = (magnitude_confidence + confidence_confluence) / 2
             confidence = min(1.0, confidence)
         else:
             confidence = 0.0
