@@ -396,6 +396,7 @@ class TradingDaemon:
             adx_period=settings.adx_period,
             adx_weak_threshold=settings.adx_weak_threshold,
             adx_strong_threshold=settings.adx_strong_threshold,
+            ema_trend_threshold_percent=settings.ema_trend_threshold_percent,
         )
 
         self.position_sizer = PositionSizer(
@@ -1403,7 +1404,7 @@ class TradingDaemon:
 
         # Calculate market regime for strategy adaptation
         # Note: sentiment already fetched above before signal calculation
-        trend = get_ema_trend_from_values(ind.ema_fast, ind.ema_slow) if ind.ema_fast and ind.ema_slow else "neutral"
+        trend = get_ema_trend_from_values(ind.ema_fast, ind.ema_slow, self.settings.ema_trend_threshold_percent) if ind.ema_fast and ind.ema_slow else "neutral"
 
         regime = self.market_regime.calculate(
             sentiment=sentiment,

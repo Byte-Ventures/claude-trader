@@ -364,6 +364,50 @@ def test_ema_trend_neutral():
     assert signal == "neutral"
 
 
+def test_ema_trend_configurable_threshold_bullish():
+    """Test EMA trend with custom threshold - bullish at 0.5%."""
+    # 0.7% gap is bullish at 0.5% threshold but neutral at 1.0% threshold
+    signal = get_ema_trend_from_values(ema_fast=100.7, ema_slow=100.0, threshold_percent=0.5)
+    assert signal == "bullish"
+
+
+def test_ema_trend_configurable_threshold_neutral():
+    """Test EMA trend with custom threshold - neutral at default 1.0%."""
+    # 0.7% gap is neutral at default 1.0% threshold
+    signal = get_ema_trend_from_values(ema_fast=100.7, ema_slow=100.0)
+    assert signal == "neutral"
+
+
+def test_ema_trend_configurable_threshold_bearish():
+    """Test EMA trend with custom threshold - bearish at 0.5%."""
+    # -0.7% gap is bearish at 0.5% threshold but neutral at 1.0% threshold
+    signal = get_ema_trend_from_values(ema_fast=99.3, ema_slow=100.0, threshold_percent=0.5)
+    assert signal == "bearish"
+
+
+def test_ema_trend_configurable_threshold_edge_case():
+    """Test EMA trend at exact threshold boundary."""
+    # Exactly at 0.5% threshold - should return neutral (not strictly greater)
+    signal = get_ema_trend_from_values(ema_fast=100.5, ema_slow=100.0, threshold_percent=0.5)
+    assert signal == "neutral"
+
+    # Just above 0.5% threshold - should return bullish
+    signal = get_ema_trend_from_values(ema_fast=100.51, ema_slow=100.0, threshold_percent=0.5)
+    assert signal == "bullish"
+
+
+def test_ema_trend_backward_compatibility():
+    """Test EMA trend uses default threshold when None is passed."""
+    # With None threshold, should use default 1.0%
+    # 0.5% gap should be neutral with default threshold
+    signal = get_ema_trend_from_values(ema_fast=100.5, ema_slow=100.0, threshold_percent=None)
+    assert signal == "neutral"
+
+    # 2.0% gap should be bullish with default threshold
+    signal = get_ema_trend_from_values(ema_fast=102.0, ema_slow=100.0, threshold_percent=None)
+    assert signal == "bullish"
+
+
 # ============================================================================
 # ATR Tests
 # ============================================================================

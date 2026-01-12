@@ -207,6 +207,7 @@ class SignalScorer:
         adx_period: int = 14,
         adx_weak_threshold: float = 20.0,
         adx_strong_threshold: float = 25.0,
+        ema_trend_threshold_percent: float = 1.0,
     ):
         """
         Initialize signal scorer.
@@ -298,6 +299,9 @@ class SignalScorer:
         self.adx_period = adx_period
         self.adx_weak_threshold = adx_weak_threshold
         self.adx_strong_threshold = adx_strong_threshold
+
+        # EMA trend detection threshold
+        self.ema_trend_threshold_percent = ema_trend_threshold_percent
 
     def get_min_candles(self) -> int:
         """
@@ -1007,7 +1011,7 @@ class SignalScorer:
 
         # Trend filter: penalize counter-trend trades (scaled by signal strength)
         # Skip penalty for extreme RSI (mean-reversion zones) with crash protection
-        trend = get_ema_trend(ema_result)
+        trend = get_ema_trend(ema_result, self.ema_trend_threshold_percent)
         trend_adjustment = 0
         rsi_extreme = indicators.rsi is not None and (indicators.rsi < self.extreme_rsi_lower or indicators.rsi > self.extreme_rsi_upper)
 
@@ -1261,4 +1265,4 @@ class SignalScorer:
         close = df["close"].astype(float)
         ema_result = calculate_ema_crossover(close, self.ema_fast, self.ema_slow_period)
 
-        return get_ema_trend(ema_result)
+        return get_ema_trend(ema_result, self.ema_trend_threshold_percent)

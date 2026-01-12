@@ -43,6 +43,8 @@ Integration:
 """
 
 from dataclasses import dataclass
+from typing import Optional
+
 import pandas as pd
 import numpy as np
 
@@ -188,17 +190,23 @@ def get_ema_signal_graduated(ema_result: EMAResult) -> float:
     return 0.0
 
 
-def get_ema_trend(ema_result: EMAResult) -> str:
+def get_ema_trend(
+    ema_result: EMAResult,
+    threshold_percent: Optional[float] = None,
+) -> str:
     """
     Determine current trend based on EMA positions.
 
     Uses the percentage gap between fast and slow EMA to classify trend:
-    - > 1.0%: Bullish
-    - < -1.0%: Bearish
+    - > threshold: Bullish
+    - < -threshold: Bearish
     - Otherwise: Neutral
 
     Args:
         ema_result: EMA calculation result
+        threshold_percent: Optional threshold for trend classification.
+                          If None, uses module constant _TREND_THRESHOLD_PERCENT (1.0%).
+                          Lower values = more sensitive trend detection.
 
     Returns:
         "bullish", "bearish", or "neutral"
@@ -214,15 +222,22 @@ def get_ema_trend(ema_result: EMAResult) -> str:
 
     diff_percent = (fast - slow) / slow * 100
 
-    if diff_percent > _TREND_THRESHOLD_PERCENT:
+    # Use provided threshold or fall back to module constant for backward compatibility
+    threshold = threshold_percent if threshold_percent is not None else _TREND_THRESHOLD_PERCENT
+
+    if diff_percent > threshold:
         return "bullish"
-    elif diff_percent < -_TREND_THRESHOLD_PERCENT:
+    elif diff_percent < -threshold:
         return "bearish"
 
     return "neutral"
 
 
-def get_ema_trend_from_values(ema_fast: float, ema_slow: float) -> str:
+def get_ema_trend_from_values(
+    ema_fast: float,
+    ema_slow: float,
+    threshold_percent: Optional[float] = None,
+) -> str:
     """
     Determine current trend from raw EMA values.
 
@@ -232,6 +247,9 @@ def get_ema_trend_from_values(ema_fast: float, ema_slow: float) -> str:
     Args:
         ema_fast: Current fast EMA value
         ema_slow: Current slow EMA value
+        threshold_percent: Optional threshold for trend classification.
+                          If None, uses module constant _TREND_THRESHOLD_PERCENT (1.0%).
+                          Lower values = more sensitive trend detection.
 
     Returns:
         "bullish", "bearish", or "neutral"
@@ -241,9 +259,12 @@ def get_ema_trend_from_values(ema_fast: float, ema_slow: float) -> str:
 
     diff_percent = (ema_fast - ema_slow) / ema_slow * 100
 
-    if diff_percent > _TREND_THRESHOLD_PERCENT:
+    # Use provided threshold or fall back to module constant for backward compatibility
+    threshold = threshold_percent if threshold_percent is not None else _TREND_THRESHOLD_PERCENT
+
+    if diff_percent > threshold:
         return "bullish"
-    elif diff_percent < -_TREND_THRESHOLD_PERCENT:
+    elif diff_percent < -threshold:
         return "bearish"
 
     return "neutral"
