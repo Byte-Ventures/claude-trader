@@ -1226,10 +1226,11 @@ class SignalScorer:
                     total_indicators=len(components),
                     score=total_score,
                 )
-                action = "hold"
                 # Store confluence data in metadata for analysis
+                # Capture original action before changing to hold (clearer than recalculating from total_score)
                 metadata["_blocked_by_confluence"] = 1
-                metadata["_blocked_original_action"] = "buy" if total_score > 0 else "sell"
+                metadata["_blocked_original_action"] = action
+                action = "hold"
             metadata["_confluence_factor"] = round(confluence_factor, 3)
             metadata["_agreeing_indicators"] = agreeing_count
 
@@ -1243,7 +1244,7 @@ class SignalScorer:
                 )
 
             # Count agreeing indicators (non-zero contributions)
-            # Note: This differs from _confluence_factor in metadata (lines 1213-1217) which counts
+            # Note: This differs from _confluence_factor in metadata which counts
             # directionally-agreeing indicators. This counts ANY non-zero contribution for confidence.
             confluence_count = sum(
                 1 for score in components.values()

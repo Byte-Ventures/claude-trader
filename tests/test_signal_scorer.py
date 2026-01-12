@@ -3286,6 +3286,7 @@ class TestMinimumConfluenceThreshold:
 
     def test_sell_blocked_low_confluence(self):
         """Test sell trade is blocked when confluence is below threshold."""
+        np.random.seed(48)  # For deterministic test results
         # Use high confluence threshold (80%)
         scorer = SignalScorer(threshold=50, min_confluence_factor=0.8)
 
@@ -3311,6 +3312,7 @@ class TestMinimumConfluenceThreshold:
 
     def test_confluence_counts_correct_direction_buy(self):
         """Test confluence correctly counts indicators agreeing with buy direction."""
+        np.random.seed(49)  # For deterministic test results
         scorer = SignalScorer(threshold=50, min_confluence_factor=0.3)
 
         # Create bullish data
@@ -3342,6 +3344,7 @@ class TestMinimumConfluenceThreshold:
 
     def test_confluence_counts_correct_direction_sell(self):
         """Test confluence correctly counts indicators agreeing with sell direction."""
+        np.random.seed(50)  # For deterministic test results
         scorer = SignalScorer(threshold=50, min_confluence_factor=0.3)
 
         # Create bearish data
