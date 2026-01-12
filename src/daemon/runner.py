@@ -407,6 +407,9 @@ class TradingDaemon:
                 min_stop_loss_percent=settings.min_stop_loss_percent,
                 min_trade_quote=settings.min_trade_quote,
                 max_trade_quote=settings.max_trade_quote,
+                estimated_fee_percent=settings.estimated_fee_percent,
+                profit_margin_multiplier=settings.profit_margin_multiplier,
+                min_take_profit_percent=settings.min_take_profit_percent,
             ),
             atr_period=settings.atr_period,
             take_profit_atr_multiplier=settings.take_profit_atr_multiplier,
@@ -2719,6 +2722,25 @@ class TradingDaemon:
                 if self.settings.enable_take_profit:
                     take_profit_price = avg_cost + (atr * Decimal(str(self.settings.take_profit_atr_multiplier)))
 
+                    # Validate take-profit exceeds fee threshold
+                    # Calculate minimum required profit percent (fees * 2 * margin, or explicit min)
+                    min_profit_percent = max(
+                        self.settings.estimated_fee_percent * 2 * self.settings.profit_margin_multiplier,
+                        self.settings.min_take_profit_percent / 100
+                    )
+                    take_profit_percent = (take_profit_price - avg_cost) / avg_cost
+
+                    if take_profit_percent < Decimal(str(min_profit_percent)):
+                        original_tp = take_profit_price
+                        take_profit_price = avg_cost * (Decimal("1") + Decimal(str(min_profit_percent)))
+                        logger.warning(
+                            "take_profit_adjusted_for_fees",
+                            original_percent=float(take_profit_percent * 100),
+                            min_required_percent=float(min_profit_percent * 100),
+                            original_price=str(original_tp),
+                            adjusted_price=str(take_profit_price),
+                        )
+
                 # DCA: Update existing stop without deactivating
                 self.db.update_trailing_stop_for_dca(
                     symbol=self.settings.trading_pair,
@@ -3075,6 +3097,24 @@ class TradingDaemon:
                 if not math.isnan(atr_value) and atr_value > 0:
                     atr = Decimal(str(atr_value))
                     take_profit_price = avg_cost + (atr * Decimal(str(self.settings.take_profit_atr_multiplier)))
+
+                    # Validate take-profit exceeds fee threshold
+                    min_profit_percent = max(
+                        self.settings.estimated_fee_percent * 2 * self.settings.profit_margin_multiplier,
+                        self.settings.min_take_profit_percent / 100
+                    )
+                    take_profit_percent = (take_profit_price - avg_cost) / avg_cost
+
+                    if take_profit_percent < Decimal(str(min_profit_percent)):
+                        original_tp = take_profit_price
+                        take_profit_price = avg_cost * (Decimal("1") + Decimal(str(min_profit_percent)))
+                        logger.warning(
+                            "take_profit_adjusted_for_fees",
+                            original_percent=float(take_profit_percent * 100),
+                            min_required_percent=float(min_profit_percent * 100),
+                            original_price=str(original_tp),
+                            adjusted_price=str(take_profit_price),
+                        )
 
             self._create_trailing_stop(
                 entry_price=avg_cost,

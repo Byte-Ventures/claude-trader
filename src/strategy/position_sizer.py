@@ -39,6 +39,11 @@ class PositionSizeConfig:
     max_trade_quote: Optional[float] = None  # Maximum trade size in quote currency (None = no limit)
     min_stop_loss_percent: float = 1.5  # Minimum stop as % of price (floor for short timeframes)
 
+    # Fee-related settings for take-profit validation
+    estimated_fee_percent: float = 0.006  # Estimated round-trip fee (0.6%)
+    profit_margin_multiplier: float = 2.0  # Minimum profit as multiple of fees
+    min_take_profit_percent: float = 1.5  # Minimum TP as % of price (floor)
+
 
 @dataclass
 class PositionSizeResult:
@@ -241,6 +246,25 @@ class PositionSizer:
 
         # Calculate take-profit distance (ATR-based)
         tp_distance = atr_decimal * Decimal(str(self.take_profit_multiplier))
+
+        # Validate take-profit exceeds fee threshold
+        # Calculate minimum required profit percent (fees * 2 * margin, or explicit min)
+        min_profit_percent = max(
+            self.config.estimated_fee_percent * 2 * self.config.profit_margin_multiplier,
+            self.config.min_take_profit_percent / 100
+        )
+        tp_percent = tp_distance / current_price
+
+        if tp_percent < Decimal(str(min_profit_percent)):
+            original_tp_distance = tp_distance
+            tp_distance = current_price * Decimal(str(min_profit_percent))
+            logger.warning(
+                "take_profit_adjusted_for_fees",
+                original_percent=float(tp_percent * 100),
+                min_required_percent=float(min_profit_percent * 100),
+                original_distance=str(original_tp_distance),
+                adjusted_distance=str(tp_distance),
+            )
 
         # Calculate stop-loss and take-profit prices
         if side == "buy":

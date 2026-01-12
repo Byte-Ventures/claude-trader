@@ -1070,3 +1070,211 @@ def test_min_stop_loss_floor_for_sell_orders(very_low_volatility_df):
         assert stop_percent >= 1.5 - 0.01, (
             f"Sell stop distance {stop_percent:.2f}% should be >= 1.5%"
         )
+
+
+# ============================================================================
+# Minimum Take Profit Floor Tests (Issue #352)
+# ============================================================================
+
+def test_min_take_profit_floor_applied_when_atr_too_small(very_low_volatility_df):
+    """Test that min_take_profit_percent is used when ATR-based TP < min %."""
+    # Configure with specific min_take_profit_percent
+    config = PositionSizeConfig(
+        risk_per_trade_percent=0.5,
+        min_trade_base=0.0001,
+        min_stop_loss_percent=1.5,
+        stop_loss_atr_multiplier=1.5,
+        max_position_percent=40.0,
+        estimated_fee_percent=0.006,  # 0.6% per trade
+        profit_margin_multiplier=2.0,  # Require 2x fees
+        min_take_profit_percent=2.5,  # 2.5% minimum TP
+    )
+    sizer = PositionSizer(config=config, take_profit_atr_multiplier=2.0)
+
+    current_price = Decimal("100000.00")
+    quote_balance = Decimal("50000.00")
+    base_balance = Decimal("0.0")
+    signal_strength = 80
+
+    result = sizer.calculate_size(
+        very_low_volatility_df,
+        current_price,
+        quote_balance,
+        base_balance,
+        signal_strength,
+        side="buy",
+    )
+
+    if result.size_quote > 0:
+        # Calculate take-profit distance
+        tp_distance = result.take_profit_price - current_price
+        tp_percent = float(tp_distance / current_price * 100)
+
+        # TP should be at least min_take_profit_percent (2.5%)
+        # The fee threshold is: 0.006 * 2 * 2.0 = 0.024 = 2.4%
+        # min_take_profit_percent is 2.5%, which is higher, so that's the floor
+        assert tp_percent >= 2.5 - 0.01, (
+            f"TP distance {tp_percent:.2f}% should be >= 2.5%"
+        )
+
+
+def test_take_profit_fee_threshold_applied(very_low_volatility_df):
+    """Test that fee threshold is used when it exceeds min_take_profit_percent."""
+    # Configure with high fees where fee threshold > min_take_profit_percent
+    config = PositionSizeConfig(
+        risk_per_trade_percent=0.5,
+        min_trade_base=0.0001,
+        min_stop_loss_percent=1.5,
+        stop_loss_atr_multiplier=1.5,
+        max_position_percent=40.0,
+        estimated_fee_percent=0.01,  # 1% per trade (high fees)
+        profit_margin_multiplier=2.0,  # Require 2x fees
+        min_take_profit_percent=1.5,  # 1.5% explicit minimum
+    )
+    sizer = PositionSizer(config=config, take_profit_atr_multiplier=2.0)
+
+    current_price = Decimal("100000.00")
+    quote_balance = Decimal("50000.00")
+    base_balance = Decimal("0.0")
+    signal_strength = 80
+
+    result = sizer.calculate_size(
+        very_low_volatility_df,
+        current_price,
+        quote_balance,
+        base_balance,
+        signal_strength,
+        side="buy",
+    )
+
+    if result.size_quote > 0:
+        tp_distance = result.take_profit_price - current_price
+        tp_percent = float(tp_distance / current_price * 100)
+
+        # Fee threshold is: 0.01 * 2 * 2.0 = 0.04 = 4.0%
+        # This exceeds min_take_profit_percent (1.5%), so fee threshold applies
+        assert tp_percent >= 4.0 - 0.01, (
+            f"TP distance {tp_percent:.2f}% should be >= 4.0% (fee threshold)"
+        )
+
+
+def test_atr_take_profit_used_when_larger_than_fee_threshold(high_volatility_df):
+    """Test that ATR-based TP is used when it exceeds fee threshold."""
+    # Configure with normal fees
+    config = PositionSizeConfig(
+        risk_per_trade_percent=0.5,
+        min_trade_base=0.0001,
+        min_stop_loss_percent=0.5,
+        stop_loss_atr_multiplier=2.0,
+        max_position_percent=40.0,
+        estimated_fee_percent=0.006,  # 0.6% per trade
+        profit_margin_multiplier=2.0,  # Require 2x fees = 2.4%
+        min_take_profit_percent=1.5,  # 1.5% explicit minimum
+    )
+    sizer = PositionSizer(config=config, take_profit_atr_multiplier=3.0)
+
+    current_price = Decimal("50000.00")
+    quote_balance = Decimal("50000.00")
+    base_balance = Decimal("0.0")
+    signal_strength = 80
+
+    result = sizer.calculate_size(
+        high_volatility_df,
+        current_price,
+        quote_balance,
+        base_balance,
+        signal_strength,
+        side="buy",
+    )
+
+    if result.size_quote > 0:
+        tp_distance = result.take_profit_price - current_price
+        tp_percent = float(tp_distance / current_price * 100)
+
+        # Fee threshold is: 0.006 * 2 * 2.0 = 0.024 = 2.4%
+        # High volatility ATR * 3.0 should produce TP >> 2.4%
+        # The ATR-based TP should be used (not the floor)
+        assert tp_percent > 2.4, (
+            f"TP distance {tp_percent:.2f}% should be > 2.4% (using ATR)"
+        )
+
+
+def test_take_profit_floor_for_sell_orders(very_low_volatility_df):
+    """Test min_take_profit_percent floor also applies to sell orders."""
+    config = PositionSizeConfig(
+        risk_per_trade_percent=0.5,
+        min_trade_base=0.0001,
+        min_stop_loss_percent=1.5,
+        stop_loss_atr_multiplier=1.5,
+        estimated_fee_percent=0.006,
+        profit_margin_multiplier=2.0,
+        min_take_profit_percent=2.5,
+    )
+    sizer = PositionSizer(config=config, take_profit_atr_multiplier=2.0)
+
+    current_price = Decimal("100000.00")
+    quote_balance = Decimal("10000.00")
+    base_balance = Decimal("1.0")  # Hold 1 BTC to sell
+    signal_strength = 80
+
+    result = sizer.calculate_size(
+        very_low_volatility_df,
+        current_price,
+        quote_balance,
+        base_balance,
+        signal_strength,
+        side="sell",
+    )
+
+    if result.size_quote > 0:
+        # For sells, take profit is BELOW entry price
+        tp_distance = current_price - result.take_profit_price
+        tp_percent = float(tp_distance / current_price * 100)
+
+        assert tp_percent >= 2.5 - 0.01, (
+            f"Sell TP distance {tp_percent:.2f}% should be >= 2.5%"
+        )
+
+
+def test_take_profit_floor_with_different_percentages():
+    """Test TP floor works with different min_take_profit_percent values."""
+    # Create data with minimal ATR
+    length = 50
+    df = pd.DataFrame({
+        'open': [50000.0] * length,
+        'high': [50001.0] * length,  # Tiny range
+        'low': [49999.0] * length,
+        'close': [50000.0] * length,
+    })
+
+    for min_tp_pct in [1.5, 2.0, 2.5, 3.0]:
+        config = PositionSizeConfig(
+            risk_per_trade_percent=0.5,
+            min_trade_base=0.0001,
+            min_stop_loss_percent=1.0,
+            stop_loss_atr_multiplier=1.5,
+            estimated_fee_percent=0.005,  # 0.5% fees -> 2% threshold
+            profit_margin_multiplier=2.0,
+            min_take_profit_percent=min_tp_pct,
+        )
+        sizer = PositionSizer(config=config, take_profit_atr_multiplier=2.0)
+
+        result = sizer.calculate_size(
+            df,
+            Decimal("50000.00"),
+            Decimal("50000.00"),
+            Decimal("0.0"),
+            signal_strength=80,
+            side="buy",
+        )
+
+        if result.size_quote > 0:
+            tp_distance = result.take_profit_price - Decimal("50000.00")
+            tp_percent = float(tp_distance / Decimal("50000.00") * 100)
+
+            # Fee threshold = 0.005 * 2 * 2.0 = 0.02 = 2.0%
+            expected_floor = max(min_tp_pct, 2.0)
+
+            assert tp_percent >= expected_floor - 0.01, (
+                f"With min_tp_pct={min_tp_pct}, TP {tp_percent:.2f}% should be >= {expected_floor}%"
+            )
