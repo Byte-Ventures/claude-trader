@@ -482,6 +482,7 @@ class TradeReviewer:
         judge_model: str,
         veto_reduce_threshold: float = 0.65,
         veto_skip_threshold: float = 0.80,
+        veto_skip_threshold_momentum: float = 0.70,
         position_reduction: float = 0.5,
         interesting_hold_margin: int = 15,
         review_all: bool = False,
@@ -505,6 +506,7 @@ class TradeReviewer:
             judge_model: Model for the judge
             veto_reduce_threshold: Judge confidence to reduce position (lower tier)
             veto_skip_threshold: Judge confidence to skip trade entirely (higher tier)
+            veto_skip_threshold_momentum: Lower skip threshold for momentum concerns
             position_reduction: Position size multiplier for "reduce" action
             interesting_hold_margin: Score margin from threshold for interesting holds
             review_all: Review ALL decisions (for debugging/testing)
@@ -524,6 +526,7 @@ class TradeReviewer:
         self.judge_model = judge_model
         self.veto_reduce_threshold = veto_reduce_threshold
         self.veto_skip_threshold = veto_skip_threshold
+        self.veto_skip_threshold_momentum = veto_skip_threshold_momentum
         self.position_reduction = position_reduction
         self.interesting_hold_margin = interesting_hold_margin
         self.review_all = review_all
@@ -545,7 +548,32 @@ class TradeReviewer:
         self._last_failure_time: Optional[datetime] = None
         self._circuit_breaker_reset_hours = 24
 
-    def _determine_veto_action(self, approved: bool, confidence: float) -> Optional[str]:
+    def _has_momentum_concern(self, reasoning: str) -> bool:
+        """
+        Check if judge reasoning identifies momentum confirmation concerns.
+
+        Args:
+            reasoning: Judge's reasoning text
+
+        Returns:
+            True if momentum concern phrases are found
+        """
+        reasoning_lower = reasoning.lower()
+        momentum_concern_phrases = [
+            "momentum confirmation",
+            "lacking confirmation",
+            "no confirmation",
+            "momentum currently lacking",
+            "lacks confirmation",
+            "confirmation is lacking",
+            "without confirmation",
+            "missing confirmation",
+        ]
+        return any(phrase in reasoning_lower for phrase in momentum_concern_phrases)
+
+    def _determine_veto_action(
+        self, approved: bool, confidence: float, reasoning: str = ""
+    ) -> Optional[str]:
         """
         Determine veto action based on judge decision and confidence tiers.
 
@@ -555,15 +583,31 @@ class TradeReviewer:
         - approved=False, confidence >= veto_reduce_threshold: "reduce" position
         - approved=False, confidence >= veto_skip_threshold: "skip" trade entirely
 
+        Momentum concern override (v1.48):
+        - When reasoning contains momentum confirmation concerns AND
+          confidence >= veto_skip_threshold_momentum, skip the trade
+
         Args:
             approved: Whether the judge approved the trade
             confidence: Judge's confidence level (0.0 to 1.0)
+            reasoning: Judge's reasoning text (for momentum concern detection)
 
         Returns:
             Veto action string ("skip", "reduce") or None if no veto
         """
         if approved:
             return None
+
+        # Check for momentum-specific concerns with lower threshold
+        if reasoning and self._has_momentum_concern(reasoning):
+            if confidence >= self.veto_skip_threshold_momentum:
+                logger.info(
+                    "momentum_concern_veto_applied",
+                    confidence=confidence,
+                    momentum_threshold=self.veto_skip_threshold_momentum,
+                    standard_threshold=self.veto_skip_threshold,
+                )
+                return "skip"
 
         if confidence >= self.veto_skip_threshold:
             return "skip"  # High confidence disapproval: cancel trade
@@ -757,6 +801,7 @@ Trading style: POSITION TRADING (long-term)
             veto_action = self._determine_veto_action(
                 approved=judge_result["approved"],
                 confidence=judge_result["confidence"],
+                reasoning=judge_result["reasoning"],
             )
 
             self._consecutive_failures = 0

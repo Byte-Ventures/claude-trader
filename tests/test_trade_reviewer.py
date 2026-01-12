@@ -243,3 +243,141 @@ class TestHTFNullSafety:
 
         # Bullish trend is actionable, so HTF line should be shown
         assert 'HIGHER TIMEFRAME BIAS: BULLISH (Daily: BULLISH, 4H: NEUTRAL)' in prompt
+
+
+class TestMomentumConcernVeto:
+    """Tests for momentum concern veto threshold feature."""
+
+    @pytest.fixture
+    def mock_db(self):
+        """Create minimal mock database."""
+        return MagicMock()
+
+    @pytest.fixture
+    def reviewer_models(self):
+        """Reviewer model list."""
+        return ["model1", "model2", "model3"]
+
+    @pytest.fixture
+    def judge_model(self):
+        """Judge model name."""
+        return "judge-model"
+
+    def _create_reviewer(self, mock_db, reviewer_models, judge_model, momentum_threshold=0.70):
+        """Helper to create a TradeReviewer with given momentum threshold."""
+        return TradeReviewer(
+            api_key="test-key",
+            db=mock_db,
+            reviewer_models=reviewer_models,
+            judge_model=judge_model,
+            veto_reduce_threshold=0.65,
+            veto_skip_threshold=0.80,
+            veto_skip_threshold_momentum=momentum_threshold,
+        )
+
+    def test_has_momentum_concern_detects_momentum_confirmation(self, mock_db, reviewer_models, judge_model):
+        """Test _has_momentum_concern detects 'momentum confirmation' phrase."""
+        reviewer = self._create_reviewer(mock_db, reviewer_models, judge_model)
+
+        assert reviewer._has_momentum_concern("momentum confirmation is critical and currently lacking")
+        assert reviewer._has_momentum_concern("The momentum confirmation appears to be missing")
+        assert reviewer._has_momentum_concern("MOMENTUM CONFIRMATION is needed")  # case insensitive
+
+    def test_has_momentum_concern_detects_lacking_confirmation(self, mock_db, reviewer_models, judge_model):
+        """Test _has_momentum_concern detects variations of lacking confirmation."""
+        reviewer = self._create_reviewer(mock_db, reviewer_models, judge_model)
+
+        assert reviewer._has_momentum_concern("Signal is lacking confirmation from volume")
+        assert reviewer._has_momentum_concern("The trade lacks confirmation")
+        assert reviewer._has_momentum_concern("Trend is without confirmation")
+        assert reviewer._has_momentum_concern("Missing confirmation from MACD")
+
+    def test_has_momentum_concern_returns_false_for_normal_reasoning(self, mock_db, reviewer_models, judge_model):
+        """Test _has_momentum_concern returns False for normal reasoning."""
+        reviewer = self._create_reviewer(mock_db, reviewer_models, judge_model)
+
+        assert not reviewer._has_momentum_concern("RSI is overbought")
+        assert not reviewer._has_momentum_concern("Strong bullish signal confirmed by volume")
+        assert not reviewer._has_momentum_concern("Momentum looks good")
+
+    def test_veto_skip_at_momentum_threshold_with_momentum_concern(self, mock_db, reviewer_models, judge_model):
+        """Test SKIP veto when confidence >= momentum threshold AND momentum concern present."""
+        reviewer = self._create_reviewer(mock_db, reviewer_models, judge_model, momentum_threshold=0.70)
+
+        # 72% confidence with momentum concern should SKIP (>= 70% threshold)
+        veto = reviewer._determine_veto_action(
+            approved=False,
+            confidence=0.72,
+            reasoning="momentum confirmation is critical and currently lacking"
+        )
+        assert veto == "skip"
+
+    def test_veto_reduce_below_momentum_threshold_with_momentum_concern(self, mock_db, reviewer_models, judge_model):
+        """Test REDUCE veto when confidence < momentum threshold but >= reduce threshold."""
+        reviewer = self._create_reviewer(mock_db, reviewer_models, judge_model, momentum_threshold=0.70)
+
+        # 68% confidence with momentum concern should REDUCE (>= 65% reduce, < 70% momentum)
+        veto = reviewer._determine_veto_action(
+            approved=False,
+            confidence=0.68,
+            reasoning="momentum confirmation is critical and currently lacking"
+        )
+        assert veto == "reduce"
+
+    def test_no_veto_for_normal_reasoning_below_skip_threshold(self, mock_db, reviewer_models, judge_model):
+        """Test normal behavior when no momentum concern present."""
+        reviewer = self._create_reviewer(mock_db, reviewer_models, judge_model, momentum_threshold=0.70)
+
+        # 72% confidence without momentum concern should REDUCE (standard behavior)
+        veto = reviewer._determine_veto_action(
+            approved=False,
+            confidence=0.72,
+            reasoning="RSI is overbought and trend is weak"
+        )
+        assert veto == "reduce"  # Standard tier: 65-80% = reduce
+
+    def test_veto_skip_at_standard_threshold_without_momentum_concern(self, mock_db, reviewer_models, judge_model):
+        """Test standard SKIP threshold still works for non-momentum concerns."""
+        reviewer = self._create_reviewer(mock_db, reviewer_models, judge_model, momentum_threshold=0.70)
+
+        # 82% confidence without momentum concern should SKIP at standard threshold
+        veto = reviewer._determine_veto_action(
+            approved=False,
+            confidence=0.82,
+            reasoning="RSI is overbought and volume is declining"
+        )
+        assert veto == "skip"
+
+    def test_no_veto_when_approved(self, mock_db, reviewer_models, judge_model):
+        """Test no veto when judge approves, even with momentum concerns."""
+        reviewer = self._create_reviewer(mock_db, reviewer_models, judge_model)
+
+        veto = reviewer._determine_veto_action(
+            approved=True,
+            confidence=0.75,
+            reasoning="momentum confirmation is good despite earlier concerns"
+        )
+        assert veto is None
+
+    def test_exact_momentum_threshold_triggers_skip(self, mock_db, reviewer_models, judge_model):
+        """Test that exactly at momentum threshold triggers skip."""
+        reviewer = self._create_reviewer(mock_db, reviewer_models, judge_model, momentum_threshold=0.70)
+
+        veto = reviewer._determine_veto_action(
+            approved=False,
+            confidence=0.70,  # Exactly at threshold
+            reasoning="lacking confirmation from momentum indicators"
+        )
+        assert veto == "skip"
+
+    def test_empty_reasoning_uses_standard_thresholds(self, mock_db, reviewer_models, judge_model):
+        """Test that empty reasoning falls back to standard thresholds."""
+        reviewer = self._create_reviewer(mock_db, reviewer_models, judge_model, momentum_threshold=0.70)
+
+        # 72% with empty reasoning should REDUCE (standard behavior)
+        veto = reviewer._determine_veto_action(
+            approved=False,
+            confidence=0.72,
+            reasoning=""
+        )
+        assert veto == "reduce"

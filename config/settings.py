@@ -584,6 +584,12 @@ class Settings(BaseSettings):
         le=1.0,
         description="Judge confidence threshold to skip trade entirely (higher tier)"
     )
+    veto_skip_threshold_momentum: float = Field(
+        default=0.70,
+        ge=0.5,
+        le=0.80,
+        description="Lower veto skip threshold when AI identifies momentum confirmation issues"
+    )
     position_reduction: float = Field(
         default=0.5,
         ge=0.1,
