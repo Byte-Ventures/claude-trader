@@ -3232,33 +3232,56 @@ class TestMinimumConfluenceThreshold:
                 f"Expected confluence < 0.6, got {result_strict.metadata['_confluence_factor']}"
 
     def test_trade_proceeds_sufficient_confluence(self):
-        """Test trade proceeds when confluence meets threshold."""
-        # Use a very low confluence threshold (20%)
-        scorer = SignalScorer(threshold=50, min_confluence_factor=0.2)
+        """Test trade proceeds when confluence meets threshold.
 
-        # Create strongly bullish data that will trigger multiple indicator agreement
-        np.random.seed(42)
+        Uses mocks to create a deterministic scenario where:
+        - Score exceeds threshold (should trigger buy)
+        - Confluence is above the required minimum (should NOT be blocked)
+        This ensures the test always validates confluence behavior.
+        """
+        # Create test data with neutral conditions (mocks will override indicator values)
         length = 200
-        # Create uptrending price data
-        prices = np.linspace(40000, 60000, length) + np.random.uniform(-100, 100, length)
-
         candles = pd.DataFrame({
-            "open": prices * 0.998,
-            "high": prices * 1.005,
-            "low": prices * 0.995,
-            "close": prices,
-            "volume": [1000.0] * length,  # Decent volume
+            "open": [50000.0] * length,
+            "high": [50100.0] * length,
+            "low": [49900.0] * length,
+            "close": [50000.0] * length,
+            "volume": [100.0] * length,
         })
 
-        result = scorer.calculate_score(candles, Decimal(str(prices[-1])))
+        # Patch indicator functions to return specific values for deterministic testing
+        with patch("src.strategy.signal_scorer.get_rsi_signal_graduated") as mock_rsi, \
+             patch("src.strategy.signal_scorer.get_macd_signal_graduated") as mock_macd, \
+             patch("src.strategy.signal_scorer.get_bollinger_signal_graduated") as mock_bb, \
+             patch("src.strategy.signal_scorer.get_ema_signal_graduated") as mock_ema, \
+             patch("src.strategy.signal_scorer.get_ema_trend") as mock_trend:
 
-        # With a low 20% threshold, most signals should proceed
-        # Check that when action is buy/sell, confluence factor >= threshold
-        if result.action != "hold":
+            # Set up: RSI, MACD, BB, EMA all positive; trend bullish
+            # Raw score = 25+25+10+20 = 80, which exceeds threshold of 50
+            # 4 of 8 components positive = 50% confluence, exceeds 40% threshold
+            mock_rsi.return_value = 1.0   # Full bullish = 25 points
+            mock_macd.return_value = 1.0  # Full bullish = 25 points
+            mock_bb.return_value = 0.5    # Moderate bullish = 10 points
+            mock_ema.return_value = 1.0   # Full bullish = 20 points
+            mock_trend.return_value = "bullish"
+
+            # Use 40% confluence threshold - with 50% agreement, trade should proceed
+            scorer = SignalScorer(
+                threshold=50,
+                min_confluence_factor=0.4,
+                adx_enabled=False,  # Disable ADX to prevent score reduction
+            )
+            result = scorer.calculate_score(candles, Decimal("50000"))
+
+            # Should be a buy action (not blocked by confluence)
+            assert result.action == "buy", \
+                f"Expected buy action with sufficient confluence, got {result.action}"
             assert "_confluence_factor" in result.metadata, \
-                "Expected confluence factor in metadata for non-hold action"
-            assert result.metadata["_confluence_factor"] >= 0.2, \
-                f"Expected confluence >= 0.2, got {result.metadata['_confluence_factor']}"
+                "Expected confluence factor in metadata for buy action"
+            assert result.metadata["_confluence_factor"] >= 0.4, \
+                f"Expected confluence >= 0.4, got {result.metadata['_confluence_factor']}"
+            assert "_blocked_by_confluence" not in result.metadata, \
+                "Trade should not be blocked when confluence meets threshold"
 
     def test_confluence_metadata_recorded(self):
         """Test that confluence metadata is recorded for analysis."""
