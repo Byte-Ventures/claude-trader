@@ -224,6 +224,9 @@ def mock_settings():
     settings.adx_weak_threshold = 20.0
     settings.adx_strong_threshold = 25.0
 
+    # Minimum Confluence Factor
+    settings.min_confluence_factor = 0.4
+
     return settings
 
 

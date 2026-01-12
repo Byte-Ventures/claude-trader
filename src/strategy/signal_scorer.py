@@ -207,6 +207,7 @@ class SignalScorer:
         adx_period: int = 14,
         adx_weak_threshold: float = 20.0,
         adx_strong_threshold: float = 25.0,
+        min_confluence_factor: float = 0.4,
     ):
         """
         Initialize signal scorer.
@@ -298,6 +299,9 @@ class SignalScorer:
         self.adx_period = adx_period
         self.adx_weak_threshold = adx_weak_threshold
         self.adx_strong_threshold = adx_strong_threshold
+
+        # Minimum confluence factor for trade execution
+        self.min_confluence_factor = min_confluence_factor
 
     def get_min_candles(self) -> int:
         """
@@ -1200,6 +1204,34 @@ class SignalScorer:
             action = "sell"
         else:
             action = "hold"
+
+        # Check minimum confluence before finalizing non-hold action
+        # Requires a minimum percentage of indicators to actively agree with the trade direction
+        if action != "hold":
+            # Count indicators agreeing with signal direction (non-zero contributions in trade direction)
+            # For buy: count positive scores; For sell: count negative scores
+            agreeing_count = sum(
+                1 for name, score in components.items()
+                if (action == "buy" and score > 0) or (action == "sell" and score < 0)
+            )
+            confluence_factor = agreeing_count / len(components) if components else 0
+
+            if confluence_factor < self.min_confluence_factor:
+                logger.info(
+                    "trade_blocked_low_confluence",
+                    confluence=round(confluence_factor, 3),
+                    min_required=self.min_confluence_factor,
+                    original_action=action,
+                    agreeing_indicators=agreeing_count,
+                    total_indicators=len(components),
+                    score=total_score,
+                )
+                action = "hold"
+                # Store confluence data in metadata for analysis
+                metadata["_blocked_by_confluence"] = 1
+                metadata["_blocked_original_action"] = "buy" if total_score > 0 else "sell"
+            metadata["_confluence_factor"] = round(confluence_factor, 3)
+            metadata["_agreeing_indicators"] = agreeing_count
 
         # Calculate confidence with confluence factor
         # Combines magnitude with how many indicators agree
