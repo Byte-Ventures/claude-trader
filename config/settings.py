@@ -520,7 +520,7 @@ class Settings(BaseSettings):
         description="Enable cooldown between same-direction trades"
     )
     buy_cooldown_minutes: int = Field(
-        default=15,
+        default=30,
         ge=0,
         le=60,
         description="Minimum minutes between buy trades (0 = disabled)"
