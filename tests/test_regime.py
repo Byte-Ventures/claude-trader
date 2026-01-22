@@ -518,9 +518,11 @@ def test_adjustment_scale_zero_neutralizes():
     config = RegimeConfig(adjustment_scale=0.0)
     regime = MarketRegime(config=config)
 
+    # Use extreme_greed + high volatility to test scale without triggering
+    # dual-extreme override (which only applies to extreme_fear + extreme volatility)
     result = regime.calculate(
-        sentiment=FearGreedResult(value=10, classification="Extreme Fear", timestamp=None),
-        volatility="extreme",
+        sentiment=FearGreedResult(value=90, classification="Extreme Greed", timestamp=None),
+        volatility="high",
         trend="bearish",
         signal_action="buy",
     )
@@ -1424,3 +1426,219 @@ class TestCustomModifiers:
 
         # Should use hardcoded defaults
         assert regime.sentiment_trend_modifiers == MarketRegime.SENTIMENT_TREND_MODIFIERS
+
+
+# ============================================================================
+# Dual-Extreme Override Tests
+# ============================================================================
+
+class TestDualExtremeOverride:
+    """Test the dual-extreme conditions override (extreme_fear + extreme volatility)."""
+
+    @pytest.fixture
+    def regime(self):
+        """Market regime with scale=1.0 for testing override calculations."""
+        config = RegimeConfig(adjustment_scale=1.0)
+        return MarketRegime(config=config)
+
+    @pytest.fixture
+    def extreme_fear_sentiment(self):
+        """Fear & Greed result indicating extreme fear."""
+        return FearGreedResult(
+            value=15,
+            classification="Extreme Fear",
+            timestamp=None,
+        )
+
+    def test_dual_extreme_triggers_override(self, regime, extreme_fear_sentiment):
+        """Test override triggers when both sentiment is extreme_fear AND volatility is extreme."""
+        result = regime.calculate(
+            sentiment=extreme_fear_sentiment,
+            volatility="extreme",
+            trend="neutral",
+            signal_action="buy",
+        )
+
+        # Override should be flagged
+        assert result.components["sentiment"].get("dual_extreme_override") is True
+
+    def test_dual_extreme_neutralizes_negative_threshold(self, regime, extreme_fear_sentiment):
+        """Test dual-extreme override raises threshold to at least 0."""
+        result = regime.calculate(
+            sentiment=extreme_fear_sentiment,
+            volatility="extreme",
+            trend="neutral",
+            signal_action="buy",
+        )
+
+        # With extreme fear (-8 after neutral trend modifier) and extreme volatility (+10),
+        # combined would be +2, but the override ensures threshold >= 0
+        # Since combined is already >= 0, the override shouldn't change threshold
+        # But let's test with bullish trend which would make it more negative
+        result_bullish = regime.calculate(
+            sentiment=extreme_fear_sentiment,
+            volatility="extreme",
+            trend="bullish",
+            signal_action="buy",
+        )
+
+        # Threshold should be >= 0 due to override
+        assert result_bullish.threshold_adjustment >= 0
+
+    def test_dual_extreme_caps_position_at_06(self, regime, extreme_fear_sentiment):
+        """Test dual-extreme override caps position multiplier at 0.6."""
+        result = regime.calculate(
+            sentiment=extreme_fear_sentiment,
+            volatility="extreme",
+            trend="neutral",
+            signal_action="buy",
+        )
+
+        # Position should be capped at 0.6
+        assert result.position_multiplier <= 0.6
+
+    def test_no_override_when_only_extreme_fear(self, regime, extreme_fear_sentiment):
+        """Test no override when only sentiment is extreme (not volatility)."""
+        result = regime.calculate(
+            sentiment=extreme_fear_sentiment,
+            volatility="normal",
+            trend="neutral",
+            signal_action="buy",
+        )
+
+        # Override should NOT be flagged
+        assert result.components["sentiment"].get("dual_extreme_override") is None
+
+    def test_no_override_when_only_extreme_volatility(self, regime):
+        """Test no override when only volatility is extreme (not sentiment)."""
+        # Use fear (not extreme_fear)
+        fear_sentiment = FearGreedResult(
+            value=35,
+            classification="Fear",
+            timestamp=None,
+        )
+
+        result = regime.calculate(
+            sentiment=fear_sentiment,
+            volatility="extreme",
+            trend="neutral",
+            signal_action="buy",
+        )
+
+        # Override should NOT be flagged (fear is not extreme_fear)
+        assert result.components["sentiment"].get("dual_extreme_override") is None
+
+    def test_no_override_when_no_sentiment(self, regime):
+        """Test no override when sentiment is None."""
+        result = regime.calculate(
+            sentiment=None,
+            volatility="extreme",
+            trend="neutral",
+            signal_action="buy",
+        )
+
+        # Sentiment component should not exist, so no override
+        assert "sentiment" not in result.components
+
+    def test_dual_extreme_with_bullish_trend_buy(self, regime, extreme_fear_sentiment):
+        """Test dual-extreme override with bullish trend and buy signal.
+
+        Without override: extreme_fear bullish buy = threshold -12, position ~1.15
+        With extreme volatility added: threshold -12 + 10 = -2, position ~0.69
+        With override: threshold >= 0, position <= 0.6
+        """
+        result = regime.calculate(
+            sentiment=extreme_fear_sentiment,
+            volatility="extreme",
+            trend="bullish",
+            signal_action="buy",
+        )
+
+        # Override should trigger
+        assert result.components["sentiment"].get("dual_extreme_override") is True
+        # Threshold should be neutralized
+        assert result.threshold_adjustment >= 0
+        # Position should be capped
+        assert result.position_multiplier <= 0.6
+
+    def test_dual_extreme_with_bearish_trend_buy(self, regime, extreme_fear_sentiment):
+        """Test dual-extreme override with bearish trend and buy signal.
+
+        Without override: extreme_fear bearish buy = threshold 0 (nullified), position ~0.7
+        With extreme volatility added: threshold 0 + 10 = 10, position ~0.42
+        Position already < 0.6, so no position cap needed.
+        """
+        result = regime.calculate(
+            sentiment=extreme_fear_sentiment,
+            volatility="extreme",
+            trend="bearish",
+            signal_action="buy",
+        )
+
+        # Override should trigger (sentiment category is still extreme_fear)
+        assert result.components["sentiment"].get("dual_extreme_override") is True
+        # Threshold was already >= 0, so no change needed
+        assert result.threshold_adjustment >= 0
+        # Position was already capped by volatility
+        assert result.position_multiplier <= 0.6
+
+    def test_dual_extreme_with_sell_signal(self, regime, extreme_fear_sentiment):
+        """Test dual-extreme override applies to sell signals too."""
+        result = regime.calculate(
+            sentiment=extreme_fear_sentiment,
+            volatility="extreme",
+            trend="neutral",
+            signal_action="sell",
+        )
+
+        # Override should trigger for sells too
+        assert result.components["sentiment"].get("dual_extreme_override") is True
+        # Position should be capped at 0.6
+        assert result.position_multiplier <= 0.6
+
+    def test_dual_extreme_override_values_match_spec(self, regime, extreme_fear_sentiment):
+        """Test the specific values from the issue specification.
+
+        Current behavior during extreme_fear + extreme volatility:
+        - Sentiment: threshold -10, position 1.25 (but modified by trend)
+        - Volatility: threshold +10, position 0.6
+        - Combined: threshold 0, position 0.75 (approx)
+
+        Proposed behavior:
+        - Override ensures threshold >= 0 (no easier buying)
+        - Position capped at 0.6 regardless of sentiment boost
+        """
+        # Test with neutral trend to see base behavior
+        result = regime.calculate(
+            sentiment=extreme_fear_sentiment,
+            volatility="extreme",
+            trend="neutral",
+            signal_action="buy",
+        )
+
+        # Threshold should be >= 0
+        assert result.threshold_adjustment >= 0
+
+        # Position should be exactly 0.6 (capped)
+        assert result.position_multiplier == 0.6
+
+        # Override flag should be set
+        assert result.components["sentiment"]["dual_extreme_override"] is True
+
+    def test_dual_extreme_does_not_affect_greed(self, regime):
+        """Test dual-extreme override does NOT trigger for extreme_greed."""
+        extreme_greed = FearGreedResult(
+            value=85,
+            classification="Extreme Greed",
+            timestamp=None,
+        )
+
+        result = regime.calculate(
+            sentiment=extreme_greed,
+            volatility="extreme",
+            trend="neutral",
+            signal_action="buy",
+        )
+
+        # Override should NOT be flagged (only applies to extreme_fear)
+        assert result.components["sentiment"].get("dual_extreme_override") is None
