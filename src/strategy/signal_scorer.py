@@ -832,24 +832,13 @@ class SignalScorer:
                     # has timing inconsistencies (close outside high/low range), the volume
                     # spike detection remains valid. Only the whale DIRECTION analysis (which
                     # relies on close position within candle range) is affected by OHLC issues.
-                    #
-                    # On neutral signals (total_score=0), boost is 0 but _whale_activity
-                    # is still set True. This is intentional - whale activity on neutral signals
-                    # is valuable information for AI reviewers even without directional bias.
-                    volume_boost = int(abs(total_score) * self.whale_boost_percent)
-                    if total_score > 0:
-                        components["volume"] = volume_boost
-                        total_score += volume_boost
-                    elif total_score < 0:
-                        components["volume"] = -volume_boost
-                        total_score -= volume_boost
-                    else:
-                        components["volume"] = 0
                     metadata["_whale_activity"] = 1
                     metadata["_volume_ratio"] = volume_ratio
 
-                    # Determine whale direction based on price movement during volume spike
+                    # Determine whale direction FIRST based on price movement during volume spike
                     # Enhanced with candle structure analysis for directional confirmation
+                    # Direction must be known before applying boost (Issue #340)
+                    whale_direction = "unknown"
                     if len(close) >= 2:
                         prev_price = close.iloc[-2]
                         current_price = close.iloc[-1]
@@ -892,7 +881,7 @@ class SignalScorer:
                                     )
                                     close_position = None
                                     metadata["_candle_close_position"] = None
-                                    metadata["_whale_direction"] = "unknown"
+                                    whale_direction = "unknown"
                                     # Note: _price_change_pct is kept (already set on line 699) - it's still valid
                                     data_inconsistency = True
                                 else:
@@ -924,40 +913,64 @@ class SignalScorer:
                                 if price_change_pct > self.whale_direction_threshold:
                                     # Price moved up - check candle structure for confirmation
                                     if close_position is not None and close_position > self.whale_candle_bullish_threshold:
-                                        metadata["_whale_direction"] = "bullish"
+                                        whale_direction = "bullish"
                                     elif close_position is not None and close_position < 0.5:
                                         # Closed in lower half despite price increase - fighting/rejection
-                                        metadata["_whale_direction"] = "neutral"
+                                        whale_direction = "neutral"
                                     else:
                                         # Conservative: treat as neutral if either:
                                         # 1) Missing data (close_position is None)
                                         # 2) Ambiguous range (0.5 <= close_position <= threshold)
                                         # Both cases lack conviction for a directional signal
-                                        metadata["_whale_direction"] = "neutral"
+                                        whale_direction = "neutral"
                                 elif price_change_pct < -self.whale_direction_threshold:
                                     # Price moved down - check candle structure for confirmation
                                     if close_position is not None and close_position < self.whale_candle_bearish_threshold:
-                                        metadata["_whale_direction"] = "bearish"
+                                        whale_direction = "bearish"
                                     elif close_position is not None and close_position > 0.5:
                                         # Closed in upper half despite price decrease - fighting/support
-                                        metadata["_whale_direction"] = "neutral"
+                                        whale_direction = "neutral"
                                     else:
                                         # Conservative: treat as neutral if either:
                                         # 1) Missing data (close_position is None)
                                         # 2) Ambiguous range (bearish_threshold <= close_position <= 0.5)
                                         # Both cases lack conviction for a directional signal
-                                        metadata["_whale_direction"] = "neutral"
+                                        whale_direction = "neutral"
                                 else:
-                                    metadata["_whale_direction"] = "neutral"
+                                    whale_direction = "neutral"
                         else:
                             # Zero/negative prev price - can't calculate direction
-                            metadata["_whale_direction"] = "unknown"
+                            whale_direction = "unknown"
                             metadata["_price_change_pct"] = None
                             metadata["_candle_close_position"] = None
                     else:
-                        metadata["_whale_direction"] = "unknown"
+                        whale_direction = "unknown"
                         metadata["_price_change_pct"] = None
                         metadata["_candle_close_position"] = None
+
+                    # Store whale direction in metadata
+                    metadata["_whale_direction"] = whale_direction
+
+                    # Apply whale boost only when direction matches signal direction (Issue #340)
+                    # Prevents bullish whale activity from amplifying bearish signals and vice versa
+                    volume_boost = int(abs(total_score) * self.whale_boost_percent)
+                    if whale_direction == "bullish" and total_score > 0:
+                        # Bullish whale confirms bullish signal
+                        components["volume"] = volume_boost
+                        total_score += volume_boost
+                    elif whale_direction == "bearish" and total_score < 0:
+                        # Bearish whale confirms bearish signal
+                        components["volume"] = -volume_boost
+                        total_score -= volume_boost
+                    else:
+                        # Direction conflict or neutral: no boost, only log
+                        components["volume"] = 0
+                        if whale_direction and whale_direction not in ("neutral", "unknown"):
+                            logger.info(
+                                "whale_direction_conflict",
+                                whale_direction=whale_direction,
+                                signal_direction="bullish" if total_score > 0 else "bearish" if total_score < 0 else "neutral",
+                            )
                 elif volume_ratio > self.high_volume_threshold:
                     # High volume: boost signal by configurable percentage (default 20%)
                     volume_boost = int(abs(total_score) * self.high_volume_boost_percent)
