@@ -766,14 +766,18 @@ class Settings(BaseSettings):
         le=120,
         description="Cache duration for 4-hour candle data (minutes)"
     )
+    # MTF boost/penalty are symmetric (both 15) by design after issue #338 analysis.
+    # Original asymmetry (20/30) caused HTF bias to override unanimous short-term
+    # signals - e.g., Trade #239's -45 raw score became -7 hold due to +30 adjustment.
+    # Symmetric values prevent HTF from completely overriding strong signals.
     mtf_aligned_boost: int = Field(
-        default=20,
+        default=15,
         ge=5,
         le=40,
         description="Score boost for trades aligned with HTF trend"
     )
     mtf_counter_penalty: int = Field(
-        default=20,
+        default=15,
         ge=5,
         le=40,
         description="Score penalty for trades against HTF trend"

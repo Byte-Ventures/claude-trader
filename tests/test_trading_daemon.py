@@ -173,8 +173,8 @@ def mock_settings():
     settings.mtf_4h_candle_limit = 50
     settings.mtf_daily_cache_minutes = 60
     settings.mtf_4h_cache_minutes = 30
-    settings.mtf_aligned_boost = 20
-    settings.mtf_counter_penalty = 20
+    settings.mtf_aligned_boost = 15
+    settings.mtf_counter_penalty = 15
 
     # AI max tokens (split by use case)
     settings.ai_reviewer_max_tokens = 800
@@ -1883,8 +1883,8 @@ def htf_mock_settings(mock_settings):
     mock_settings.mtf_4h_candle_limit = 84
     mock_settings.mtf_daily_cache_minutes = 60
     mock_settings.mtf_4h_cache_minutes = 30
-    mock_settings.mtf_aligned_boost = 20
-    mock_settings.mtf_counter_penalty = 20
+    mock_settings.mtf_aligned_boost = 15
+    mock_settings.mtf_counter_penalty = 15
     return mock_settings
 
 
