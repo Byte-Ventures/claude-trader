@@ -115,6 +115,7 @@ def mock_settings():
     settings.min_stop_loss_percent = 0.5
     settings.take_profit_atr_multiplier = 3.0
     settings.enable_take_profit = True
+    settings.min_take_profit_percent = 1.5  # Minimum TP as % of price
     settings.stop_loss_pct = None
     settings.trailing_stop_enabled = False
     settings.use_limit_orders = True
