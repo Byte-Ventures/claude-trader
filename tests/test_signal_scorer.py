@@ -30,6 +30,8 @@ from src.strategy.signal_scorer import (
     SignalResult,
     IndicatorValues,
     get_recommended_threshold,
+    SHORT_TERM_CONSENSUS_HTF_CAP,
+    _cap_htf_adjustment_for_consensus,
 )
 
 
@@ -3086,6 +3088,265 @@ class TestHTFNullSafety:
         assert result.breakdown["_htf_daily"] == "unknown"  # None -> "unknown"
         assert result.breakdown["_htf_4h"] == "neutral"
 
+
+# ============================================================================
+# Short-Term Consensus HTF Capping Tests
+# ============================================================================
+
+class TestShortTermConsensusHTFCapping:
+    """Tests for HTF adjustment capping when RSI and Bollinger show consensus.
+
+    When both RSI and Bollinger unanimously signal overbought/oversold,
+    the HTF adjustment is capped to ±10 to prevent higher timeframes
+    from completely overriding timely exit/entry signals.
+
+    Consensus thresholds:
+    - Bearish consensus: RSI <= -15 AND BB <= -20
+    - Bullish consensus: RSI >= 15 AND BB >= 20
+    """
+
+    def test_cap_constant_value(self):
+        """Verify SHORT_TERM_CONSENSUS_HTF_CAP is set to expected value."""
+        assert SHORT_TERM_CONSENSUS_HTF_CAP == 10
+
+    def test_helper_caps_positive_adjustment(self):
+        """Test helper function caps large positive HTF adjustment."""
+        result, was_capped = _cap_htf_adjustment_for_consensus(
+            htf_adjustment=20,
+            short_term_consensus=True,
+            rsi_score=15,
+            bb_score=20,
+        )
+        assert result == 10
+        assert was_capped is True
+
+    def test_helper_caps_negative_adjustment(self):
+        """Test helper function caps large negative HTF adjustment."""
+        result, was_capped = _cap_htf_adjustment_for_consensus(
+            htf_adjustment=-20,
+            short_term_consensus=True,
+            rsi_score=-15,
+            bb_score=-20,
+        )
+        assert result == -10
+        assert was_capped is True
+
+    def test_helper_no_cap_when_no_consensus(self):
+        """Test HTF adjustment is NOT capped when consensus is False."""
+        result, was_capped = _cap_htf_adjustment_for_consensus(
+            htf_adjustment=-20,
+            short_term_consensus=False,
+            rsi_score=-15,
+            bb_score=-10,  # BB doesn't meet threshold
+        )
+        assert result == -20
+        assert was_capped is False
+
+    def test_helper_no_cap_when_within_limit(self):
+        """Test HTF adjustment unchanged when already within cap."""
+        result, was_capped = _cap_htf_adjustment_for_consensus(
+            htf_adjustment=5,
+            short_term_consensus=True,
+            rsi_score=15,
+            bb_score=20,
+        )
+        assert result == 5
+        assert was_capped is False
+
+    def test_helper_at_exactly_cap(self):
+        """Test HTF adjustment at exactly cap value is not capped."""
+        result, was_capped = _cap_htf_adjustment_for_consensus(
+            htf_adjustment=10,
+            short_term_consensus=True,
+            rsi_score=15,
+            bb_score=20,
+        )
+        assert result == 10
+        assert was_capped is False
+
+    def test_helper_at_negative_cap(self):
+        """Test HTF adjustment at exactly -cap value is not capped."""
+        result, was_capped = _cap_htf_adjustment_for_consensus(
+            htf_adjustment=-10,
+            short_term_consensus=True,
+            rsi_score=-15,
+            bb_score=-20,
+        )
+        assert result == -10
+        assert was_capped is False
+
+    def test_helper_just_over_cap(self):
+        """Test HTF adjustment just over cap is capped."""
+        result, was_capped = _cap_htf_adjustment_for_consensus(
+            htf_adjustment=11,
+            short_term_consensus=True,
+            rsi_score=15,
+            bb_score=20,
+        )
+        assert result == 10
+        assert was_capped is True
+
+    def test_helper_custom_cap_value(self):
+        """Test helper function respects custom cap value."""
+        result, was_capped = _cap_htf_adjustment_for_consensus(
+            htf_adjustment=15,
+            short_term_consensus=True,
+            rsi_score=15,
+            bb_score=20,
+            cap=5,
+        )
+        assert result == 5
+        assert was_capped is True
+
+    def test_helper_zero_adjustment(self):
+        """Test zero HTF adjustment is not modified."""
+        result, was_capped = _cap_htf_adjustment_for_consensus(
+            htf_adjustment=0,
+            short_term_consensus=True,
+            rsi_score=20,
+            bb_score=20,
+        )
+        assert result == 0
+        assert was_capped is False
+
+    def test_bearish_consensus_detection(self):
+        """Test bearish consensus: RSI <= -15 AND BB <= -20."""
+        # This tests that when RSI and BB both show overbought conditions,
+        # the HTF adjustment is capped. We use mocked indicator scores to
+        # ensure consistent test behavior regardless of indicator implementation.
+
+        # Create test data with mocked indicator functions
+        scorer = SignalScorer()
+        length = 50
+        prices = [50000.0] * length
+
+        df = pd.DataFrame({
+            'open': prices,
+            'high': [p * 1.001 for p in prices],
+            'low': [p * 0.999 for p in prices],
+            'close': prices,
+            'volume': [10000.0] * length,
+        })
+
+        # Mock indicator functions to return specific scores for consensus
+        with patch('src.strategy.signal_scorer.get_rsi_signal_graduated', return_value=-1.0):  # -25 score
+            with patch('src.strategy.signal_scorer.get_bollinger_signal_graduated', return_value=-1.0):  # -20 score
+                with patch('src.strategy.signal_scorer.get_macd_signal_graduated', return_value=-0.5):  # -12 score
+                    with patch('src.strategy.signal_scorer.get_ema_signal_graduated', return_value=-0.5):  # -7 score
+                        result = scorer.calculate_score(df, htf_bias="bullish")
+
+        # Verify components
+        rsi = result.breakdown.get("rsi", 0)
+        bb = result.breakdown.get("bollinger", 0)
+        htf = result.breakdown.get("htf_bias", 0)
+
+        # Verify we got bearish signal with consensus indicators
+        assert result.score < 0, f"Expected bearish signal, got {result.score}"
+        assert rsi <= -15, f"RSI score should indicate overbought (<= -15), got {rsi}"
+        assert bb <= -20, f"BB score should indicate overbought (<= -20), got {bb}"
+
+        # When we have bearish signal + bullish HTF + consensus,
+        # HTF adjustment should be capped to +10 (from +20)
+        assert htf <= 10, f"HTF should be capped to 10 due to consensus, got {htf}"
+
+    def test_bullish_consensus_detection(self):
+        """Test bullish consensus: RSI >= 15 AND BB >= 20."""
+        # This tests that when RSI and BB both show oversold conditions,
+        # the HTF adjustment is capped. We use mocked indicator scores to
+        # ensure consistent test behavior regardless of indicator implementation.
+
+        scorer = SignalScorer()
+        length = 50
+        prices = [50000.0] * length
+
+        df = pd.DataFrame({
+            'open': prices,
+            'high': [p * 1.001 for p in prices],
+            'low': [p * 0.999 for p in prices],
+            'close': prices,
+            'volume': [10000.0] * length,
+        })
+
+        # Mock indicator functions to return specific scores for bullish consensus
+        with patch('src.strategy.signal_scorer.get_rsi_signal_graduated', return_value=1.0):  # +25 score
+            with patch('src.strategy.signal_scorer.get_bollinger_signal_graduated', return_value=1.0):  # +20 score
+                with patch('src.strategy.signal_scorer.get_macd_signal_graduated', return_value=0.5):  # +12 score
+                    with patch('src.strategy.signal_scorer.get_ema_signal_graduated', return_value=0.5):  # +7 score
+                        result = scorer.calculate_score(df, htf_bias="bearish")
+
+        # Verify components
+        rsi = result.breakdown.get("rsi", 0)
+        bb = result.breakdown.get("bollinger", 0)
+        htf = result.breakdown.get("htf_bias", 0)
+
+        # Verify we got bullish signal with consensus indicators
+        assert result.score > 0, f"Expected bullish signal, got {result.score}"
+        assert rsi >= 15, f"RSI score should indicate oversold (>= 15), got {rsi}"
+        assert bb >= 20, f"BB score should indicate oversold (>= 20), got {bb}"
+
+        # When we have bullish signal + bearish HTF + consensus,
+        # HTF adjustment should be capped to -10 (from -20)
+        assert htf >= -10, f"HTF should be capped to -10 due to consensus, got {htf}"
+
+    def test_no_consensus_single_indicator(self):
+        """Test no capping when only one indicator meets threshold."""
+        # When RSI meets threshold but BB doesn't, no capping occurs
+        result, was_capped = _cap_htf_adjustment_for_consensus(
+            htf_adjustment=-20,
+            short_term_consensus=False,  # Only RSI meets threshold
+            rsi_score=-20,
+            bb_score=-15,  # Below threshold
+        )
+        assert result == -20
+        assert was_capped is False
+
+    def test_extreme_fear_path_with_consensus(self):
+        """Test HTF capping in extreme fear override path.
+
+        Uses mocks to guarantee bullish consensus conditions are met,
+        ensuring assertions always run.
+        """
+        scorer = SignalScorer(mtf_counter_penalty=20)
+        length = 50
+        prices = [50000.0] * length
+
+        df = pd.DataFrame({
+            'open': prices,
+            'high': [p * 1.001 for p in prices],
+            'low': [p * 0.999 for p in prices],
+            'close': prices,
+            'volume': [10000.0] * length,
+        })
+
+        # Mock indicator functions to return bullish consensus scores
+        # RSI +25 (>= 15 threshold), BB +20 (>= 20 threshold)
+        with patch('src.strategy.signal_scorer.get_rsi_signal_graduated', return_value=1.0):  # +25 score
+            with patch('src.strategy.signal_scorer.get_bollinger_signal_graduated', return_value=1.0):  # +20 score
+                with patch('src.strategy.signal_scorer.get_macd_signal_graduated', return_value=0.5):  # +12 score
+                    with patch('src.strategy.signal_scorer.get_ema_signal_graduated', return_value=0.5):  # +7 score
+                        # With extreme_fear + bearish daily + positive score + consensus:
+                        # Full penalty of -20 should be capped to -10
+                        result = scorer.calculate_score(
+                            df,
+                            htf_bias="neutral",
+                            htf_daily="bearish",
+                            htf_4h="bullish",
+                            sentiment_category="extreme_fear",
+                        )
+
+        # Verify components
+        rsi = result.breakdown.get("rsi", 0)
+        bb = result.breakdown.get("bollinger", 0)
+        htf = result.breakdown.get("htf_bias", 0)
+
+        # Verify we got bullish signal with consensus indicators
+        assert result.score > 0, f"Expected bullish signal, got {result.score}"
+        assert rsi >= 15, f"RSI score should meet consensus threshold (>= 15), got {rsi}"
+        assert bb >= 20, f"BB score should meet consensus threshold (>= 20), got {bb}"
+
+        # In extreme fear path with consensus, HTF penalty should be capped
+        # Original penalty would be -20, but capped to -10 due to consensus
+        assert htf >= -10, f"HTF should be capped to -10 in extreme fear with consensus, got {htf}"
 
 
 # ============================================================================
