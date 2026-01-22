@@ -184,6 +184,21 @@ class Settings(BaseSettings):
     macd_slow: int = Field(default=26, ge=5, le=100)
     macd_signal: int = Field(default=9, ge=2, le=50)
 
+    # MACD Alignment for Buy Signals (Momentum Confirmation)
+    # Requires MACD histogram to show non-declining momentum before buying
+    # Helps prevent buying during "falling knife" scenarios where RSI/Bollinger
+    # indicate oversold but momentum is still declining
+    require_macd_alignment: bool = Field(
+        default=False,
+        description="Require MACD histogram to be above threshold for buy signals"
+    )
+    macd_alignment_threshold: float = Field(
+        default=-0.5,
+        ge=-5.0,
+        le=5.0,
+        description="MACD histogram must be above this for buy signals (negative = allow slight decline)"
+    )
+
     # Strategy Parameters - Bollinger Bands
     bollinger_period: int = Field(default=20, ge=5, le=100)
     bollinger_std: float = Field(default=2.0, ge=1.0, le=4.0)

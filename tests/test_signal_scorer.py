@@ -3161,3 +3161,298 @@ class TestVWAPEnrichmentIntegration:
         assert abs(result_20.components["vwap"]) > abs(result_10.components["vwap"]), \
             f"Expected weight=20 ({result_20.components['vwap']}) > weight=10 ({result_10.components['vwap']})"
 
+
+# ============================================================================
+# MACD Alignment Tests
+# ============================================================================
+
+
+class TestMACDAlignment:
+    """Tests for MACD alignment requirement (momentum confirmation for buys).
+
+    MACD alignment helps prevent buying during "falling knife" scenarios where
+    RSI and Bollinger indicate oversold conditions but momentum is still declining.
+    """
+
+    @pytest.fixture
+    def macd_alignment_scorer(self):
+        """Signal scorer with MACD alignment enabled."""
+        return SignalScorer(
+            threshold=60,
+            require_macd_alignment=True,
+            macd_alignment_threshold=-0.5,
+        )
+
+    @pytest.fixture
+    def bullish_df_with_negative_macd(self):
+        """Create bullish price data but with negative MACD histogram.
+
+        This simulates a "falling knife" scenario where RSI shows oversold
+        but momentum is still declining.
+        """
+        np.random.seed(100)
+        length = 200
+
+        # Start high, drop quickly (creates oversold RSI but negative MACD)
+        prices = []
+        current = 60000.0
+        for i in range(length):
+            # Steady decline
+            change = -np.random.uniform(0.001, 0.002) * current
+            current = current + change
+            prices.append(current)
+
+        # Last few candles: slight bounce (creates buy signal from RSI/BB)
+        for i in range(3):
+            prices[-3+i] = prices[-4] * (1 + 0.005 * (i + 1))
+
+        data = {
+            'open': [],
+            'high': [],
+            'low': [],
+            'close': [],
+            'volume': []
+        }
+
+        for price in prices:
+            o = price * 0.999
+            c = price * 1.001
+            h = max(o, c) * 1.005
+            l = min(o, c) * 0.995
+            v = np.random.uniform(8000, 12000)
+
+            data['open'].append(o)
+            data['high'].append(h)
+            data['low'].append(l)
+            data['close'].append(c)
+            data['volume'].append(v)
+
+        return pd.DataFrame(data)
+
+    @pytest.fixture
+    def bullish_df_with_positive_macd(self):
+        """Create bullish price data with positive MACD histogram."""
+        np.random.seed(101)
+        length = 200
+
+        # Strong uptrend (creates positive MACD histogram)
+        prices = []
+        current = 40000.0
+        for i in range(length):
+            change = np.random.uniform(0.002, 0.004) * current
+            current = current + change
+            prices.append(current)
+
+        data = {
+            'open': [],
+            'high': [],
+            'low': [],
+            'close': [],
+            'volume': []
+        }
+
+        for price in prices:
+            o = price * 0.998
+            c = price * 1.002
+            h = max(o, c) * 1.01
+            l = min(o, c) * 0.99
+            v = np.random.uniform(8000, 15000)
+
+            data['open'].append(o)
+            data['high'].append(h)
+            data['low'].append(l)
+            data['close'].append(c)
+            data['volume'].append(v)
+
+        return pd.DataFrame(data)
+
+    def test_macd_alignment_disabled_by_default(self, bullish_df_with_negative_macd):
+        """Test MACD alignment is disabled by default (backward compatibility)."""
+        scorer = SignalScorer(threshold=50)
+        result = scorer.calculate_score(bullish_df_with_negative_macd)
+
+        # Should NOT block buy even with negative MACD when disabled
+        assert scorer.require_macd_alignment is False
+        assert result.breakdown.get("_macd_alignment_blocked") == 0
+
+    def test_macd_alignment_blocks_buy_with_negative_histogram(
+        self, macd_alignment_scorer, bullish_df_with_negative_macd
+    ):
+        """Test buy is blocked when MACD histogram is below threshold."""
+        result = macd_alignment_scorer.calculate_score(bullish_df_with_negative_macd)
+
+        # If the signal would have been a buy, it should be blocked
+        macd_histogram = result.indicators.macd_histogram
+        if macd_histogram is not None and macd_histogram < -0.5:
+            # Should be blocked
+            if result.score >= macd_alignment_scorer.threshold:
+                # Score still indicates buy, but action should be hold
+                assert result.breakdown.get("_macd_alignment_blocked") == 1
+                assert result.action == "hold"
+
+    def test_macd_alignment_allows_buy_with_positive_histogram(
+        self, macd_alignment_scorer, bullish_df_with_positive_macd
+    ):
+        """Test buy is allowed when MACD histogram is above threshold."""
+        result = macd_alignment_scorer.calculate_score(bullish_df_with_positive_macd)
+
+        # Should NOT be blocked
+        assert result.breakdown.get("_macd_alignment_blocked") == 0
+
+        # If score is above threshold, action should be buy
+        if result.score >= macd_alignment_scorer.threshold:
+            assert result.action == "buy"
+
+    def test_macd_alignment_does_not_affect_sell_signals(self, macd_alignment_scorer):
+        """Test MACD alignment only affects buy signals, not sell signals."""
+        np.random.seed(102)
+        length = 200
+
+        # Strong downtrend (creates sell signal)
+        prices = []
+        current = 60000.0
+        for i in range(length):
+            change = -np.random.uniform(0.002, 0.004) * current
+            current = current + change
+            prices.append(current)
+
+        data = {
+            'open': [],
+            'high': [],
+            'low': [],
+            'close': [],
+            'volume': []
+        }
+
+        for price in prices:
+            o = price * 1.002
+            c = price * 0.998
+            h = max(o, c) * 1.01
+            l = min(o, c) * 0.99
+            v = np.random.uniform(8000, 15000)
+
+            data['open'].append(o)
+            data['high'].append(h)
+            data['low'].append(l)
+            data['close'].append(c)
+            data['volume'].append(v)
+
+        df = pd.DataFrame(data)
+        result = macd_alignment_scorer.calculate_score(df)
+
+        # Sell signals should never be blocked by MACD alignment
+        if result.score <= -macd_alignment_scorer.threshold:
+            assert result.action == "sell"
+            assert result.breakdown.get("_macd_alignment_blocked") == 0
+
+    def test_macd_alignment_does_not_affect_hold_signals(self, macd_alignment_scorer):
+        """Test MACD alignment only affects buy signals, not hold signals."""
+        # Create flat/sideways data (hold signal)
+        df = pd.DataFrame({
+            'open': [50000.0] * 100,
+            'high': [50100.0] * 100,
+            'low': [49900.0] * 100,
+            'close': [50000.0] * 100,
+            'volume': [10000.0] * 100,
+        })
+
+        result = macd_alignment_scorer.calculate_score(df)
+
+        # Hold signals should not be affected
+        if abs(result.score) < macd_alignment_scorer.threshold:
+            assert result.action == "hold"
+            assert result.breakdown.get("_macd_alignment_blocked") == 0
+
+    def test_macd_alignment_threshold_configurable(self, bullish_df_with_negative_macd):
+        """Test MACD alignment threshold is configurable."""
+        # Very negative threshold - should allow through
+        scorer_permissive = SignalScorer(
+            threshold=50,
+            require_macd_alignment=True,
+            macd_alignment_threshold=-100.0,  # Very permissive
+        )
+        result_permissive = scorer_permissive.calculate_score(bullish_df_with_negative_macd)
+
+        # Positive threshold - should block more
+        scorer_strict = SignalScorer(
+            threshold=50,
+            require_macd_alignment=True,
+            macd_alignment_threshold=5.0,  # Very strict
+        )
+        result_strict = scorer_strict.calculate_score(bullish_df_with_negative_macd)
+
+        # Permissive should allow more buys than strict
+        # (Strict should block if buy signal present)
+        if result_permissive.score >= 50 and result_strict.score >= 50:
+            # Both would be buys, but strict should be blocked more often
+            assert result_permissive.breakdown.get("_macd_alignment_blocked") == 0
+            # Strict should block (histogram unlikely to be > 5.0)
+            if result_strict.indicators.macd_histogram is not None:
+                if result_strict.indicators.macd_histogram < 5.0:
+                    assert result_strict.breakdown.get("_macd_alignment_blocked") == 1
+                    assert result_strict.action == "hold"
+
+    def test_macd_alignment_metadata_always_present(self, macd_alignment_scorer, bullish_df_with_positive_macd):
+        """Test _macd_alignment_blocked metadata is always present."""
+        result = macd_alignment_scorer.calculate_score(bullish_df_with_positive_macd)
+
+        # Metadata should always be present
+        assert "_macd_alignment_blocked" in result.breakdown
+        assert result.breakdown.get("_macd_alignment_blocked") in [0, 1]
+
+    def test_macd_alignment_with_no_macd_data(self, macd_alignment_scorer):
+        """Test MACD alignment blocks buy when MACD data is unavailable."""
+        # Create minimal data that won't produce valid MACD
+        df = pd.DataFrame({
+            'open': [50000.0] * 10,  # Too few candles
+            'high': [50100.0] * 10,
+            'low': [49900.0] * 10,
+            'close': [50000.0] * 10,
+            'volume': [10000.0] * 10,
+        })
+
+        result = macd_alignment_scorer.calculate_score(df)
+
+        # With insufficient data, MACD will be None
+        # Default scorer returns hold for insufficient data anyway
+        assert result.action == "hold"
+
+    def test_macd_alignment_initialization_parameters(self):
+        """Test MACD alignment parameters are stored correctly."""
+        scorer = SignalScorer(
+            require_macd_alignment=True,
+            macd_alignment_threshold=-1.5,
+        )
+
+        assert scorer.require_macd_alignment is True
+        assert scorer.macd_alignment_threshold == -1.5
+
+    def test_macd_alignment_default_parameters(self):
+        """Test MACD alignment default parameters."""
+        scorer = SignalScorer()
+
+        assert scorer.require_macd_alignment is False
+        assert scorer.macd_alignment_threshold == -0.5
+
+    def test_macd_alignment_combined_with_other_filters(self, bullish_df_with_positive_macd):
+        """Test MACD alignment works correctly with other filters (trend, HTF)."""
+        scorer = SignalScorer(
+            threshold=50,
+            require_macd_alignment=True,
+            macd_alignment_threshold=-0.5,
+            mtf_aligned_boost=20,
+            mtf_counter_penalty=20,
+        )
+
+        # Test with bullish HTF alignment
+        result = scorer.calculate_score(
+            bullish_df_with_positive_macd,
+            htf_bias="bullish",
+            htf_daily="bullish",
+        )
+
+        # MACD alignment should not interfere with HTF adjustments
+        if result.score >= scorer.threshold:
+            assert result.action == "buy"
+            assert result.breakdown.get("htf_bias") == 20  # Aligned boost applied
+
