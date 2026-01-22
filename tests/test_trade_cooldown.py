@@ -73,7 +73,7 @@ def test_default_config():
     config = TradeCooldownConfig()
     assert config.buy_cooldown_minutes == 15
     assert config.sell_cooldown_minutes == 5  # Prevent rapid-fire selling
-    assert config.buy_price_change_percent == 1.0
+    assert config.buy_price_change_percent == 1.5
     assert config.sell_price_change_percent == 0.0
 
 
