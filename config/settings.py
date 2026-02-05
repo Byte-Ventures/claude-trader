@@ -605,6 +605,12 @@ class Settings(BaseSettings):
         le=1.0,
         description="Judge confidence threshold to skip trade entirely (higher tier)"
     )
+    veto_skip_threshold_momentum: float = Field(
+        default=0.70,
+        ge=0.5,
+        le=0.95,
+        description="Lower veto skip threshold when AI identifies momentum confirmation issues. Must be < veto_skip_threshold (validated at runtime)."
+    )
     position_reduction: float = Field(
         default=0.5,
         ge=0.1,
@@ -1040,6 +1046,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"veto thresholds must have at least 0.05 gap between them "
                 f"(current gap: {gap:.3f})"
+            )
+
+        # Momentum threshold must be strictly less than standard skip threshold
+        # (momentum concerns warrant earlier intervention)
+        if self.veto_skip_threshold_momentum >= self.veto_skip_threshold:
+            raise ValueError(
+                f"veto_skip_threshold_momentum ({self.veto_skip_threshold_momentum}) must be less than "
+                f"veto_skip_threshold ({self.veto_skip_threshold})"
             )
         return self
 
