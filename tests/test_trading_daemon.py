@@ -3399,7 +3399,7 @@ def test_take_profit_triggers_at_target_price(mock_settings):
 
                 assert result == "sell", "Take profit should return 'sell' when price reaches target"
                 mock_database.deactivate_trailing_stop.assert_called_once()
-                mock_notifier.send_message.assert_called()  # TP notification sent
+                mock_notifier.send_message_sync.assert_called()  # TP notification sent
 
 
 def test_take_profit_triggers_above_target_price(mock_settings):
@@ -3510,7 +3510,7 @@ def test_hard_stop_has_priority_over_take_profit(mock_settings):
 
                 assert result == "sell", "Hard stop should trigger"
                 # Check that it was hard stop notification, not TP
-                call_args = mock_notifier.send_message.call_args[0][0]
+                call_args = mock_notifier.send_message_sync.call_args[0][0]
                 assert "Hard Stop" in call_args, "Should be hard stop notification"
 
 
@@ -3714,7 +3714,7 @@ def test_take_profit_priority_over_trailing_in_gap(mock_settings):
 
                 assert result == "sell", "Should trigger sell"
                 # Verify it was TP notification (checked first due to priority)
-                call_args = mock_notifier.send_message.call_args[0][0]
+                call_args = mock_notifier.send_message_sync.call_args[0][0]
                 assert "Take Profit" in call_args, "Should be TP notification, not trailing stop"
 
 
