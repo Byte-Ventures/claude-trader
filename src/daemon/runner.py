@@ -789,7 +789,7 @@ class TradingDaemon:
                     "config_change_requires_restart",
                     fields=list(ignored_changes),
                 )
-                self.notifier.send_message(
+                self.notifier.send_message_sync(
                     f"Warning: {', '.join(ignored_changes)} changes require restart"
                 )
 
@@ -892,7 +892,7 @@ class TradingDaemon:
             )
 
             # Notify via Telegram
-            self.notifier.send_message(
+            self.notifier.send_message_sync(
                 f"Config reloaded: {', '.join(changes.keys())} updated"
             )
 
@@ -976,7 +976,7 @@ class TradingDaemon:
                         # Extract URL from output
                         for line in result.stdout.split("\n"):
                             if "github.com" in line and "discussions" in line:
-                                self.notifier.send_message(f"📊 Post-mortem analysis: {line.strip()}")
+                                self.notifier.send_message_sync(f"📊 Post-mortem analysis: {line.strip()}")
                                 break
                 else:
                     logger.warning(
@@ -1959,7 +1959,7 @@ class TradingDaemon:
                             )
                             if should_notify:
                                 self._last_ai_failure_notification = now
-                                self.notifier.send_message(
+                                self.notifier.send_message_sync(
                                     f"⚠️ Trade skipped: AI review unavailable\n"
                                     f"Signal: {effective_action} (score: {signal_result.score})"
                                 )
@@ -2842,7 +2842,7 @@ class TradingDaemon:
                 # Send hard stop notification with missed TP target
                 take_profit = ts.get_take_profit_price()
                 tp_info = f" | TP Target: ¤{take_profit:,.2f}" if take_profit else ""
-                self.notifier.send_message(
+                self.notifier.send_message_sync(
                     f"🛑 Hard Stop Triggered (-{loss_pct}%)\n"
                     f"Entry: ¤{entry_price:,.2f} | Exit: ¤{current_price:,.2f}\n"
                     f"Stop: ¤{hard_stop:,.2f}{tp_info}"

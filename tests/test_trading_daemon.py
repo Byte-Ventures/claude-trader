@@ -955,7 +955,7 @@ def test_ai_failure_mode_open_does_not_skip_trade(mock_settings, mock_exchange_c
                 # focuses on the AI failure handling behavior, not the complete trade path.
                 # The trade may not execute due to other conditions (order sizing, etc.)
                 notifier_instance = mock_notifier.return_value
-                for call in notifier_instance.send_message.call_args_list:
+                for call in notifier_instance.send_message_sync.call_args_list:
                     msg = str(call)
                     assert "Trade skipped" not in msg, "OPEN mode should not skip trades"
 
@@ -1053,7 +1053,7 @@ def test_ai_failure_mode_safe_skips_trade(mock_settings, mock_exchange_client, m
 
                 # Verify notification was sent about skipped trade
                 notifier_instance = mock_notifier.return_value
-                notifier_instance.send_message.assert_called()
+                notifier_instance.send_message_sync.assert_called()
 
 
 def test_ai_failure_mode_defaults(mock_settings, mock_exchange_client, mock_database):
@@ -1148,7 +1148,7 @@ def test_ai_failure_mode_sell_proceeds_on_failure(mock_settings, mock_exchange_c
 
                 # CRITICAL: Verify sell was NOT skipped (negative assertion)
                 notifier_instance = mock_notifier.return_value
-                for call in notifier_instance.send_message.call_args_list:
+                for call in notifier_instance.send_message_sync.call_args_list:
                     msg = str(call)
                     assert "Trade skipped" not in msg, "SELL with OPEN mode should not skip trades"
 
@@ -1238,7 +1238,7 @@ def test_ai_failure_mode_sell_safe_skips_trade(mock_settings, mock_exchange_clie
                 # Verify notification was sent about skipped trade
                 notifier_instance = mock_notifier.return_value
                 skip_notification_sent = False
-                for call in notifier_instance.send_message.call_args_list:
+                for call in notifier_instance.send_message_sync.call_args_list:
                     msg = str(call)
                     if "Trade skipped" in msg or "AI review failed" in msg:
                         skip_notification_sent = True
@@ -1333,22 +1333,22 @@ def test_ai_failure_notification_cooldown(mock_settings, mock_exchange_client, m
 
                 # First failure: should send notification
                 daemon._trading_iteration()
-                assert notifier_instance.send_message.call_count == 1
+                assert notifier_instance.send_message_sync.call_count == 1
 
                 # Second failure immediately after: should NOT send notification (cooldown)
                 daemon._trading_iteration()
-                assert notifier_instance.send_message.call_count == 1  # Still 1, not 2
+                assert notifier_instance.send_message_sync.call_count == 1  # Still 1, not 2
 
                 # Third failure immediately after: should still NOT send notification
                 daemon._trading_iteration()
-                assert notifier_instance.send_message.call_count == 1  # Still 1, not 3
+                assert notifier_instance.send_message_sync.call_count == 1  # Still 1, not 3
 
                 # Simulate 15 minutes passing by resetting the timestamp (use timezone-aware UTC)
                 daemon._last_ai_failure_notification = datetime.now(timezone.utc) - timedelta(minutes=16)
 
                 # Fourth failure after cooldown: should send notification again
                 daemon._trading_iteration()
-                assert notifier_instance.send_message.call_count == 2  # Now 2
+                assert notifier_instance.send_message_sync.call_count == 2  # Now 2
 
 
 # ============================================================================
