@@ -2885,7 +2885,7 @@ class TradingDaemon:
                         profit_percent=str(profit_pct),
                     )
 
-                    self.notifier.send_message(
+                    self.notifier.send_message_sync(
                         f"🎯 Take Profit Target Reached\n"
                         f"Entry: ¤{entry_price:,.2f} | Exit: ¤{current_price:,.2f} (+{profit_pct}%)\n"
                         f"Target: ¤{take_profit:,.2f}"
@@ -2927,7 +2927,7 @@ class TradingDaemon:
                         breakeven_multiplier=str(breakeven_multiplier),
                         atr=str(atr),
                     )
-                    self.notifier.send_message(
+                    self.notifier.send_message_sync(
                         f"🛡️ Break-even protection activated\n"
                         f"Entry: ¤{entry_price:,.2f} | Current: ¤{current_price:,.2f} (+{profit_pct}%)\n"
                         f"Position now protected at entry"
