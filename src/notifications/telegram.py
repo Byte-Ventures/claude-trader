@@ -17,6 +17,7 @@ Features:
 
 import asyncio
 import hashlib
+import html
 import re
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -180,6 +181,15 @@ class TelegramNotifier:
                 return False
 
         return True
+
+    @staticmethod
+    def _escape_html(text: str) -> str:
+        """Escape HTML special characters in AI-generated text.
+
+        AI models may output text containing <, >, or & characters
+        (e.g., <thinking>, <analysis>) which break Telegram's HTML parser.
+        """
+        return html.escape(str(text))
 
     def _record_sent(self, msg_type: str, message: str) -> None:
         """Record that a message was sent for deduplication."""
@@ -830,7 +840,7 @@ class TelegramNotifier:
                 summary = getattr(agent, 'summary', None) or agent.reasoning[:80]
                 agent_lines.append(
                     f"{stance_emoji.get(agent.stance, '⚪')} <b>{model_short}</b> ({stance_label}): "
-                    f"{verdict} {conf}\n  <i>{summary}</i>"
+                    f"{verdict} {conf}\n  <i>{self._escape_html(summary)}</i>"
                 )
             agents_text = "\n\n".join(agent_lines) if agent_lines else "No reviews"
 
@@ -860,7 +870,7 @@ class TelegramNotifier:
                 f"<b>━━━ Judge Decision ━━━</b>\n"
                 f"{judge_decision_text} ({review.judge_confidence*100:.0f}% confidence)\n"
                 f"{rec_emoji.get(recommendation, '📌')} Recommendation: <b>{rec_text.get(recommendation, recommendation.upper())}</b>\n\n"
-                f"<i>{review.judge_reasoning}</i>\n\n"
+                f"<i>{self._escape_html(review.judge_reasoning)}</i>\n\n"
                 f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
             )
         else:
@@ -885,7 +895,7 @@ class TelegramNotifier:
                 summary = getattr(agent, 'summary', None) or agent.reasoning[:80]
                 agent_lines.append(
                     f"{stance_emoji.get(agent.stance, '⚪')} <b>{model_short}</b> ({stance_label}): "
-                    f"{verdict} {conf}\n  <i>{summary}</i>"
+                    f"{verdict} {conf}\n  <i>{self._escape_html(summary)}</i>"
                 )
 
             agents_text = "\n\n".join(agent_lines) if agent_lines else "  No agent reviews"
@@ -983,7 +993,7 @@ class TelegramNotifier:
                 f"<b>━━━ Judge Decision ━━━</b>\n"
                 f"{judge_decision_text} ({review.judge_confidence*100:.0f}% confidence)\n"
                 f"{rec_emoji.get(recommendation, '📌')} Recommendation: <b>{rec_text.get(recommendation, recommendation.upper())}</b>\n\n"
-                f"<i>{review.judge_reasoning}</i>"
+                f"<i>{self._escape_html(review.judge_reasoning)}</i>"
                 f"{veto_text}\n\n"
                 f"{outcome}\n\n"
                 f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
@@ -1117,7 +1127,7 @@ class TelegramNotifier:
             f"{profile_emoji} <b>Weight Profile Changed</b>\n\n"
             f"<b>Profile:</b> {old_profile} → {new_profile}\n"
             f"<b>Confidence:</b> {confidence_pct}%\n\n"
-            f"<b>AI Reasoning:</b>\n{reasoning}"
+            f"<b>AI Reasoning:</b>\n{self._escape_html(reasoning)}"
         )
 
         if self.send_message_sync(message):
@@ -1232,7 +1242,7 @@ class TelegramNotifier:
             summary = getattr(agent, 'summary', None) or agent.reasoning[:80]
             agent_lines.append(
                 f"{stance_emoji.get(agent.stance, '⚪')} <b>{model_short}</b> ({stance_label}): "
-                f"{outlook} {conf}\n  <i>{summary}</i>"
+                f"{outlook} {conf}\n  <i>{self._escape_html(summary)}</i>"
             )
         agents_text = "\n\n".join(agent_lines) if agent_lines else "No reviews"
 
@@ -1256,7 +1266,7 @@ class TelegramNotifier:
             f"<b>━━━ Judge Synthesis ━━━</b>\n"
             f"Confidence: {review.judge_confidence*100:.0f}%\n"
             f"{rec_emoji.get(recommendation, '📌')} Recommendation: <b>{rec_text.get(recommendation, recommendation.upper())}</b>\n\n"
-            f"<i>{review.judge_reasoning}</i>\n\n"
+            f"<i>{self._escape_html(review.judge_reasoning)}</i>\n\n"
             f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
